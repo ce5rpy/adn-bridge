@@ -35,18 +35,15 @@ typedef struct {
     int dgid;
     char dmr_host[128];
     int dmr_port;
-    char dmr_options[128]; /* RPTO OPTIONS; voice TG parsed from TS1=/TS2= */
+    char dmr_options[128]; /* optional RPTO; empty = no RPTO, else sent as-is */
     char dmr_password[64];
-    int dmr_tg;            /* derived from options after load */
-    char radio_id[6];      /* 5-char YSF RadioID for DMR->YSF CSD/DCH (DMR2YSF) */
+    int dmr_tg;            /* mandatory [dmr] tg= — voice + connect PTT */
     int default_ysf_dmrid; /* legacy INI key; bridge [dmr] dmrid is used instead */
     log_level_t log_level; /* [log] level=DEBUG|INFO|WARNING|ERROR */
     ysf2dmr_aliases_cfg_t aliases;
 } ysf2dmr_config_t;
 
 void ysf2dmr_config_init(ysf2dmr_config_t *cfg);
-/* Map Yaesu model name / 5-char code into cfg->radio_id (YSF CSD field). */
-void ysf2dmr_config_set_radio_id(ysf2dmr_config_t *cfg, const char *val);
 /* Resolve default ysf2dmrcon.ini (cwd, then directory of argv[0]). */
 int ysf2dmr_config_default_path(const char *argv0, char *path, size_t pathlen);
 /* Returns 0 on success, -1 on error (message in err, errlen). */

@@ -157,11 +157,10 @@ static void peer_ysf_send(peer_ysf_t *p, const uint8_t *data, int len)
 
 void peer_ysf_send_ysfd(peer_ysf_t *p, uint8_t *frame155, int len)
 {
-    if (len != 155 || memcmp(frame155, "YSFD", 4) != 0) {
-        peer_ysf_send(p, frame155, len);
-        return;
-    }
-    ysf_fich_rewrite_dgid(frame155, p->dgid);
+    /* Like dgidcon: stamp configured DGID into FICH on every YSFD (voice +
+     * HC/TC). Activation burst alone is not enough for dashboard/stream room. */
+    if (len == 155)
+        ysf_fich_rewrite_dgid(frame155, p->dgid);
     peer_ysf_send(p, frame155, len);
 }
 

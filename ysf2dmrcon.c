@@ -154,7 +154,7 @@ int main(int argc, char **argv)
     if (ysf2dmr_aliases_load(&cfg.aliases, &g_aliases) != 0)
         LOG_WARNING("alias load failed; YSF talker lookup may be limited\n");
 
-    bridge_init(&bridge, cfg.dmr_options, g_aliases, cfg.default_ysf_dmrid, cfg.radio_id);
+    bridge_init(&bridge, cfg.dmr_options, g_aliases, cfg.default_ysf_dmrid);
 
     if (peer_ysf_open(&bridge.ysf, cfg.ysf_host, cfg.ysf_port, cfg.callsign, (uint8_t)cfg.dgid) < 0)
         return 1;
@@ -169,7 +169,12 @@ int main(int argc, char **argv)
     alarm(5);
 
     LOG_INFO("bridge running (YSF<->DMR voice via ModeConv)\n");
-    LOG_INFO("YSF DGID %d activation on connect/reconnect; DMR RPTO on login\n", cfg.dgid);
+    if (cfg.dmr_options[0])
+        LOG_INFO("YSF DGID %d; DMR RPTO on login; connect PTT TG %d (1s)\n",
+                 cfg.dgid, cfg.dmr_tg);
+    else
+        LOG_INFO("YSF DGID %d; DMR no RPTO; connect PTT TG %d (1s)\n",
+                 cfg.dgid, cfg.dmr_tg);
 
     while (keep_running) {
         int from_dmr = 0, from_ysf = 0, len;

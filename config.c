@@ -27,100 +27,11 @@
 #include <limits.h>
 #include <libgen.h>
 
-#define YSF_RADIO_ID_DEFAULT "FT-5D"
-
-typedef struct {
-    const char *name;
-    const char rid[6];
-} ysf_radio_model_t;
-
-static const ysf_radio_model_t ysf_radio_models[] = {
-    { "FT-70D",  "FT-70" },
-    { "FT-3D",   "FT-3D" },
-    { "FT-991",  "FT991" },
-    { "FTM500",  "FTM50" },
-    { "FTM-500", "FTM50" },
-    { "FTM400",  "FTM40" },
-    { "FTM-400", "FTM40" },
-    { "FTM300",  "FTM30" },
-    { "FTM-300", "FTM30" },
-    { "FTM310",  "FTM31" },
-    { "FTM-310", "FTM31" },
-    { "FTM3200", "FTM32" },
-    { "FTM-3200", "FTM32" },
-    { "FT-1XD",  "FT-1X" },
-    { "FT7250",  "FT725" },
-    { "FT-2D",   "FT-2D" },
-    { "FTM100",  "FTM10" },
-    { "FTM-100", "FTM10" },
-    { "FT-5D",   "FT-5D" },
-    { "FT3207",  "FT320" },
-    { "FTM200",  "FTM20" },
-    { "FTM-200", "FTM20" },
-    { NULL,      "" }
-};
-
-static int str_ieq(const char *a, const char *b)
-{
-    if (!a || !b)
-        return 0;
-    while (*a && *b) {
-        if (toupper((unsigned char)*a) != toupper((unsigned char)*b))
-            return 0;
-        a++;
-        b++;
-    }
-    return *a == *b;
-}
-
-void ysf2dmr_config_set_radio_id(ysf2dmr_config_t *cfg, const char *val)
-{
-    const ysf_radio_model_t *m;
-    char compact[16];
-    int i, j;
-
-    if (!cfg)
-        return;
-
-    if (!val || !val[0] || strcmp(val, "*****") == 0) {
-        memcpy(cfg->radio_id, YSF_RADIO_ID_DEFAULT, 6);
-        return;
-    }
-
-    for (m = ysf_radio_models; m->name; m++) {
-        if (str_ieq(val, m->name)) {
-            memcpy(cfg->radio_id, m->rid, 6);
-            return;
-        }
-    }
-
-    if (strlen(val) <= 5) {
-        memset(cfg->radio_id, 0, sizeof(cfg->radio_id));
-        memcpy(cfg->radio_id, val, strlen(val));
-        return;
-    }
-
-    /* Longer names: drop dashes and take the first 5 alnum chars. */
-    memset(compact, 0, sizeof(compact));
-    for (i = 0, j = 0; val[i] && j < 5; i++) {
-        unsigned char c = (unsigned char)val[i];
-        if (c == '-' || c == ' ')
-            continue;
-        compact[j++] = (char)toupper(c);
-    }
-    if (j == 0) {
-        memcpy(cfg->radio_id, YSF_RADIO_ID_DEFAULT, 6);
-        return;
-    }
-    memcpy(cfg->radio_id, compact, 6);
-}
-
 void ysf2dmr_config_init(ysf2dmr_config_t *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
     cfg->log_level = LOG_LEVEL_INFO;
     cfg->default_ysf_dmrid = 0;
-    ysf2dmr_config_set_radio_id(cfg, NULL);
     ysf2dmr_aliases_cfg_init(&cfg->aliases);
 }
 
@@ -174,24 +85,6 @@ static void set_int(int *dst, const char *val)
     *dst = atoi(val);
 }
 
-static int tg_from_options(const char *options)
-{
-    static const char *keys[] = {"TS2=", "TS1=", NULL};
-    int i;
-
-    if (!options || !options[0])
-        return 0;
-    for (i = 0; keys[i]; i++) {
-        const char *p = strstr(options, keys[i]);
-        if (p) {
-            int tg = atoi(p + strlen(keys[i]));
-            if (tg > 0)
-                return tg;
-        }
-    }
-    return 0;
-}
-
 static void apply_identity_key(ysf2dmr_config_t *cfg, const char *key, const char *val)
 {
     if (strcmp(key, "callsign") == 0)
@@ -216,8 +109,7 @@ static void apply_key(ysf2dmr_config_t *cfg, const char *section, const char *ke
             set_int(&cfg->ysf_port, val);
         else if (strcmp(key, "dgid") == 0)
             set_int(&cfg->dgid, val);
-        else if (strcmp(key, "radio_id") == 0 || strcmp(key, "radio_model") == 0)
-            ysf2dmr_config_set_radio_id(cfg, val);
+        /* radio_id / radio_model ignored — CSD RadioID is hardcoded ***** */
         return;
     }
     if (strcmp(section, "dmr") == 0) {
@@ -232,6 +124,8 @@ static void apply_key(ysf2dmr_config_t *cfg, const char *section, const char *ke
             set_int(&cfg->dmr_port, val);
         else if (strcmp(key, "options") == 0)
             set_str(cfg->dmr_options, sizeof(cfg->dmr_options), val);
+        else if (strcmp(key, "tg") == 0)
+            set_int(&cfg->dmr_tg, val);
         else if (strcmp(key, "password") == 0 || strcmp(key, "passphrase") == 0)
             set_str(cfg->dmr_password, sizeof(cfg->dmr_password), val);
         else if (strcmp(key, "default_ysf_dmrid") == 0)
@@ -318,7 +212,9 @@ int ysf2dmr_config_load(const char *path, ysf2dmr_config_t *cfg, char *err, size
 
     fclose(fp);
 
-    cfg->dmr_tg = tg_from_options(cfg->dmr_options);
+    /* Treat options="" as empty → no RPTO. Otherwise send options as-is. */
+    if (strcmp(cfg->dmr_options, "\"\"") == 0)
+        cfg->dmr_options[0] = '\0';
 
     return 0;
 }
@@ -341,14 +237,11 @@ int ysf2dmr_config_valid(const ysf2dmr_config_t *cfg, char *err, size_t errlen)
         snprintf(err, errlen, "missing [dmr] host/port");
         return -1;
     }
-    if (!cfg->dmr_options[0]) {
-        snprintf(err, errlen, "missing [dmr] options");
-        return -1;
-    }
     if (cfg->dmr_tg <= 0) {
-        snprintf(err, errlen, "[dmr] options must include TS1= or TS2= talkgroup");
+        snprintf(err, errlen, "missing [dmr] tg");
         return -1;
     }
+    /* options optional: empty → no RPTO; any non-empty string is sent as RPTO. */
     if (!cfg->dmr_password[0]) {
         snprintf(err, errlen, "missing [dmr] password (or passphrase)");
         return -1;

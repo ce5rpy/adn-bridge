@@ -217,9 +217,16 @@ static void handle_rx(peer_dmr_t *p)
                 p->login_phase = 2;
                 break;
             case 2:
-                send_rpto(p);
-                p->login_phase = 3;
-                fprintf(stderr, "DMR: waiting RPTACK for RPTO...\n");
+                if (p->options[0]) {
+                    send_rpto(p);
+                    p->login_phase = 3;
+                    fprintf(stderr, "DMR: waiting RPTACK for RPTO...\n");
+                } else {
+                    host1_connect_status = CONNECTED;
+                    p->login_phase = 4;
+                    pong_time1 = time(NULL);
+                    fprintf(stderr, "DMR: login complete — peer registered (no RPTO)\n");
+                }
                 break;
             case 3:
                 host1_connect_status = CONNECTED;

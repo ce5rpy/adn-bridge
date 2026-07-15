@@ -49,6 +49,9 @@ static void fich_set_fn(unsigned char fn);
 static void fich_set_ft(unsigned char ft);
 static void fich_set_mr(unsigned char mr);
 static void fich_set_voip(bool on);
+static void fich_set_sql(bool on);
+static void fich_set_sq(uint8_t sq);
+static void fich_set_dgid(uint8_t dgid);
 static void fich_encode(unsigned char *bytes);
 static void fich_decode(const unsigned char *bytes);
 
@@ -854,7 +857,7 @@ void ysf_fich_rewrite_dgid(uint8_t *frame155, uint8_t dgid)
     fich_decode(frame155 + YSF_FICH_OFFSET_RX);
     fich_set_voip(false);
     fich_set_dt(YSF_FICH_DT_VD_MODE2);
-    m_fich[3U] = dgid;
+    fich_set_dgid(dgid);
     fich_encode(frame155 + YSF_FICH_OFFSET_RX);
 }
 
@@ -903,7 +906,7 @@ uint8_t ysf_fich_get_dgid(void)
     return m_fich[3U];
 }
 
-void ysf_fich_encode_outbound(uint8_t *fich25, uint8_t dgid, uint8_t fn_serial,
+void ysf_fich_encode_outbound(uint8_t *fich25, uint8_t fn_serial,
                               uint8_t fi, uint8_t ft, uint8_t cm)
 {
     memset(m_fich, 0x00, sizeof(m_fich));
@@ -915,7 +918,8 @@ void ysf_fich_encode_outbound(uint8_t *fich25, uint8_t dgid, uint8_t fn_serial,
     fich_set_mr(0);
     fich_set_dt(YSF_FICH_DT_VD_MODE2);
     fich_set_voip(false);
-    m_fich[3U] = dgid;
+    fich_set_sql(false);
+    fich_set_sq(0);
     fich_encode(fich25);
 }
 
@@ -1086,3 +1090,15 @@ static void fich_set_fn(unsigned char fn)  { m_fich[1U] &= 0xC7U; m_fich[1U] |= 
 static void fich_set_ft(unsigned char ft)  { m_fich[1U] &= 0xF8U; m_fich[1U] |= ft & 0x07U; }
 static void fich_set_mr(unsigned char mr)  { m_fich[2U] &= 0xC7U; m_fich[2U] |= (mr << 3) & 0x38U; }
 static void fich_set_voip(bool on)         { if (on) m_fich[2U] |= 0x04U; else m_fich[2U] &= 0xFBU; }
+static void fich_set_sql(bool on)          { if (on) m_fich[3U] |= 0x80U; else m_fich[3U] &= 0x7FU; }
+static void fich_set_sq(uint8_t sq)        { m_fich[3U] &= 0x80U; m_fich[3U] |= sq & 0x7FU; }
+
+/* dgidcon: m_fich[3] = DGID (1-99). Do not set SQL via setSQL(true) — that
+ * yields 0x80|dgid (e.g. 131 for DGID 3) and mismatches reflector dashboards. */
+static void fich_set_dgid(uint8_t dgid)
+{
+    if (dgid >= 1U)
+        m_fich[3U] = dgid;
+    else
+        m_fich[3U] = 0U;
+}

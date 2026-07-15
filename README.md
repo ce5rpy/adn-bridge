@@ -63,55 +63,13 @@ in each INI (default `./data`).
 | `host` | YSF reflector hostname or IP |
 | `port` | YSF UDP port (commonly `42000`) |
 | `dgid` | DGID room to join on connect/reconnect |
-| `radio_id` | Yaesu model label for **DMR→YSF** CSD/DCH (see below) |
-| `radio_model` | Alias for `radio_id` (same meaning) |
 
-#### YSF radio model (`radio_id` / `radio_model`)
-
-On **DMR→YSF**, bytes 5–9 of the YSF CSD/DCH “Radio ID” field are filled from
-this setting (the talker **callsign** comes from `subscriber_ids.json`, not
-from here). Use the model that best matches what YSF listeners expect to see
-for bridged DMR traffic.
-
-**INI keys:** `radio_id` or `radio_model` (equivalent).
-
-**Resolution order:**
-
-1. Match a **known name** below (case-insensitive) → use the fixed 5-character wire code.
-2. Value **≤ 5 characters** → copied as-is (space-padded to 5 bytes).
-3. **Longer name** → remove `-` and spaces, take the first 5 letters/digits, uppercased.
-4. Empty or `*****` → default `FT-5D`.
-
-| INI name(s) | Wire code (5 bytes) | Typical Yaesu radio |
-|-------------|---------------------|---------------------|
-| `FT-70D` | `FT-70` | FT-70D |
-| `FT-3D` | `FT-3D` | FT3D |
-| `FT-991` | `FT991` | FT-991 |
-| `FT-1XD` | `FT-1X` | FT1XD |
-| `FT-2D` | `FT-2D` | FT2D |
-| `FT-5D` | `FT-5D` | FT5D (**default**) |
-| `FT7250` | `FT725` | FT-7250 |
-| `FT3207` | `FT320` | FT3D family |
-| `FTM100`, `FTM-100` | `FTM10` | FTM-100D |
-| `FTM200`, `FTM-200` | `FTM20` | FTM-200 |
-| `FTM300`, `FTM-300` | `FTM30` | FTM-300D |
-| `FTM310`, `FTM-310` | `FTM31` | FTM-310 |
-| `FTM3200`, `FTM-3200` | `FTM32` | FTM-3200D |
-| `FTM400`, `FTM-400` | `FTM40` | FTM-400D / FTM-400X |
-| `FTM500`, `FTM-500` | `FTM50` | FTM-500D |
-
-Example:
-
-```ini
-[ysf]
-radio_id = FT-70D
-# same as: radio_model = FT-70D
-```
+**DMR→YSF RadioID** in CSD/DCH is hardcoded to `*****` (DMR2YSF/YSF2DMR
+default). It is not configurable.
 
 **YSF→DMR (incoming):** many handhelds append a suffix after `-` or `/` in the
 wire source field (e.g. `HP3ICC-FT3`, `CE5RPY/FT3`). The bridge strips that
-suffix and uses only the base callsign for JSON lookup. The suffix is **not**
-required to match `radio_id` above.
+suffix and uses only the base callsign for JSON lookup.
 
 ### `[dmr]` — Homebrew peer identity
 
@@ -122,7 +80,8 @@ required to match `radio_id` above.
 | `location` | Shown on monitor Linked Systems (max 20 chars) |
 | `description` | Short bridge label (max 19 chars) |
 | `host` / `port` | ADN DMR server |
-| `options` | RPTO string, e.g. `TS2=7302;SINGLE=0;TIMER=60;` — voice TG is parsed from `TS1=` / `TS2=` |
+| `tg` | Mandatory voice talkgroup (DMRD + 1s connect PTT); TX always TS2 |
+| `options` | Optional RPTO string — omit/empty = no RPTO; if set, sent as-is |
 | `password` | Homebrew peer password |
 
 **Monitor note:** RX/TX frequency zero in RPTC → monitor shows N/A frequencies

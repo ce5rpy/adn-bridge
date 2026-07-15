@@ -64,55 +64,13 @@ en cada INI (por defecto `./data`).
 | `host` | Hostname o IP del reflector |
 | `port` | Puerto UDP YSF (habitualmente `42000`) |
 | `dgid` | Sala DGID al conectar/reconectar |
-| `radio_id` | Modelo Yaesu en CSD/DCH **DMR→YSF** (ver abajo) |
-| `radio_model` | Alias de `radio_id` (mismo significado) |
 
-#### Modelo de radio YSF (`radio_id` / `radio_model`)
-
-En **DMR→YSF**, los bytes 5–9 del campo “Radio ID” del CSD/DCH YSF se rellenan
-con este valor (el **indicativo** del locutor sale de `subscriber_ids.json`, no
-de aquí). Elija el modelo que mejor represente el tráfico DMR para quien escucha
-en YSF.
-
-**Claves INI:** `radio_id` o `radio_model` (equivalentes).
-
-**Orden de resolución:**
-
-1. Coincide con un **nombre conocido** de la tabla (sin distinguir mayúsculas) → código fijo de 5 caracteres.
-2. Valor **≤ 5 caracteres** → se copia tal cual (relleno con espacios a 5 bytes).
-3. **Nombre más largo** → quita `-` y espacios, toma los primeros 5 alfanuméricos en mayúsculas.
-4. Vacío o `*****` → por defecto `FT-5D`.
-
-| Nombre(s) en INI | Código en wire (5 bytes) | Radio Yaesu típica |
-|------------------|--------------------------|--------------------|
-| `FT-70D` | `FT-70` | FT-70D |
-| `FT-3D` | `FT-3D` | FT3D |
-| `FT-991` | `FT991` | FT-991 |
-| `FT-1XD` | `FT-1X` | FT1XD |
-| `FT-2D` | `FT-2D` | FT2D |
-| `FT-5D` | `FT-5D` | FT5D (**por defecto**) |
-| `FT7250` | `FT725` | FT-7250 |
-| `FT3207` | `FT320` | familia FT3D |
-| `FTM100`, `FTM-100` | `FTM10` | FTM-100D |
-| `FTM200`, `FTM-200` | `FTM20` | FTM-200 |
-| `FTM300`, `FTM-300` | `FTM30` | FTM-300D |
-| `FTM310`, `FTM-310` | `FTM31` | FTM-310 |
-| `FTM3200`, `FTM-3200` | `FTM32` | FTM-3200D |
-| `FTM400`, `FTM-400` | `FTM40` | FTM-400D / FTM-400X |
-| `FTM500`, `FTM-500` | `FTM50` | FTM-500D |
-
-Ejemplo:
-
-```ini
-[ysf]
-radio_id = FT-70D
-# equivalente: radio_model = FT-70D
-```
+**RadioID** en CSD/DCH **DMR→YSF** está fijado a `*****` (default DMR2YSF/YSF2DMR).
+No es configurable.
 
 **YSF→DMR (entrante):** muchos portátiles añaden sufijo tras `-` o `/` en el
 campo origen del wire (p. ej. `HP3ICC-FT3`, `CE5RPY/FT3`). El puente quita ese
-sufijo y usa solo el indicativo base para buscar en el JSON. El sufijo **no**
-tiene que coincidir con el `radio_id` de arriba.
+sufijo y usa solo el indicativo base para buscar en el JSON.
 
 ### `[dmr]` — Identidad del peer Homebrew
 
@@ -123,7 +81,8 @@ tiene que coincidir con el `radio_id` de arriba.
 | `location` | Texto en Linked Systems del monitor (máx. 20 caracteres) |
 | `description` | Etiqueta corta del puente |
 | `host` / `port` | Servidor DMR ADN |
-| `options` | Cadena RPTO, p. ej. `TS2=7302;SINGLE=0;TIMER=60;` — el TG de voz se toma de `TS1=` / `TS2=` |
+| `tg` | Talkgroup de voz obligatorio (DMRD + PTT 1s al conectar); TX siempre TS2 |
+| `options` | Cadena RPTO opcional — omitir/vacío = sin RPTO; si se pone, se envía tal cual |
 | `password` | Contraseña del peer Homebrew |
 
 **Monitor:** frecuencias RX/TX en cero en RPTC → el monitor muestra N/A

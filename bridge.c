@@ -17,7 +17,6 @@
  */
 
 #include "bridge.h"
-#include "config.h"
 #include "hbp/dmr_codec.h"
 #include "log.h"
 #include "aliases.h"
@@ -34,6 +33,7 @@
 
 #define DMR_FRAME_MS  55
 #define YSF_FRAME_MS  90
+#define CONNECT_PTT_MS 1000
 #define YSF_DT_VD_MODE1 0x00U
 #define YSF_DT_VD_MODE2 0x02U
 #define YSF_DT_VOICE_FR 0x03U
@@ -44,6 +44,9 @@
 #define YSF_FICH_CM           0U   /* YSF2DMR default call mode */
 #define YSF_WIRE_DST_ALL      "ALL       "
 #define YSF_SYNC_BYTES        "\xD4\x71\xC9\x63\x4D"
+/* YSF2DMR.ini defaults for VD mode 2 DCH slots fn=6/7 */
+static const uint8_t YSF_DCH_DT1[10] = {1U, 34U, 97U, 95U, 43U, 3U, 17U, 0U, 0U, 0U};
+static const uint8_t YSF_DCH_DT2[10] = {0U, 0U, 0U, 0U, 108U, 32U, 28U, 32U, 3U, 8U};
 
 /* HBP DMRD byte 15 — matches new-adn-server parse_dmrd_burst_fields */
 #define DMRD_FT_DATA_SYNC 2U
@@ -98,9 +101,8 @@ static const char *ysf_fi_name(uint8_t fi)
 
 static uint8_t dmr_slot_bit_from_options(const char *options)
 {
-    if (options && strstr(options, "TS1="))
-        return 0x00;
-    return 0x80; /* TS2 default */
+    (void)options;
+    return 0x80; /* TX always TS2 */
 }
 
 static void dmrd_parse_b15(uint8_t b15, uint8_t *ft, uint8_t *dtype)
@@ -118,6 +120,18 @@ static int ms_elapsed(const struct timespec *since, int interval_ms)
                  + (now.tv_nsec - since->tv_nsec) / 1000000L;
     return elapsed >= interval_ms;
 }
+
+static long ms_since(const struct timespec *since)
+{
+    struct timespec now;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (now.tv_sec - since->tv_sec) * 1000L
+         + (now.tv_nsec - since->tv_nsec) / 1000000L;
+}
+
+static void bridge_send_dmrd(ysf2dmr_bridge_t *b, uint8_t frame_type, const uint8_t *voice33);
+static uint32_t new_stream_id(void);
 
 static void stamp_now(struct timespec *ts)
 {
@@ -342,18 +356,10 @@ static int bridge_assign_ysf_talker(ysf2dmr_bridge_t *b, const char *src)
     return 0;
 }
 
-static void radio_id_to_dch5(const char radio_id[6], uint8_t out[5])
+/* DMR2YSF/YSF2DMR default RadioID in CSD/DCH (not configurable). */
+static void radio_id_to_dch5(uint8_t out[5])
 {
-    int i;
-
     memset(out, '*', 5);
-    if (!radio_id || !radio_id[0])
-        return;
-    for (i = 0; i < 5; i++) {
-        if (radio_id[i] == '\0')
-            break;
-        out[i] = (uint8_t)radio_id[i];
-    }
 }
 
 static int bridge_wire_src_fallback(ysf2dmr_bridge_t *b, const uint8_t *pkt)
@@ -438,7 +444,7 @@ static void bridge_resolve_dmr_to_ysf_identity(ysf2dmr_bridge_t *b, int rf, int 
     }
 
     if (b->dmra.rf == rf && b->dmra.text[0]) {
-        LOG_DEBUG("DMR->YSF id %d DMRA '%s' (log only, not used for YSF src)\n",
+        LOG_DEBUG("DMR->YSF id %d DMRA '%s'\n",
                   rf, b->dmra.text);
     }
 
@@ -477,7 +483,7 @@ void bridge_on_dmra(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
     if (dmra_decode_blocks(b->dmra.blocks, b->dmra.have, decoded, sizeof(decoded))) {
         strncpy(b->dmra.text, decoded, sizeof(b->dmra.text) - 1);
         b->dmra.text[sizeof(b->dmra.text) - 1] = '\0';
-        LOG_DEBUG("DMR DMRA rf=%d block=%d text='%s' (log only)\n",
+        LOG_DEBUG("DMR DMRA rf=%d block=%d text='%s'\n",
                   rf, block_id, b->dmra.text);
     }
 }
@@ -491,6 +497,7 @@ static void bridge_reset_call(ysf2dmr_bridge_t *b)
     b->ysf_voice_frames = 0;
     b->ysf_rf_id = 0;
     b->ysf_cnt = 0;
+    b->dmr_last_dtype = 0;
     memset(&b->dmra, 0, sizeof(b->dmra));
     memset(b->net_src, ' ', 10);
     memset(b->net_dst, ' ', 10);
@@ -498,19 +505,11 @@ static void bridge_reset_call(ysf2dmr_bridge_t *b)
 }
 
 void bridge_init(ysf2dmr_bridge_t *b, const char *dmr_options,
-                 ysf2dmr_aliases_t *aliases, int default_ysf_dmrid,
-                 const char *radio_id)
+                 ysf2dmr_aliases_t *aliases, int default_ysf_dmrid)
 {
     memset(b, 0, sizeof(*b));
     b->aliases = aliases;
     b->default_ysf_dmrid = default_ysf_dmrid;
-    {
-        ysf2dmr_config_t tmp;
-
-        memset(&tmp, 0, sizeof(tmp));
-        ysf2dmr_config_set_radio_id(&tmp, radio_id);
-        memcpy(b->radio_id, tmp.radio_id, sizeof(b->radio_id));
-    }
     b->dmr_slot_bit = dmr_slot_bit_from_options(dmr_options);
     memset(b->net_src, ' ', 10);
     memset(b->net_dst, ' ', 10);
@@ -518,6 +517,105 @@ void bridge_init(ysf2dmr_bridge_t *b, const char *dmr_options,
     modeconv_init();
     stamp_now(&b->last_dmr_tx);
     stamp_now(&b->last_ysf_tx);
+}
+
+static void bridge_connect_ptt_finish(ysf2dmr_bridge_t *b)
+{
+    uint8_t slot_bit = b->dmr_slot_bit;
+
+    /* Pad to end of 6-frame superframe, then VTERM (same as ModeConv EOT). */
+    while ((b->connect_ptt_voice_frames % 6) != 0) {
+        uint8_t n = (uint8_t)(b->connect_ptt_voice_frames % 6);
+        bridge_send_dmrd(b, (uint8_t)(slot_bit | n), DMR_SILENCE_DATA);
+        b->connect_ptt_voice_frames++;
+    }
+    bridge_send_dmrd(b, (uint8_t)(slot_bit | (DMRD_FT_DATA_SYNC << 4) | DMRD_DTYPE_VTERM),
+                     DMR_SILENCE_DATA);
+    LOG_INFO("DMR connect PTT end (TG %d, %d voice frames)\n",
+             b->dmr.tg, b->connect_ptt_voice_frames);
+    b->connect_ptt_active = 0;
+    b->connect_ptt_phase = 0;
+    b->connect_ptt_voice_frames = 0;
+}
+
+void bridge_abort_connect_ptt(ysf2dmr_bridge_t *b)
+{
+    if (!b->connect_ptt_active)
+        return;
+    if (b->connect_ptt_phase > 0)
+        bridge_connect_ptt_finish(b);
+    else {
+        b->connect_ptt_active = 0;
+        b->connect_ptt_phase = 0;
+        b->connect_ptt_voice_frames = 0;
+    }
+}
+
+static void bridge_start_connect_ptt(ysf2dmr_bridge_t *b)
+{
+    if (b->call_active || b->connect_ptt_active)
+        return;
+    if (b->dmr.tg <= 0)
+        return;
+
+    b->connect_ptt_active = 1;
+    b->connect_ptt_phase = 0;
+    b->connect_ptt_voice_frames = 0;
+    b->dmr_stream_id = new_stream_id();
+    b->dmr_seq = 0;
+    stamp_now(&b->connect_ptt_start);
+    stamp_now(&b->last_dmr_tx);
+    /* Force first emit immediately. */
+    b->last_dmr_tx.tv_sec = 0;
+    LOG_INFO("DMR connect PTT start (TG %d, %d ms)\n", b->dmr.tg, CONNECT_PTT_MS);
+}
+
+static void bridge_emit_connect_ptt(ysf2dmr_bridge_t *b)
+{
+    uint8_t slot_bit = b->dmr_slot_bit;
+    int i;
+
+    if (!b->connect_ptt_active)
+        return;
+
+    if (b->connect_ptt_phase == 0) {
+        for (i = 0; i < 3; i++)
+            bridge_send_dmrd(b, (uint8_t)(slot_bit | (DMRD_FT_DATA_SYNC << 4) | DMRD_DTYPE_VHEAD),
+                             NULL);
+        b->connect_ptt_phase = 1;
+        stamp_now(&b->connect_ptt_start);
+        return;
+    }
+
+    if (ms_since(&b->connect_ptt_start) >= CONNECT_PTT_MS) {
+        bridge_connect_ptt_finish(b);
+        return;
+    }
+
+    {
+        uint8_t n = (uint8_t)(b->connect_ptt_voice_frames % 6);
+        uint8_t b15 = (uint8_t)(n == 0 ? (slot_bit | (DMRD_FT_VOICE_SYNC << 4))
+                                       : (slot_bit | n));
+        bridge_send_dmrd(b, b15, DMR_SILENCE_DATA);
+        b->connect_ptt_voice_frames++;
+    }
+}
+
+static void bridge_poll_connect_ptt(ysf2dmr_bridge_t *b)
+{
+    int connected = peer_dmr_connected(&b->dmr);
+
+    if (connected && !b->dmr_was_connected)
+        bridge_start_connect_ptt(b);
+    if (!connected) {
+        b->connect_ptt_active = 0;
+        b->connect_ptt_phase = 0;
+        b->connect_ptt_voice_frames = 0;
+    }
+    b->dmr_was_connected = connected;
+
+    if (b->connect_ptt_active && ms_elapsed(&b->last_dmr_tx, DMR_FRAME_MS))
+        bridge_emit_connect_ptt(b);
 }
 
 static int dmrd_is_voice(const uint8_t *pkt, int len)
@@ -552,6 +650,30 @@ static int dmrd_is_terminator(const uint8_t *pkt, int len)
         return 0;
     dmrd_parse_b15(pkt[15], &ft, &dtype);
     return ft == DMRD_FT_DATA_SYNC && dtype == DMRD_DTYPE_VTERM;
+}
+
+static uint8_t dmrd_b15_dtype(const uint8_t *pkt)
+{
+    uint8_t ft, dtype;
+
+    dmrd_parse_b15(pkt[15], &ft, &dtype);
+    return dtype;
+}
+
+static void bridge_begin_dmr_to_ysf(ysf2dmr_bridge_t *b, const uint8_t *pkt)
+{
+    b->call_active = 1;
+    b->dmr_stream_id = *(const uint32_t *)(pkt + 16);
+    if (b->dmr_stream_id == 0)
+        b->dmr_stream_id = new_stream_id();
+    b->dmr_seq = 0;
+    b->dmr_voice_frames = 0;
+    b->dmr_tx_frames = 0;
+    b->dmr_dmrd_other = 0;
+    b->ysf_fn = 0;
+    b->ysf_cnt = 0;
+    modeconv_reset();
+    bridge_set_dmr_rx_identity(b, pkt);
 }
 
 static const char *dmrd_class_label(const uint8_t *pkt, int len)
@@ -694,10 +816,9 @@ static void bridge_fill_ysf_csd(ysf2dmr_bridge_t *b, uint8_t csd1[20], uint8_t c
 {
     uint8_t rid[5];
 
-    memset(csd1, 0, 20);
     memset(csd2, ' ', 20);
     memset(csd1, '*', 5);
-    radio_id_to_dch5(b->radio_id, rid);
+    radio_id_to_dch5(rid);
     memcpy(csd1 + 5, rid, 5);
     memcpy(csd1 + 10, b->net_src, 10);
 }
@@ -708,7 +829,7 @@ static void bridge_apply_ysf_dch_slot(uint8_t *payload, uint8_t fn, ysf2dmr_brid
     uint8_t rid[5];
 
     memset(dch, ' ', 10);
-    radio_id_to_dch5(b->radio_id, rid);
+    radio_id_to_dch5(rid);
     switch (fn) {
     case 0:
         memset(dch, '*', 5);
@@ -724,11 +845,16 @@ static void bridge_apply_ysf_dch_slot(uint8_t *payload, uint8_t fn, ysf2dmr_brid
         ysf_payload_write_vd_mode2_dch(payload, dch);
         break;
     case 5:
+        memset(dch, ' ', 5);
         memcpy(dch + 5, rid, 5);
         ysf_payload_write_vd_mode2_dch(payload, dch);
         break;
     case 6:
+        memcpy(dch, YSF_DCH_DT1, 10);
+        ysf_payload_write_vd_mode2_dch(payload, dch);
+        break;
     case 7:
+        memcpy(dch, YSF_DCH_DT2, 10);
         ysf_payload_write_vd_mode2_dch(payload, dch);
         break;
     default:
@@ -738,35 +864,37 @@ static void bridge_apply_ysf_dch_slot(uint8_t *payload, uint8_t fn, ysf2dmr_brid
 }
 
 static void bridge_fill_ysfd_headers(uint8_t *frame, const peer_ysf_t *ysf,
-                                     const char net_src[10])
+                                     const ysf2dmr_bridge_t *b)
 {
     memcpy(frame, "YSFD", 4);
     memcpy(frame + 4, ysf->callsign, 10);
-    memcpy(frame + 14, net_src, 10);
+    memcpy(frame + 14, b->net_src, 10);
     memcpy(frame + 24, YSF_WIRE_DST_ALL, 10);
     frame[34] = 0;
 }
 
-static void bridge_send_ysfd(ysf2dmr_bridge_t *b, uint8_t fi, uint8_t ft, uint8_t cm,
+static int bridge_send_ysfd(ysf2dmr_bridge_t *b, uint8_t fi, uint8_t ft, uint8_t cm,
                              uint8_t fich_fn, uint8_t net_cnt, const uint8_t *payload120,
                              const uint8_t csd1[20], const uint8_t csd2[20])
 {
     uint8_t frame[155];
 
-    bridge_fill_ysfd_headers(frame, &b->ysf, b->net_src);
+    bridge_fill_ysfd_headers(frame, &b->ysf, b);
     frame[34] = net_cnt;
     /* Wire layout: sync at +35, FICH at +40 (CYSFFICH::encode skips the sync
      * internally; our fich_encode does not, so pass frame+40 explicitly). */
     if (fi == YSF_FI_HEADER || fi == YSF_FI_TERMINATOR) {
         memset(frame + YSF_FICH_OFFSET_NET, 0, 120);
         memcpy(frame + YSF_FICH_OFFSET_NET, YSF_SYNC_BYTES, 5);
-        ysf_fich_encode_outbound(frame + YSF_FICH_OFFSET_RX, b->ysf.dgid, fich_fn, fi, ft, cm);
+        ysf_fich_encode_outbound(frame + YSF_FICH_OFFSET_RX, fich_fn, fi, ft, cm);
         if (csd1 && csd2)
             ysf_payload_write_header(frame + YSF_FICH_OFFSET_NET, csd1, csd2);
     } else {
         memcpy(frame + YSF_FICH_OFFSET_NET, payload120, 120);
         memcpy(frame + YSF_FICH_OFFSET_NET, YSF_SYNC_BYTES, 5);
-        ysf_fich_encode_outbound(frame + YSF_FICH_OFFSET_RX, b->ysf.dgid, fich_fn, fi, ft, cm);
+        /* YSF2DMR: sync, DCH slot, FICH */
+        bridge_apply_ysf_dch_slot(frame + YSF_FICH_OFFSET_NET, fich_fn, b);
+        ysf_fich_encode_outbound(frame + YSF_FICH_OFFSET_RX, fich_fn, fi, ft, cm);
     }
     peer_ysf_send_ysfd(&b->ysf, frame, 155);
     b->ysf_fn = (uint8_t)(b->ysf_fn + 2);
@@ -774,21 +902,23 @@ static void bridge_send_ysfd(ysf2dmr_bridge_t *b, uint8_t fi, uint8_t ft, uint8_
     {
         static int tx_log;
         uint8_t wire_fi, wire_fn, wire_ft, wire_cm, wire_dt;
-        uint8_t scratch[155];
+        int log_tx = (fi == YSF_FI_HEADER || fi == YSF_FI_TERMINATOR
+                      || (fi == YSF_FI_COMMUNICATIONS && (fich_fn <= 1U))
+                      || dbg_periodic(&tx_log));
 
-        if (dbg_periodic(&tx_log) || fi == YSF_FI_HEADER || fi == YSF_FI_TERMINATOR) {
-            memcpy(scratch, frame, sizeof(scratch));
-            ysf_fich_rewrite_dgid(scratch, b->ysf.dgid);
-            if (ysf_fich_decode_fields(scratch, &wire_fi, &wire_fn, &wire_ft, &wire_cm, &wire_dt) == 0)
-                LOG_DEBUG("YSF TX %s fi=%u ft=%u fn=%u cm=%u dt=%u net=%u src=%.10s dst=%.10s dgid=%u\n",
+        if (log_tx) {
+            /* DGID is applied in peer_ysf_send_ysfd before UDP send. */
+            if (ysf_fich_decode_fields(frame, &wire_fi, &wire_fn, &wire_ft, &wire_cm, &wire_dt) == 0)
+                LOG_DEBUG("YSF TX %s fi=%u ft=%u fn=%u cm=%u dt=%u net=%3u src=%.10s dst=%.10s dgid_cfg=%u\n",
                     ysf_fi_name(fi), (unsigned)wire_fi, (unsigned)ft, (unsigned)wire_fn,
                     (unsigned)wire_cm, (unsigned)wire_dt,
-                    (unsigned)net_cnt, b->net_src, scratch + 24, (unsigned)b->ysf.dgid);
+                    (unsigned)net_cnt, frame + 14, frame + 24, (unsigned)b->ysf.dgid);
         }
     }
+    return 1;
 }
 
-static void bridge_emit_ysf_from_conv(ysf2dmr_bridge_t *b)
+static int bridge_emit_ysf_from_conv(ysf2dmr_bridge_t *b)
 {
     uint8_t payload[120];
     unsigned int tag;
@@ -797,7 +927,7 @@ static void bridge_emit_ysf_from_conv(ysf2dmr_bridge_t *b)
     memset(payload, 0, sizeof(payload));
     tag = modeconv_get_ysf(payload);
     if (tag == MODECONV_TAG_NODATA)
-        return;
+        return 0;
 
     if (dbg_periodic(&drain_log))
         LOG_DEBUG("ModeConv->YSF %s (dmr_in=%d ysf_cnt=%d)\n",
@@ -810,7 +940,7 @@ static void bridge_emit_ysf_from_conv(ysf2dmr_bridge_t *b)
         bridge_fill_ysf_csd(b, csd1, csd2);
         bridge_send_ysfd(b, YSF_FI_HEADER, YSF_FICH_FT, YSF_FICH_CM, 0, 0, NULL, csd1, csd2);
         b->ysf_cnt = 1;
-        return;
+        return 1;
     }
     if (tag == MODECONV_TAG_EOT) {
         uint8_t csd1[20], csd2[20];
@@ -824,17 +954,18 @@ static void bridge_emit_ysf_from_conv(ysf2dmr_bridge_t *b)
         else
             LOG_INFO("DMR->YSF call end (%d voice frames in)\n", b->dmr_voice_frames);
         bridge_reset_call(b);
-        return;
+        return 1;
     }
     if (tag == MODECONV_TAG_DATA) {
         uint8_t fn = (uint8_t)((b->ysf_cnt - 1U) % (YSF_FICH_FT + 1U));
         uint8_t net = (uint8_t)((b->ysf_cnt & 0x7FU) << 1);
 
-        bridge_apply_ysf_dch_slot(payload, fn, b);
         bridge_send_ysfd(b, YSF_FI_COMMUNICATIONS, YSF_FICH_FT, YSF_FICH_CM,
                          fn, net, payload, NULL, NULL);
         b->ysf_cnt++;
+        return 1;
     }
+    return 0;
 }
 
 void bridge_on_dmrd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
@@ -860,51 +991,43 @@ void bridge_on_dmrd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
     }
 
     if (dmrd_is_header(pkt, len)) {
-        if (!b->call_active) {
-            b->call_active = 1;
-            b->dmr_stream_id = *(const uint32_t *)(pkt + 16);
-            if (b->dmr_stream_id == 0)
-                b->dmr_stream_id = new_stream_id();
-            b->dmr_seq = 0;
-            b->dmr_voice_frames = 0;
-            b->dmr_tx_frames = 0;
-            b->dmr_dmrd_other = 0;
-            b->ysf_fn = 0;
-            b->ysf_cnt = 0;
-            modeconv_reset();
-            bridge_set_dmr_rx_identity(b, pkt);
+        uint32_t stream = *(const uint32_t *)(pkt + 16);
+        uint8_t dtype = DMRD_DTYPE_VHEAD;
+
+        if (!b->call_active
+            || (stream != 0 && stream != b->dmr_stream_id)) {
+            bridge_begin_dmr_to_ysf(b, pkt);
             LOG_INFO("DMR->YSF call start (TG %d, src %.10s)\n", b->dmr.tg, b->net_src);
         } else {
             bridge_set_dmr_rx_identity(b, pkt);
         }
-        modeconv_put_dmr_header();
+        /* YSF2DMR: putDMRHeader only on transition to VHEAD (m_dmrLastDT gate). */
+        if (dtype != b->dmr_last_dtype)
+            modeconv_put_dmr_header();
+        else
+            LOG_DEBUG("DMR->YSF ignore duplicate VHEAD (src %.10s)\n", b->net_src);
+        b->dmr_last_dtype = dtype;
         return;
     }
     if (dmrd_is_terminator(pkt, len)) {
         LOG_DEBUG("DMR RX VTERM -> ModeConv EOT\n");
         if (b->call_active)
             modeconv_put_dmr_eot();
+        b->dmr_last_dtype = DMRD_DTYPE_VTERM;
         return;
     }
     if (dmrd_is_voice(pkt, len)) {
+        uint8_t dtype = dmrd_b15_dtype(pkt);
+
         if (!b->call_active) {
-            b->call_active = 1;
-            b->dmr_stream_id = *(const uint32_t *)(pkt + 16);
-            if (b->dmr_stream_id == 0)
-                b->dmr_stream_id = new_stream_id();
+            bridge_begin_dmr_to_ysf(b, pkt);
             b->dmr_seq = pkt[4];
-            b->dmr_voice_frames = 0;
-            b->dmr_tx_frames = 0;
-            b->dmr_dmrd_other = 0;
-            b->ysf_fn = 0;
-            b->ysf_cnt = 0;
-            modeconv_reset();
-            bridge_set_dmr_rx_identity(b, pkt);
             modeconv_put_dmr_header();
             LOG_INFO("DMR->YSF late entry (src %.10s)\n", b->net_src);
         }
         modeconv_put_dmr_voice(pkt + 20);
         b->dmr_voice_frames++;
+        b->dmr_last_dtype = dtype;
         return;
     }
     if (b->call_active) {
@@ -955,6 +1078,7 @@ void bridge_on_ysfd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
         }
         LOG_DEBUG("YSF process HEADER -> ModeConv (talker id %d)\n", b->ysf_rf_id);
         if (!b->call_active) {
+            bridge_abort_connect_ptt(b);
             b->call_active = 1;
             b->dmr_stream_id = new_stream_id();
             b->dmr_seq = 0;
@@ -990,6 +1114,7 @@ void bridge_on_ysfd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
         LOG_DEBUG("YSF process VOICE fn=%u -> ModeConv (talker id %d voice_in=%d)\n",
             (unsigned)fn, b->ysf_rf_id, b->ysf_voice_frames);
         if (!b->call_active) {
+            bridge_abort_connect_ptt(b);
             b->call_active = 1;
             b->dmr_stream_id = new_stream_id();
             b->dmr_seq = 0;
@@ -1018,13 +1143,16 @@ void bridge_tick(ysf2dmr_bridge_t *b)
 {
     static time_t last_stall;
 
+    /* Connect PTT runs as soon as DMR is up (YSF link not required). */
+    bridge_poll_connect_ptt(b);
+
     if (!peer_dmr_connected(&b->dmr) || !peer_ysf_linked(&b->ysf)) {
         time_t now = time(NULL);
         if (log_level_enabled(LOG_LEVEL_DEBUG) && (now - last_stall >= 15 || last_stall == 0)) {
-            LOG_DEBUG("tick idle: dmr=%s ysf=%s call_active=%d\n",
+            LOG_DEBUG("tick idle: dmr=%s ysf=%s call_active=%d ptt=%d\n",
                 peer_dmr_connected(&b->dmr) ? "up" : "down",
                 peer_ysf_linked(&b->ysf) ? "up" : "down",
-                b->call_active);
+                b->call_active, b->connect_ptt_active);
             last_stall = now;
         }
         return;
@@ -1032,9 +1160,9 @@ void bridge_tick(ysf2dmr_bridge_t *b)
 
     last_stall = 0;
 
-    if (ms_elapsed(&b->last_dmr_tx, DMR_FRAME_MS))
+    if (!b->connect_ptt_active && ms_elapsed(&b->last_dmr_tx, DMR_FRAME_MS))
         bridge_emit_dmr_from_conv(b);
 
     if (ms_elapsed(&b->last_ysf_tx, YSF_FRAME_MS))
-        bridge_emit_ysf_from_conv(b);
+        (void)bridge_emit_ysf_from_conv(b);
 }

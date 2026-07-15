@@ -44,7 +44,8 @@ int ysf_fich_decode_fields(const uint8_t *frame155, uint8_t *fi, uint8_t *fn,
 /* DGID from last ysf_fich_decode_fields / fich_decode (m_fich[3]). */
 uint8_t ysf_fich_get_dgid(void);
 
-void ysf_fich_encode_outbound(uint8_t *fich25, uint8_t dgid, uint8_t fn_serial,
+/* Base voice FICH (SQL/SQ cleared); peer_ysf_send_ysfd applies config DGID. */
+void ysf_fich_encode_outbound(uint8_t *fich25, uint8_t fn_serial,
                               uint8_t fi, uint8_t ft, uint8_t cm);
 
 #endif
