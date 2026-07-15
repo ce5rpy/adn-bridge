@@ -11,7 +11,7 @@ LDFLAGS ?=
 
 BUILD = build
 
-C_SRCS = ysf2dmrcon.c config.c log.c aliases.c peer_dmr.c peer_ysf.c bridge.c ysf_fich.c \
+C_SRCS = ysf2dmrcon.c config.c log.c aliases.c talker_alias.c peer_dmr.c peer_ysf.c bridge.c ysf_fich.c \
          hbp/dmr_hbp.c vendor/yyjson/yyjson.c
 CXX_SRCS = mmdvm/ModeConv.cpp mmdvm/Golay24128.cpp mmdvm/modeconv_wrap.cpp \
            mmdvm/YSFPayload.cpp mmdvm/YSFConvolution.cpp mmdvm/CRC.cpp \

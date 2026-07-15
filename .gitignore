@@ -1,5 +1,8 @@
 ysf2dmrcon
 build/
-ysf2dmrcon.ini
 data/
 debug/
+
+# Local instance configs (keep the template tracked)
+*.ini
+!ysf2dmrcon.example.ini

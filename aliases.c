@@ -22,6 +22,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +32,11 @@
 
 #define CS_BUCKETS 65536U
 #define ID_BUCKETS 65536U
+/* Stale download lock: another instance may take over after this many seconds. */
+#define ALIAS_DOWNLOAD_LOCK_STALE_SEC 300
+/* Wait for a peer download (curl --max-time 120 + margin). */
+#define ALIAS_DOWNLOAD_WAIT_SEC 150
+#define ALIAS_DOWNLOAD_POLL_MS 250
 
 typedef struct cs_entry {
     char *callsign;
@@ -68,7 +74,7 @@ void ysf2dmr_aliases_cfg_init(ysf2dmr_aliases_cfg_t *cfg)
     memset(cfg, 0, sizeof(*cfg));
     cfg->try_download = 1;
     cfg->stale_minutes = 24 * 60;
-    strncpy(cfg->path, "./data", sizeof(cfg->path) - 1);
+    strncpy(cfg->data_dir, "./data", sizeof(cfg->data_dir) - 1);
     strncpy(cfg->subscriber_file, "subscriber_ids.json", sizeof(cfg->subscriber_file) - 1);
     strncpy(cfg->subscriber_url, "https://servers.adn.systems/subscriber_ids.json",
             sizeof(cfg->subscriber_url) - 1);
@@ -90,9 +96,96 @@ static int file_stale(const char *path, int stale_minutes)
     return (time(NULL) - st.st_mtime) >= (time_t)stale_minutes * 60;
 }
 
+static void download_lock_path(char *out, size_t outlen, const char *dir, const char *file)
+{
+    snprintf(out, outlen, "%s/.%s.download.lock", dir, file);
+}
+
+static int download_lock_stale(const char *lockpath)
+{
+    struct stat st;
+
+    if (stat(lockpath, &st) != 0)
+        return 1;
+    return (time(NULL) - st.st_mtime) >= (time_t)ALIAS_DOWNLOAD_LOCK_STALE_SEC;
+}
+
+static int peer_download_active(const char *lockpath)
+{
+    return access(lockpath, F_OK) == 0 && !download_lock_stale(lockpath);
+}
+
+/* Returns 1 on success, 0 if a live peer holds the lock, -1 on error. */
+static int try_acquire_download_lock(const char *lockpath)
+{
+    int fd;
+    char buf[64];
+    ssize_t n;
+
+    if (access(lockpath, F_OK) == 0) {
+        if (!download_lock_stale(lockpath))
+            return 0;
+        unlink(lockpath);
+    }
+
+    fd = open(lockpath, O_CREAT | O_EXCL | O_WRONLY, 0644);
+    if (fd < 0) {
+        if (errno == EEXIST)
+            return 0;
+        LOG_WARNING("aliases: cannot create download lock %s: %s\n",
+                    lockpath, strerror(errno));
+        return -1;
+    }
+    snprintf(buf, sizeof(buf), "%d %ld\n", (int)getpid(), (long)time(NULL));
+    n = write(fd, buf, strlen(buf));
+    close(fd);
+    if (n < 0) {
+        unlink(lockpath);
+        return -1;
+    }
+    return 1;
+}
+
+static void release_download_lock(const char *lockpath)
+{
+    unlink(lockpath);
+}
+
+/* Block until peer releases lock or wait times out. Returns 0 when path is readable. */
+static int wait_for_peer_download(const char *lockpath, const char *path, const char *file)
+{
+    time_t deadline = time(NULL) + (time_t)ALIAS_DOWNLOAD_WAIT_SEC;
+
+    LOG_INFO("aliases: peer is downloading '%s', waiting...\n", file);
+    while (time(NULL) < deadline) {
+        if (!peer_download_active(lockpath)) {
+            if (access(path, R_OK) == 0) {
+                LOG_INFO("aliases: peer finished '%s'\n", file);
+                return 0;
+            }
+            LOG_WARNING("aliases: peer lock gone but '%s' is missing\n", file);
+            return -1;
+        }
+        usleep((useconds_t)ALIAS_DOWNLOAD_POLL_MS * 1000U);
+    }
+
+    if (!peer_download_active(lockpath) && access(path, R_OK) == 0) {
+        LOG_INFO("aliases: peer finished '%s' (wait edge)\n", file);
+        return 0;
+    }
+    if (download_lock_stale(lockpath)) {
+        LOG_WARNING("aliases: peer download lock stale for '%s', taking over\n", file);
+        return -1;
+    }
+    LOG_WARNING("aliases: timed out waiting for peer download of '%s'\n", file);
+    return -1;
+}
+
 static int try_download(const char *dir, const char *file, const char *url, int stale_minutes)
 {
     char path[512];
+    char lockpath[576];
+    char tmp[576];
     char cmd[1024];
     int rc;
 
@@ -105,15 +198,39 @@ static int try_download(const char *dir, const char *file, const char *url, int 
         return 0;
     }
 
-    snprintf(cmd, sizeof(cmd), "mkdir -p '%s' && curl -fsSL --max-time 60 -o '%s' '%s'",
-             dir, path, url);
+    download_lock_path(lockpath, sizeof(lockpath), dir, file);
+    for (;;) {
+        int got = try_acquire_download_lock(lockpath);
+
+        if (got == 1)
+            break;
+        if (got < 0)
+            return -1;
+        if (wait_for_peer_download(lockpath, path, file) == 0)
+            return 0;
+        /* Peer failed, file missing, or stale lock — retry acquire/download. */
+    }
+
+    snprintf(tmp, sizeof(tmp), "%s.%d.tmp", path, (int)getpid());
+    snprintf(cmd, sizeof(cmd),
+             "mkdir -p '%s' && curl -fsSL --max-time 120 -o '%s' '%s'",
+             dir, tmp, url);
     LOG_INFO("aliases: downloading %s\n", file);
     rc = system(cmd);
     if (rc != 0) {
         LOG_WARNING("aliases: download failed for %s (curl exit %d)\n", file, rc);
+        unlink(tmp);
+        release_download_lock(lockpath);
+        return -1;
+    }
+    if (rename(tmp, path) != 0) {
+        LOG_WARNING("aliases: rename %s -> %s failed: %s\n", tmp, path, strerror(errno));
+        unlink(tmp);
+        release_download_lock(lockpath);
         return -1;
     }
     LOG_INFO("aliases: downloaded %s\n", file);
+    release_download_lock(lockpath);
     return 0;
 }
 
@@ -169,12 +286,39 @@ static void normalize_callsign_key(const char *src, char *dst, size_t dstlen)
     dst[i] = '\0';
 }
 
+static void alias_index_id(ysf2dmr_aliases_t *a, int id, const char *callsign)
+{
+    char key[16];
+    unsigned h;
+    id_entry_t *ie;
+
+    normalize_callsign_key(callsign, key, sizeof(key));
+    if (!key[0])
+        return;
+
+    h = hash_id(id) % ID_BUCKETS;
+    for (ie = a->id_buckets[h]; ie; ie = ie->next) {
+        if (ie->id == id) {
+            strncpy(ie->callsign, key, 10);
+            ie->callsign[10] = '\0';
+            return;
+        }
+    }
+    ie = (id_entry_t *)calloc(1, sizeof(*ie));
+    if (!ie)
+        return;
+    ie->id = id;
+    strncpy(ie->callsign, key, 10);
+    ie->callsign[10] = '\0';
+    ie->next = a->id_buckets[h];
+    a->id_buckets[h] = ie;
+}
+
 static void insert_alias(ysf2dmr_aliases_t *a, int id, const char *callsign)
 {
     char key[16];
     unsigned h;
     cs_entry_t *ce;
-    id_entry_t *ie;
 
     if (id <= 0 || !callsign || !callsign[0])
         return;
@@ -185,8 +329,11 @@ static void insert_alias(ysf2dmr_aliases_t *a, int id, const char *callsign)
 
     h = hash_str(key) % CS_BUCKETS;
     for (ce = a->cs_buckets[h]; ce; ce = ce->next) {
-        if (strcmp(ce->callsign, key) == 0)
-            return; /* first JSON row wins; skip duplicate callsign */
+        if (strcmp(ce->callsign, key) == 0) {
+            /* callsign->id keeps first row; still map this id->callsign (DMR->YSF). */
+            alias_index_id(a, id, callsign);
+            return;
+        }
     }
     ce = (cs_entry_t *)calloc(1, sizeof(*ce));
     if (!ce)
@@ -196,23 +343,7 @@ static void insert_alias(ysf2dmr_aliases_t *a, int id, const char *callsign)
     ce->next = a->cs_buckets[h];
     a->cs_buckets[h] = ce;
     a->count++;
-
-    h = hash_id(id) % ID_BUCKETS;
-    for (ie = a->id_buckets[h]; ie; ie = ie->next) {
-        if (ie->id == id) {
-            strncpy(ie->callsign, callsign, 10);
-            ie->callsign[10] = '\0';
-            return;
-        }
-    }
-    ie = (id_entry_t *)calloc(1, sizeof(*ie));
-    if (!ie)
-        return;
-    ie->id = id;
-    strncpy(ie->callsign, callsign, 10);
-    ie->callsign[10] = '\0';
-    ie->next = a->id_buckets[h];
-    a->id_buckets[h] = ie;
+    alias_index_id(a, id, callsign);
 }
 
 static void upsert_alias(ysf2dmr_aliases_t *a, int id, const char *callsign)
@@ -220,7 +351,6 @@ static void upsert_alias(ysf2dmr_aliases_t *a, int id, const char *callsign)
     char key[16];
     unsigned h;
     cs_entry_t *ce;
-    id_entry_t *ie;
 
     if (id <= 0 || !callsign || !callsign[0])
         return;
@@ -247,22 +377,7 @@ static void upsert_alias(ysf2dmr_aliases_t *a, int id, const char *callsign)
         a->count++;
     }
 
-    h = hash_id(id) % ID_BUCKETS;
-    for (ie = a->id_buckets[h]; ie; ie = ie->next) {
-        if (ie->id == id) {
-            strncpy(ie->callsign, callsign, 10);
-            ie->callsign[10] = '\0';
-            return;
-        }
-    }
-    ie = (id_entry_t *)calloc(1, sizeof(*ie));
-    if (!ie)
-        return;
-    ie->id = id;
-    strncpy(ie->callsign, callsign, 10);
-    ie->callsign[10] = '\0';
-    ie->next = a->id_buckets[h];
-    a->id_buckets[h] = ie;
+    alias_index_id(a, id, callsign);
 }
 
 static int parse_subscriber_json(ysf2dmr_aliases_t *a, const char *path, int local_override)
@@ -351,13 +466,13 @@ int ysf2dmr_aliases_load(const ysf2dmr_aliases_cfg_t *cfg, ysf2dmr_aliases_t **o
 
     if (cfg->try_download) {
         if (cfg->checksum_file[0] && cfg->checksum_url[0])
-            try_download(cfg->path, cfg->checksum_file, cfg->checksum_url, cfg->stale_minutes);
+            try_download(cfg->data_dir, cfg->checksum_file, cfg->checksum_url, cfg->stale_minutes);
         if (cfg->subscriber_file[0] && cfg->subscriber_url[0])
-            try_download(cfg->path, cfg->subscriber_file, cfg->subscriber_url, cfg->stale_minutes);
+            try_download(cfg->data_dir, cfg->subscriber_file, cfg->subscriber_url, cfg->stale_minutes);
     }
 
-    load_file(a, cfg->path, cfg->subscriber_file, 0);
-    load_file(a, cfg->path, cfg->local_subscriber_file, 1);
+    load_file(a, cfg->data_dir, cfg->subscriber_file, 0);
+    load_file(a, cfg->data_dir, cfg->local_subscriber_file, 1);
 
     if (a->count == 0) {
         LOG_WARNING("aliases: no subscriber records loaded (YSF talker lookup disabled)\n");
@@ -427,7 +542,7 @@ int ysf2dmr_alias_lookup_callsign(const ysf2dmr_aliases_t *aliases, int dmrid, c
     for (ie = aliases->id_buckets[h]; ie; ie = ie->next) {
         if (ie->id == dmrid) {
             for (i = 0; i < 10 && ie->callsign[i]; i++)
-                out[i] = ie->callsign[i];
+                out[i] = (char)toupper((unsigned char)ie->callsign[i]);
             return 1;
         }
     }

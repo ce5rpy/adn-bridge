@@ -28,7 +28,7 @@
 #include "log.h"
 #include "aliases.h"
 #include "peer_dmr.h"
-#include "peer_ysf.h"
+#include "talker_alias.h"
 
 #define YSF2DMR_VERSION "0.1.0"
 
@@ -184,6 +184,8 @@ int main(int argc, char **argv)
         if (from_dmr && len > 0) {
             if (len == 55 && memcmp(bridge.dmr.buf, "DMRD", 4) == 0)
                 bridge_on_dmrd(&bridge, bridge.dmr.buf, len);
+            else if (len == DMRA_PACKET_LEN && memcmp(bridge.dmr.buf, "DMRA", 4) == 0)
+                bridge_on_dmra(&bridge, bridge.dmr.buf, len);
             else
                 LOG_DEBUG("DMR RX %d bytes (not DMRD): %.4s\n", len, bridge.dmr.buf);
         }

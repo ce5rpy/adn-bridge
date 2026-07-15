@@ -24,7 +24,7 @@
 typedef struct {
     int try_download;
     int stale_minutes; /* re-download files older than this (0 = always) */
-    char path[256];
+    char data_dir[256];
     char subscriber_file[64];
     char subscriber_url[256];
     char local_subscriber_file[64];
@@ -41,10 +41,12 @@ int ysf2dmr_aliases_load(const ysf2dmr_aliases_cfg_t *cfg, ysf2dmr_aliases_t **o
 
 void ysf2dmr_aliases_free(ysf2dmr_aliases_t *aliases);
 
-/* callsign -> DMR ID; 0 if unknown. */
+/* callsign -> DMR ID; 0 if unknown. When one callsign has several IDs in the DB,
+ * the first subscriber row wins (YSF->DMR direction). */
 int ysf2dmr_alias_lookup_id(const ysf2dmr_aliases_t *aliases, const char *callsign);
 
-/* DMR ID -> callsign padded to 10 chars; returns 1 if found. */
+/* DMR ID -> callsign padded to 10 chars; exact id match (DMR->YSF direction).
+ * Every id row is indexed even when callsign duplicates another entry. */
 int ysf2dmr_alias_lookup_callsign(const ysf2dmr_aliases_t *aliases, int dmrid,
                                   char out[10]);
 

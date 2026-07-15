@@ -17,16 +17,19 @@
  */
 
 #include "bridge.h"
+#include "config.h"
 #include "hbp/dmr_codec.h"
 #include "log.h"
 #include "aliases.h"
 #include "mmdvm/modeconv_wrap.h"
 #include "mmdvm/ysfpayload_wrap.h"
+#include "talker_alias.h"
 #include "ysf_fich.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <time.h>
 
 #define DMR_FRAME_MS  55
@@ -204,44 +207,52 @@ static int callsign10_to_dmrid(const uint8_t cs[10])
     return atoi(digits);
 }
 
-static void find_ysf_id_trim(const char *cs, char out[16])
+/* YSF->DMR: use only the callsign before '-' or '/' (HP3ICC-FT3 / HP3ICC/FT3 -> HP3ICC). */
+static void ysf_callsign_base10(const char src10[10], char out[16])
 {
-    int first = -1, last = -1, mid1 = -1, mid2 = -1;
     int i, j = 0;
 
-    for (i = 0; cs[i]; i++) {
-        if (cs[i] != ' ') {
-            if (first < 0)
-                first = i;
-            last = i;
-        }
-    }
-    for (i = 0; cs[i]; i++) {
-        if (cs[i] == '-')
-            mid1 = i;
-        if (cs[i] == '/')
-            mid2 = i;
-    }
-
-    if (first < 0 || last < 0) {
-        strncpy(out, "N0CALL", 15);
-        out[15] = '\0';
+    if (!out) {
         return;
     }
-    if (mid1 < 0 && mid2 < 0) {
-        for (i = first; i <= last && j < 15; i++)
-            out[j++] = cs[i];
-    } else if (mid1 > first) {
-        for (i = first; i < mid1 && j < 15; i++)
-            out[j++] = cs[i];
-    } else if (mid2 > first) {
-        for (i = first; i < mid2 && j < 15; i++)
-            out[j++] = cs[i];
-    } else {
-        strncpy(out, "N0CALL", 15);
-        j = 6;
+    out[0] = '\0';
+    if (!src10) {
+        return;
     }
-    out[j] = '\0';
+    for (i = 0; i < 10; i++) {
+        unsigned char c = (unsigned char)src10[i];
+
+        if (c == ' ' || c == '\0') {
+            break;
+        }
+        if (c == '-' || c == '/') {
+            break;
+        }
+        out[j++] = (char)toupper(c);
+        if (j >= 15) {
+            break;
+        }
+    }
+    if (j == 0) {
+        strncpy(out, "N0CALL", 15);
+        out[15] = '\0';
+    } else {
+        out[j] = '\0';
+    }
+}
+
+static void ysf_callsign_base_src(const char *src, char out[16])
+{
+    char pad[10];
+    int i;
+
+    memset(pad, ' ', sizeof(pad));
+    if (src) {
+        for (i = 0; i < 10 && src[i]; i++) {
+            pad[i] = src[i];
+        }
+    }
+    ysf_callsign_base10(pad, out);
 }
 
 static int ysf_pkt_has_rf_sync(const uint8_t *pkt155)
@@ -268,23 +279,67 @@ static const uint8_t *ysf_modeconv_chunk(const uint8_t *pkt155, uint8_t scratch[
     return scratch;
 }
 
-
-static int bridge_find_ysf_dmrid(ysf2dmr_bridge_t *b, const char src10[10])
+static void format_ysf_callsign10(char out[10], const char *src)
 {
-    char trimmed[16];
+    int i, j = 0;
+
+    memset(out, ' ', 10);
+    if (!src)
+        return;
+    for (i = 0; src[i] && j < 10; i++) {
+        unsigned char c = (unsigned char)src[i];
+
+        if (c == ' ' || c == '\t')
+            continue;
+        if (c == '-' || c == '/')
+            break;
+        out[j++] = (char)toupper(c);
+    }
+}
+
+static int bridge_find_ysf_dmrid(ysf2dmr_bridge_t *b, const char base_cs[16])
+{
     int id;
 
-    id = callsign10_to_dmrid((const uint8_t *)src10);
-    if (id > 0)
+    id = ysf2dmr_alias_lookup_id(b->aliases, base_cs);
+    if (id > 0) {
         return id;
+    }
+    return 0;
+}
 
-    find_ysf_id_trim(src10, trimmed);
-    if (b->aliases && trimmed[0])
-        id = ysf2dmr_alias_lookup_id(b->aliases, trimmed);
-    if (id > 0)
-        return id;
+static int bridge_assign_ysf_talker(ysf2dmr_bridge_t *b, const char *src)
+{
+    char base[16];
+    char talker[10];
+    char raw_label[11];
+    int id;
 
-    return b->default_ysf_dmrid;
+    dbg_label10(raw_label, (const uint8_t *)(src ? src : (const char *)"          "));
+    ysf_callsign_base_src(src, base);
+    format_ysf_callsign10(talker, base);
+    memcpy(b->net_src, talker, 10);
+    LOG_DEBUG("YSF->DMR callsign raw=%s base=%s\n", raw_label, base);
+
+    id = callsign10_to_dmrid((const uint8_t *)talker);
+    if (id <= 0) {
+        id = bridge_find_ysf_dmrid(b, base);
+    }
+    if (id > 0) {
+        b->ysf_rf_id = id;
+        LOG_DEBUG("YSF->DMR base %s -> id %d (alias)\n", base, id);
+        return 1;
+    }
+
+    /* Unknown YSF talker: cross on bridge callsign + dmrid ([dmr] peer identity). */
+    if (b->dmr.dmrid > 0) {
+        memcpy(b->net_src, b->dmr.callsign, 10);
+        b->ysf_rf_id = b->dmr.dmrid;
+        LOG_INFO("YSF->DMR talker %s unknown -> bridge %.10s id %d\n",
+                 base, b->net_src, b->ysf_rf_id);
+        return 1;
+    }
+    return 0;
 }
 
 static void radio_id_to_dch5(const char radio_id[6], uint8_t out[5])
@@ -299,18 +354,6 @@ static void radio_id_to_dch5(const char radio_id[6], uint8_t out[5])
             break;
         out[i] = (uint8_t)radio_id[i];
     }
-}
-
-static int bridge_assign_ysf_talker(ysf2dmr_bridge_t *b, const char src10[10])
-{
-    int id;
-
-    memcpy(b->net_src, src10, 10);
-    id = bridge_find_ysf_dmrid(b, src10);
-    if (id <= 0 && b->default_ysf_dmrid > 0)
-        id = b->default_ysf_dmrid;
-    b->ysf_rf_id = id;
-    return id > 0;
 }
 
 static int bridge_wire_src_fallback(ysf2dmr_bridge_t *b, const uint8_t *pkt)
@@ -351,23 +394,60 @@ static int bridge_resolve_ysf_header(ysf2dmr_bridge_t *b, const uint8_t *pkt)
         return 1;
     }
 
-    if (b->default_ysf_dmrid > 0) {
-        char wire[11];
-
-        dbg_label10(wire, pkt + 14);
-        memcpy(b->net_src, wire, 10);
-        b->ysf_rf_id = b->default_ysf_dmrid;
-        LOG_DEBUG("YSF HEADER wire src=%.10s -> default DMR id %d\n", b->net_src, b->ysf_rf_id);
-        return 1;
-    }
-
-    LOG_DEBUG("YSF HEADER: no talker DMR id (set alias or default_ysf_dmrid)\n");
+    LOG_DEBUG("YSF HEADER: no talker DMR id (bridge dmrid not set)\n");
     return 0;
 }
 
 static int bridge_ysf_talker_ready(const ysf2dmr_bridge_t *b)
 {
-    return b->ysf_rf_id > 0 || b->default_ysf_dmrid > 0;
+    return b->ysf_rf_id > 0 || b->dmr.dmrid > 0;
+}
+
+static int bridge_lookup_dmr_callsign(ysf2dmr_bridge_t *b, int rf, char out[10])
+{
+    int i;
+
+    if (!b->aliases || rf <= 0)
+        return 0;
+    if (ysf2dmr_alias_lookup_callsign(b->aliases, rf, out))
+        return 1;
+    if (rf > 9999999 && ysf2dmr_alias_lookup_callsign(b->aliases, rf / 100, out))
+        return 1;
+    /* 24-bit DMRD may carry id/100 (rf24); try to recover 7-digit subscriber ids. */
+    if (rf >= 10000 && rf <= 99999) {
+        for (i = 0; i < 100; i++) {
+            if (ysf2dmr_alias_lookup_callsign(b->aliases, rf * 100 + i, out))
+                return 1;
+        }
+    }
+    return 0;
+}
+
+static void bridge_resolve_dmr_to_ysf_identity(ysf2dmr_bridge_t *b, int rf, int dst)
+{
+    char prev[10];
+
+    memcpy(prev, b->net_src, 10);
+
+    /* DMR radio id -> callsign from subscriber JSON only (never talker alias / DMRA). */
+    if (bridge_lookup_dmr_callsign(b, rf, b->net_src)) {
+        LOG_DEBUG("DMR->YSF src id %d -> %.10s (subscriber DB)\n", rf, b->net_src);
+    } else {
+        format_id_callsign10(b->net_src, rf);
+        LOG_WARNING("DMR->YSF src id %d: not in subscriber DB, using numeric\n", rf);
+    }
+
+    if (b->dmra.rf == rf && b->dmra.text[0]) {
+        LOG_DEBUG("DMR->YSF id %d DMRA '%s' (log only, not used for YSF src)\n",
+                  rf, b->dmra.text);
+    }
+
+    if (dst > 0)
+        format_tg_dst10(b->net_dst, dst);
+
+    if (memcmp(prev, b->net_src, 10) != 0) {
+        LOG_INFO("DMR->YSF talker id %d -> %.10s\n", rf, b->net_src);
+    }
 }
 
 static void bridge_set_dmr_rx_identity(ysf2dmr_bridge_t *b, const uint8_t *pkt)
@@ -375,9 +455,31 @@ static void bridge_set_dmr_rx_identity(ysf2dmr_bridge_t *b, const uint8_t *pkt)
     int rf = (pkt[5] << 16) | (pkt[6] << 8) | pkt[7];
     int dst = (pkt[8] << 16) | (pkt[9] << 8) | pkt[10];
 
-    if (!b->aliases || !ysf2dmr_alias_lookup_callsign(b->aliases, rf, b->net_src))
-        format_id_callsign10(b->net_src, rf);
-    format_tg_dst10(b->net_dst, dst);
+    bridge_resolve_dmr_to_ysf_identity(b, rf, dst);
+}
+
+void bridge_on_dmra(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
+{
+    int rf, block_id;
+    uint8_t payload7[7];
+    char decoded[32];
+
+    if (!dmra_parse_packet(pkt, len, &rf, &block_id, payload7))
+        return;
+
+    if (b->dmra.rf != 0 && b->dmra.rf != rf) {
+        memset(&b->dmra, 0, sizeof(b->dmra));
+    }
+    b->dmra.rf = rf;
+    memcpy(b->dmra.blocks[block_id], payload7, 7);
+    b->dmra.have |= (1U << (unsigned)block_id);
+
+    if (dmra_decode_blocks(b->dmra.blocks, b->dmra.have, decoded, sizeof(decoded))) {
+        strncpy(b->dmra.text, decoded, sizeof(b->dmra.text) - 1);
+        b->dmra.text[sizeof(b->dmra.text) - 1] = '\0';
+        LOG_DEBUG("DMR DMRA rf=%d block=%d text='%s' (log only)\n",
+                  rf, block_id, b->dmra.text);
+    }
 }
 
 static void bridge_reset_call(ysf2dmr_bridge_t *b)
@@ -389,6 +491,7 @@ static void bridge_reset_call(ysf2dmr_bridge_t *b)
     b->ysf_voice_frames = 0;
     b->ysf_rf_id = 0;
     b->ysf_cnt = 0;
+    memset(&b->dmra, 0, sizeof(b->dmra));
     memset(b->net_src, ' ', 10);
     memset(b->net_dst, ' ', 10);
     modeconv_reset();
@@ -401,11 +504,13 @@ void bridge_init(ysf2dmr_bridge_t *b, const char *dmr_options,
     memset(b, 0, sizeof(*b));
     b->aliases = aliases;
     b->default_ysf_dmrid = default_ysf_dmrid;
-    memcpy(b->radio_id, "*****", 5);
-    b->radio_id[5] = '\0';
-    if (radio_id && radio_id[0])
-        strncpy(b->radio_id, radio_id, sizeof(b->radio_id) - 1);
-    b->radio_id[sizeof(b->radio_id) - 1] = '\0';
+    {
+        ysf2dmr_config_t tmp;
+
+        memset(&tmp, 0, sizeof(tmp));
+        ysf2dmr_config_set_radio_id(&tmp, radio_id);
+        memcpy(b->radio_id, tmp.radio_id, sizeof(b->radio_id));
+    }
     b->dmr_slot_bit = dmr_slot_bit_from_options(dmr_options);
     memset(b->net_src, ' ', 10);
     memset(b->net_dst, ' ', 10);
@@ -470,9 +575,9 @@ static void bridge_send_dmrd(ysf2dmr_bridge_t *b, uint8_t frame_type, const uint
     if (b->ysf_rf_id > 0)
         rf_id = b->ysf_rf_id;
     else
-        rf_id = b->default_ysf_dmrid;
+        rf_id = b->dmr.dmrid;
     if (rf_id <= 0) {
-        LOG_WARNING("DMR TX skipped: no YSF talker id (set default_ysf_dmrid or alias)\n");
+        LOG_WARNING("DMR TX skipped: bridge dmrid not configured\n");
         return;
     }
     src_id = dmr_id_rf24(rf_id);

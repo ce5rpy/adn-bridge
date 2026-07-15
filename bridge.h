@@ -44,6 +44,12 @@ typedef struct {
     int dmr_dmrd_other;
     int ysf_voice_frames;
     int call_active;
+    struct {
+        int rf;
+        uint8_t blocks[4][7];
+        unsigned have;
+        char text[32];
+    } dmra;
     struct timespec last_dmr_tx;
     struct timespec last_ysf_tx;
 } ysf2dmr_bridge_t;
@@ -52,6 +58,7 @@ void bridge_init(ysf2dmr_bridge_t *b, const char *dmr_options,
                  ysf2dmr_aliases_t *aliases, int default_ysf_dmrid,
                  const char *radio_id);
 void bridge_on_dmrd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len);
+void bridge_on_dmra(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len);
 void bridge_on_ysfd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len);
 void bridge_tick(ysf2dmr_bridge_t *b);
 

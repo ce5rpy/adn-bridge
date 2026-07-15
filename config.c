@@ -27,12 +27,100 @@
 #include <limits.h>
 #include <libgen.h>
 
+#define YSF_RADIO_ID_DEFAULT "FT-5D"
+
+typedef struct {
+    const char *name;
+    const char rid[6];
+} ysf_radio_model_t;
+
+static const ysf_radio_model_t ysf_radio_models[] = {
+    { "FT-70D",  "FT-70" },
+    { "FT-3D",   "FT-3D" },
+    { "FT-991",  "FT991" },
+    { "FTM500",  "FTM50" },
+    { "FTM-500", "FTM50" },
+    { "FTM400",  "FTM40" },
+    { "FTM-400", "FTM40" },
+    { "FTM300",  "FTM30" },
+    { "FTM-300", "FTM30" },
+    { "FTM310",  "FTM31" },
+    { "FTM-310", "FTM31" },
+    { "FTM3200", "FTM32" },
+    { "FTM-3200", "FTM32" },
+    { "FT-1XD",  "FT-1X" },
+    { "FT7250",  "FT725" },
+    { "FT-2D",   "FT-2D" },
+    { "FTM100",  "FTM10" },
+    { "FTM-100", "FTM10" },
+    { "FT-5D",   "FT-5D" },
+    { "FT3207",  "FT320" },
+    { "FTM200",  "FTM20" },
+    { "FTM-200", "FTM20" },
+    { NULL,      "" }
+};
+
+static int str_ieq(const char *a, const char *b)
+{
+    if (!a || !b)
+        return 0;
+    while (*a && *b) {
+        if (toupper((unsigned char)*a) != toupper((unsigned char)*b))
+            return 0;
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
+void ysf2dmr_config_set_radio_id(ysf2dmr_config_t *cfg, const char *val)
+{
+    const ysf_radio_model_t *m;
+    char compact[16];
+    int i, j;
+
+    if (!cfg)
+        return;
+
+    if (!val || !val[0] || strcmp(val, "*****") == 0) {
+        memcpy(cfg->radio_id, YSF_RADIO_ID_DEFAULT, 6);
+        return;
+    }
+
+    for (m = ysf_radio_models; m->name; m++) {
+        if (str_ieq(val, m->name)) {
+            memcpy(cfg->radio_id, m->rid, 6);
+            return;
+        }
+    }
+
+    if (strlen(val) <= 5) {
+        memset(cfg->radio_id, 0, sizeof(cfg->radio_id));
+        memcpy(cfg->radio_id, val, strlen(val));
+        return;
+    }
+
+    /* Longer names: drop dashes and take the first 5 alnum chars. */
+    memset(compact, 0, sizeof(compact));
+    for (i = 0, j = 0; val[i] && j < 5; i++) {
+        unsigned char c = (unsigned char)val[i];
+        if (c == '-' || c == ' ')
+            continue;
+        compact[j++] = (char)toupper(c);
+    }
+    if (j == 0) {
+        memcpy(cfg->radio_id, YSF_RADIO_ID_DEFAULT, 6);
+        return;
+    }
+    memcpy(cfg->radio_id, compact, 6);
+}
+
 void ysf2dmr_config_init(ysf2dmr_config_t *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
     cfg->log_level = LOG_LEVEL_INFO;
     cfg->default_ysf_dmrid = 0;
-    strncpy(cfg->radio_id, "*****", sizeof(cfg->radio_id));
+    ysf2dmr_config_set_radio_id(cfg, NULL);
     ysf2dmr_aliases_cfg_init(&cfg->aliases);
 }
 
@@ -128,8 +216,8 @@ static void apply_key(ysf2dmr_config_t *cfg, const char *section, const char *ke
             set_int(&cfg->ysf_port, val);
         else if (strcmp(key, "dgid") == 0)
             set_int(&cfg->dgid, val);
-        else if (strcmp(key, "radio_id") == 0)
-            set_str(cfg->radio_id, sizeof(cfg->radio_id), val);
+        else if (strcmp(key, "radio_id") == 0 || strcmp(key, "radio_model") == 0)
+            ysf2dmr_config_set_radio_id(cfg, val);
         return;
     }
     if (strcmp(section, "dmr") == 0) {
@@ -160,8 +248,8 @@ static void apply_key(ysf2dmr_config_t *cfg, const char *section, const char *ke
             set_int(&cfg->aliases.stale_minutes, val);
             cfg->aliases.stale_minutes *= 24 * 60;
         }
-        else if (strcmp(key, "path") == 0)
-            set_str(cfg->aliases.path, sizeof(cfg->aliases.path), val);
+        else if (strcmp(key, "data_dir") == 0)
+            set_str(cfg->aliases.data_dir, sizeof(cfg->aliases.data_dir), val);
         else if (strcmp(key, "subscriber_file") == 0)
             set_str(cfg->aliases.subscriber_file, sizeof(cfg->aliases.subscriber_file), val);
         else if (strcmp(key, "subscriber_url") == 0)
