@@ -33,7 +33,6 @@
 
 static void pad_copy(char *dst, size_t n, const char *src)
 {
-    // Rellenar con espacios (no con ceros)
     memset(dst, ' ', n);
     if (src && src[0]) {
         size_t src_len = strlen(src);
