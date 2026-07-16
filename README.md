@@ -124,7 +124,10 @@ Voice always crosses; only the displayed/transmitted identity changes.
 
 1. Strip suffix after the first `-` or `/` (`HP3ICC-FT3` → `HP3ICC`).
 2. If the base callsign exists in JSON → use that callsign and the **first**
-   DMR ID listed for that callsign in the file.
+   DMR ID listed for that callsign in the file. In-memory index is two
+   contiguous open-addressing tables (`id→callsign` and `callsign→primary id`);
+   every ID is kept so DMR→YSF resolves e.g. both `7300391` and `7300392` to
+   `CE5RPY`.
 3. If unknown → use bridge identity from `[dmr]` (`callsign` + `dmrid`).
 
 ## Project layout

@@ -41,12 +41,13 @@ int ysf2dmr_aliases_load(const ysf2dmr_aliases_cfg_t *cfg, ysf2dmr_aliases_t **o
 
 void ysf2dmr_aliases_free(ysf2dmr_aliases_t *aliases);
 
-/* callsign -> DMR ID; 0 if unknown. When one callsign has several IDs in the DB,
- * the first subscriber row wins (YSF->DMR direction). */
+/* callsign -> primary DMR ID; 0 if unknown.
+ * Backing store: open-addressing tables. Every ID is in id→callsign
+ * (7300391 and 7300392 → CE5RPY on DMR→YSF). Returns first file-order ID
+ * for YSF→DMR (local overlay may overwrite the primary). */
 int ysf2dmr_alias_lookup_id(const ysf2dmr_aliases_t *aliases, const char *callsign);
 
-/* DMR ID -> callsign padded to 10 chars; exact id match (DMR->YSF direction).
- * Every id row is indexed even when callsign duplicates another entry. */
+/* DMR ID -> callsign padded to 10 chars; exact id match (DMR->YSF). */
 int ysf2dmr_alias_lookup_callsign(const ysf2dmr_aliases_t *aliases, int dmrid,
                                   char out[10]);
 
