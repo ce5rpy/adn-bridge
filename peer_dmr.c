@@ -33,9 +33,13 @@
 
 static void pad_copy(char *dst, size_t n, const char *src)
 {
-    memset(dst, 0, n);
-    if (src && src[0])
-        memcpy(dst, src, strlen(src) < n ? strlen(src) : n);
+    // Rellenar con espacios (no con ceros)
+    memset(dst, ' ', n);
+    if (src && src[0]) {
+        size_t src_len = strlen(src);
+        size_t copy_len = src_len < n ? src_len : n;
+        memcpy(dst, src, copy_len);
+    }
 }
 
 static void send_rptc(peer_dmr_t *p)
