@@ -24,12 +24,14 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <openssl/evp.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#include <utime.h>
 
 /* Manifest key in file_checksums.json (same as new-adn-server / legacy). */
 #define ALIAS_CHECKSUM_KEY_SUBSCRIBER "subscriber_ids"
@@ -39,9 +41,16 @@
 #define ID_BUCKETS 65536U
 /* Stale download lock: another instance may take over after this many seconds. */
 #define ALIAS_DOWNLOAD_LOCK_STALE_SEC 300
-/* Wait for a peer download (curl --max-time 120 + margin). */
+/* Max wall time waiting for a peer before retrying/taking over. */
 #define ALIAS_DOWNLOAD_WAIT_SEC 150
+/* No growth of peer .tmp / target file → treat peer as stuck and bail. */
+#define ALIAS_DOWNLOAD_IDLE_SEC 60
 #define ALIAS_DOWNLOAD_POLL_MS 250
+/* After a failed peer wait: base backoff + random ms so waiters do not collide. */
+#define ALIAS_DOWNLOAD_RETRY_BASE_MS 1000
+#define ALIAS_DOWNLOAD_RETRY_JITTER_MS 1000
+/* Lock holder retries curl/validate this many times before giving up. */
+#define ALIAS_DOWNLOAD_ATTEMPTS 3
 
 typedef struct cs_entry {
     char *callsign;
@@ -107,6 +116,22 @@ static int file_stale(const char *path, int stale_minutes)
     return (time(NULL) - st.st_mtime) >= (time_t)stale_minutes * 60;
 }
 
+/* Minutes remaining until path is considered stale (ceil). 0 if already stale/missing. */
+static int minutes_until_stale(const char *path, int stale_minutes)
+{
+    struct stat st;
+    time_t left;
+
+    if (stale_minutes <= 0 || !path || !path[0])
+        return 0;
+    if (stat(path, &st) != 0)
+        return 0;
+    left = (time_t)stale_minutes * 60 - (time(NULL) - st.st_mtime);
+    if (left <= 0)
+        return 0;
+    return (int)((left + 59) / 60);
+}
+
 static time_t file_mtime(const char *path)
 {
     struct stat st;
@@ -167,7 +192,17 @@ static int aliases_disk_newer(const ysf2dmr_aliases_cfg_t *cfg, const ysf2dmr_al
 
 static void download_lock_path(char *out, size_t outlen, const char *dir, const char *file)
 {
+    /* State file: presence = download in progress. Contents: "pid started_at\n" */
     snprintf(out, outlen, "%s/.%s.download.lock", dir, file);
+}
+
+static off_t file_size_or(const char *path, off_t fallback)
+{
+    struct stat st;
+
+    if (!path || !path[0] || stat(path, &st) != 0)
+        return fallback;
+    return st.st_size;
 }
 
 static int download_lock_stale(const char *lockpath)
@@ -184,6 +219,25 @@ static int peer_download_active(const char *lockpath)
     return access(lockpath, F_OK) == 0 && !download_lock_stale(lockpath);
 }
 
+/* Read peer pid from lock state file. Returns 1 on success. */
+static int read_download_lock_pid(const char *lockpath, int *pid_out)
+{
+    FILE *fp;
+    int pid = 0;
+
+    fp = fopen(lockpath, "r");
+    if (!fp)
+        return 0;
+    if (fscanf(fp, "%d", &pid) != 1 || pid <= 0) {
+        fclose(fp);
+        return 0;
+    }
+    fclose(fp);
+    if (pid_out)
+        *pid_out = pid;
+    return 1;
+}
+
 /* Returns 1 on success, 0 if a live peer holds the lock, -1 on error. */
 static int try_acquire_download_lock(const char *lockpath)
 {
@@ -194,6 +248,7 @@ static int try_acquire_download_lock(const char *lockpath)
     if (access(lockpath, F_OK) == 0) {
         if (!download_lock_stale(lockpath))
             return 0;
+        LOG_WARNING("aliases: removing stale download lock %s\n", lockpath);
         unlink(lockpath);
     }
 
@@ -220,21 +275,118 @@ static void release_download_lock(const char *lockpath)
     unlink(lockpath);
 }
 
-/* Block until peer releases lock or wait times out. Returns 0 when path is readable. */
+static int still_own_download_lock(const char *lockpath)
+{
+    int pid = 0;
+
+    if (!read_download_lock_pid(lockpath, &pid))
+        return 0;
+    return pid == (int)getpid();
+}
+
+/* Refresh lock mtime so waiters do not treat a retrying holder as stale. */
+static void touch_download_lock(const char *lockpath)
+{
+    if (utime(lockpath, NULL) != 0)
+        LOG_DEBUG("aliases: could not touch download lock %s: %s\n",
+                  lockpath, strerror(errno));
+}
+
+/* 1000..1999 ms; mixes pid + clock + seq so concurrent waiters desynchronize. */
+static unsigned download_retry_backoff_ms(void)
+{
+    static unsigned seq;
+    unsigned mix = ((unsigned)getpid() * 1103515245u)
+                 ^ ((unsigned)time(NULL) * 2654435761u)
+                 ^ (++seq * 9973u);
+
+    return (unsigned)ALIAS_DOWNLOAD_RETRY_BASE_MS
+         + (mix % (unsigned)ALIAS_DOWNLOAD_RETRY_JITTER_MS);
+}
+
+static void sleep_download_retry_backoff(const char *file)
+{
+    unsigned ms = download_retry_backoff_ms();
+
+    LOG_INFO("aliases: anti-collision backoff %u ms before retry of '%s'\n",
+             ms, file);
+    usleep((useconds_t)ms * 1000U);
+}
+
+/*
+ * Wait while a peer holds the lock. Progress = growth of final file or peer .tmp
+ * (path.<pid>.tmp). Idle with no growth → return -1 so caller can take over.
+ * Returns 0 when path is readable after peer finishes.
+ */
 static int wait_for_peer_download(const char *lockpath, const char *path, const char *file)
 {
-    time_t deadline = time(NULL) + (time_t)ALIAS_DOWNLOAD_WAIT_SEC;
+    time_t now = time(NULL);
+    time_t deadline = now + (time_t)ALIAS_DOWNLOAD_WAIT_SEC;
+    time_t last_progress = now;
+    off_t last_size = -1;
+    int peer_pid = 0;
+    char tmp[576];
 
-    LOG_INFO("aliases: peer is downloading '%s', waiting...\n", file);
-    while (time(NULL) < deadline) {
+    read_download_lock_pid(lockpath, &peer_pid);
+    if (peer_pid > 0)
+        snprintf(tmp, sizeof(tmp), "%s.%d.tmp", path, peer_pid);
+    else
+        tmp[0] = '\0';
+
+    last_size = file_size_or(path, -1);
+    if (tmp[0]) {
+        off_t ts = file_size_or(tmp, -1);
+
+        if (ts > last_size)
+            last_size = ts;
+    }
+
+    if (peer_pid > 0)
+        LOG_INFO("aliases: peer is downloading '%s' (pid %d), waiting "
+                 "(watch size; idle %ds / max %ds)...\n",
+                 file, peer_pid, ALIAS_DOWNLOAD_IDLE_SEC, ALIAS_DOWNLOAD_WAIT_SEC);
+    else
+        LOG_INFO("aliases: peer is downloading '%s', waiting "
+                 "(watch size; idle %ds / max %ds)...\n",
+                 file, ALIAS_DOWNLOAD_IDLE_SEC, ALIAS_DOWNLOAD_WAIT_SEC);
+
+    while ((now = time(NULL)) < deadline) {
+        off_t sz;
+
         if (!peer_download_active(lockpath)) {
             if (access(path, R_OK) == 0) {
                 LOG_INFO("aliases: peer finished '%s'\n", file);
                 return 0;
             }
-            LOG_WARNING("aliases: peer lock gone but '%s' is missing\n", file);
+            LOG_WARNING("aliases: peer lock gone but '%s' is missing "
+                        "(download failed or crashed)\n",
+                        file);
             return -1;
         }
+
+        sz = file_size_or(path, -1);
+        if (tmp[0]) {
+            off_t ts = file_size_or(tmp, -1);
+
+            if (ts > sz)
+                sz = ts;
+        }
+        if (sz > last_size) {
+            LOG_DEBUG("aliases: peer download '%s' progress %lld -> %lld bytes\n",
+                      file, (long long)(last_size < 0 ? 0 : last_size),
+                      (long long)sz);
+            last_size = sz;
+            last_progress = now;
+            /* Growing transfer: allow wait up to lock-stale window. */
+            if (deadline < last_progress + (time_t)ALIAS_DOWNLOAD_LOCK_STALE_SEC)
+                deadline = last_progress + (time_t)ALIAS_DOWNLOAD_LOCK_STALE_SEC;
+        } else if ((now - last_progress) >= (time_t)ALIAS_DOWNLOAD_IDLE_SEC) {
+            LOG_WARNING("aliases: peer download of '%s' idle %d s (no size growth); "
+                        "abandoning wait to take over or retry\n",
+                        file, ALIAS_DOWNLOAD_IDLE_SEC);
+            return -1;
+        }
+
         usleep((useconds_t)ALIAS_DOWNLOAD_POLL_MS * 1000U);
     }
 
@@ -403,7 +555,11 @@ static int try_download(const char *dir, const char *file, const char *url,
         force = 1;
     }
     if (!force && !file_stale(path, stale_minutes)) {
-        LOG_DEBUG("aliases: '%s' is current, not downloaded\n", file);
+        int left = minutes_until_stale(path, stale_minutes);
+
+        LOG_INFO("aliases: '%s' newer than stale_minutes (%d); skip download "
+                 "(next forced download in ~%d min)\n",
+                 file, stale_minutes, left > 0 ? left : stale_minutes);
         return 0;
     }
 
@@ -425,52 +581,104 @@ static int try_download(const char *dir, const char *file, const char *url,
             }
             return access(path, R_OK) == 0 ? 1 : 0;
         }
-        /* Peer failed, file missing, or stale lock — retry acquire/download. */
+        /*
+         * Peer failed / idle / timed out. Back off with jitter so several
+         * waiters do not unlink+download in lockstep; O_EXCL still elects one.
+         */
+        sleep_download_retry_backoff(file);
+        if (access(path, R_OK) == 0) {
+            LOG_INFO("aliases: '%s' appeared during backoff; using peer result\n",
+                     file);
+            if (expected_blake2b && expected_blake2b[0]
+                && !blake2b_matches(path, expected_blake2b)) {
+                LOG_WARNING("aliases: '%s' present but blake2b still mismatches\n",
+                            file);
+                return -1;
+            }
+            return 1;
+        }
+        if (access(lockpath, F_OK) == 0) {
+            LOG_WARNING("aliases: taking over download of '%s' "
+                        "(removing peer lock after backoff)\n",
+                        file);
+            unlink(lockpath);
+        }
     }
 
     snprintf(tmp, sizeof(tmp), "%s.%d.tmp", path, (int)getpid());
-    snprintf(cmd, sizeof(cmd),
-             "mkdir -p '%s' && curl -fsSL --max-time 120 -o '%s' '%s'",
-             dir, tmp, url);
-    LOG_INFO("aliases: downloading '%s'...\n", file);
-    rc = system(cmd);
-    if (rc != 0) {
-        LOG_WARNING("aliases: download failed for '%s' (curl exit %d); keeping previous file\n",
-                    file, rc);
-        unlink(tmp);
-        release_download_lock(lockpath);
-        return -1;
+    {
+        int attempt;
+
+        for (attempt = 1; attempt <= ALIAS_DOWNLOAD_ATTEMPTS; attempt++) {
+            char failbuf[96];
+            const char *fail = NULL;
+
+            if (!still_own_download_lock(lockpath)) {
+                LOG_WARNING("aliases: lost download lock for '%s' "
+                            "(another instance took over); aborting\n",
+                            file);
+                unlink(tmp);
+                return -1;
+            }
+            touch_download_lock(lockpath);
+
+            snprintf(cmd, sizeof(cmd),
+                     "mkdir -p '%s' && curl -fsSL --max-time 120 -o '%s' '%s'",
+                     dir, tmp, url);
+            LOG_INFO("aliases: downloading '%s' (attempt %d/%d)...\n",
+                     file, attempt, ALIAS_DOWNLOAD_ATTEMPTS);
+            rc = system(cmd);
+            if (rc != 0) {
+                snprintf(failbuf, sizeof(failbuf), "curl exit %d", rc);
+                fail = failbuf;
+            } else if (validate == 1 && !json_download_valid(tmp, 0)) {
+                fail = "corrupt JSON";
+            } else if (validate == 2 && !json_download_valid(tmp, 1)) {
+                fail = "corrupt subscriber JSON";
+            } else if (expected_blake2b && expected_blake2b[0]
+                       && !blake2b_matches(tmp, expected_blake2b)) {
+                fail = "blake2b checksum mismatch";
+            } else if (rename(tmp, path) != 0) {
+                snprintf(failbuf, sizeof(failbuf), "rename failed: %s",
+                         strerror(errno));
+                fail = failbuf;
+            } else {
+                LOG_INFO("aliases: download of '%s' completed and saved to disk "
+                         "(attempt %d/%d)\n",
+                         file, attempt, ALIAS_DOWNLOAD_ATTEMPTS);
+                release_download_lock(lockpath);
+                return 1;
+            }
+
+            unlink(tmp);
+            if (!fail)
+                fail = "unknown error";
+            if (attempt >= ALIAS_DOWNLOAD_ATTEMPTS) {
+                LOG_WARNING("aliases: download of '%s' failed after %d attempts (%s); "
+                            "keeping previous file\n",
+                            file, ALIAS_DOWNLOAD_ATTEMPTS, fail);
+                break;
+            }
+            LOG_WARNING("aliases: download of '%s' attempt %d/%d failed (%s); "
+                        "will retry after backoff\n",
+                        file, attempt, ALIAS_DOWNLOAD_ATTEMPTS, fail);
+            sleep_download_retry_backoff(file);
+            /* Another instance may have finished while we backed off. */
+            if (access(path, R_OK) == 0
+                && !(expected_blake2b && expected_blake2b[0]
+                     && !blake2b_matches(path, expected_blake2b))) {
+                LOG_INFO("aliases: '%s' available after failed attempt; "
+                         "using on-disk file\n",
+                         file);
+                if (still_own_download_lock(lockpath))
+                    release_download_lock(lockpath);
+                return 1;
+            }
+        }
     }
-    if (validate == 1 && !json_download_valid(tmp, 0)) {
-        LOG_WARNING("aliases: download of '%s' ignored (corrupt JSON); keeping previous file\n",
-                    file);
-        unlink(tmp);
+    if (still_own_download_lock(lockpath))
         release_download_lock(lockpath);
-        return -1;
-    }
-    if (validate == 2 && !json_download_valid(tmp, 1)) {
-        LOG_WARNING("aliases: download of '%s' ignored (corrupt subscriber JSON); "
-                    "keeping previous file\n", file);
-        unlink(tmp);
-        release_download_lock(lockpath);
-        return -1;
-    }
-    if (expected_blake2b && expected_blake2b[0] && !blake2b_matches(tmp, expected_blake2b)) {
-        LOG_WARNING("aliases: download of '%s' ignored (blake2b checksum mismatch); "
-                    "keeping previous file\n", file);
-        unlink(tmp);
-        release_download_lock(lockpath);
-        return -1;
-    }
-    if (rename(tmp, path) != 0) {
-        LOG_WARNING("aliases: rename %s -> %s failed: %s\n", tmp, path, strerror(errno));
-        unlink(tmp);
-        release_download_lock(lockpath);
-        return -1;
-    }
-    LOG_INFO("aliases: download of '%s' completed and saved to disk\n", file);
-    release_download_lock(lockpath);
-    return 1;
+    return -1;
 }
 
 static char *read_file(const char *path, size_t *out_len)
@@ -800,6 +1008,8 @@ static int aliases_build(const ysf2dmr_aliases_cfg_t *cfg, ysf2dmr_aliases_t **o
 int ysf2dmr_aliases_load(const ysf2dmr_aliases_cfg_t *cfg, ysf2dmr_aliases_t **out)
 {
     int fetched;
+    char path[512];
+    time_t mt;
 
     if (!cfg || !out)
         return -1;
@@ -813,6 +1023,19 @@ int ysf2dmr_aliases_load(const ysf2dmr_aliases_cfg_t *cfg, ysf2dmr_aliases_t **o
             LOG_INFO("aliases: stale timer reset after download "
                      "(next re-download in %d min)\n",
                      cfg->stale_minutes);
+    } else if (cfg->stale_minutes > 0 && cfg->subscriber_file[0]) {
+        /* Align wall timer to on-disk mtime so skip-at-startup keeps the
+         * remaining stale_minutes window (not a fresh full countdown). */
+        snprintf(path, sizeof(path), "%s/%s", cfg->data_dir, cfg->subscriber_file);
+        mt = file_mtime(path);
+        if (mt > 0 && !file_stale(path, cfg->stale_minutes)) {
+            int left = minutes_until_stale(path, cfg->stale_minutes);
+
+            (*out)->last_fetch_time = mt;
+            LOG_INFO("aliases: using existing '%s'; stale timer from file mtime "
+                     "(next forced download in ~%d min)\n",
+                     cfg->subscriber_file, left > 0 ? left : cfg->stale_minutes);
+        }
     }
     return 0;
 }
