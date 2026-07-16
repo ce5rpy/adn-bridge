@@ -142,8 +142,9 @@ La voz siempre cruza; solo cambia la identidad mostrada/transmitida.
 
 1. Se quita el sufijo tras el primer `-` o `/` (`HP3ICC-FT3` → `HP3ICC`).
 2. Si el indicativo base está en el JSON → se usa ese indicativo y el **primer**
-   ID DMR asociado en el archivo. Todos los IDs del indicativo se indexan, así
-   DMR→YSF resuelve p. ej. `7300391` y `7300392` → `CE5RPY`.
+   ID DMR asociado en el archivo. El índice en memoria son dos tablas contiguas
+   open-addressing (`id→indicativo` e `indicativo→id` primario); todos los IDs
+   se conservan, así DMR→YSF resuelve p. ej. `7300391` y `7300392` → `CE5RPY`.
 3. Si no está en la base → identidad del puente en `[dmr]` (`callsign` + `dmrid`).
 
 ## Estructura del proyecto

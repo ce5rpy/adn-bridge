@@ -37,8 +37,6 @@
 #define ALIAS_CHECKSUM_KEY_SUBSCRIBER "subscriber_ids"
 #define BLAKE2B_HEX_LEN 128
 
-#define CS_BUCKETS 65536U
-#define ID_BUCKETS 65536U
 /* Stale download lock: another instance may take over after this many seconds. */
 #define ALIAS_DOWNLOAD_LOCK_STALE_SEC 300
 /* Max wall time waiting for a peer before retrying/taking over. */
@@ -51,23 +49,29 @@
 #define ALIAS_DOWNLOAD_RETRY_JITTER_MS 1000
 /* Lock holder retries curl/validate this many times before giving up. */
 #define ALIAS_DOWNLOAD_ATTEMPTS 3
+/* Open-addressing load factor: grow when count >= cap * LOAD_NUM / LOAD_DEN. */
+#define ALIAS_LOAD_NUM 7U
+#define ALIAS_LOAD_DEN 10U
+#define ALIAS_MIN_CAP 1024U
 
-typedef struct cs_entry {
-    char *callsign;
-    int id; /* primary ID for YSF->DMR (first file row; local overlay may replace) */
-    struct cs_entry *next;
-} cs_entry_t;
-
-typedef struct id_entry {
-    int id;
+/* Contiguous open-addressing tables:
+ *   id_tab  — every DMR ID → callsign (DMR→YSF; multi-ID callsigns all present)
+ *   cs_tab  — callsign → primary ID (YSF→DMR; first file row, local overlay wins) */
+typedef struct {
+    int id; /* 0 = empty slot */
     char callsign[11];
-    struct id_entry *next;
-} id_entry_t;
+} alias_id_slot_t;
+
+typedef struct {
+    char callsign[11]; /* "" = empty slot */
+    int id;
+} alias_cs_slot_t;
 
 struct ysf2dmr_aliases {
-    cs_entry_t *cs_buckets[CS_BUCKETS];
-    id_entry_t *id_buckets[ID_BUCKETS];
-    size_t count; /* unique callsigns in cs_buckets */
+    alias_id_slot_t *id_tab;
+    alias_cs_slot_t *cs_tab;
+    size_t cap;   /* power of two; shared by both tables */
+    size_t count; /* occupied id_tab slots (= distinct DMR IDs) */
     time_t subscriber_mtime; /* mtime of subscriber_file when last built */
     time_t local_mtime;      /* mtime of local_subscriber_file when last built */
     time_t last_mtime_check; /* last disk mtime poll (reload_minutes) */
@@ -733,106 +737,158 @@ static void normalize_callsign_key(const char *src, char *dst, size_t dstlen)
     dst[i] = '\0';
 }
 
-static void alias_index_id(ysf2dmr_aliases_t *a, int id, const char *callsign)
+static size_t next_pow2(size_t n)
 {
-    char key[16];
-    unsigned h;
-    id_entry_t *ie;
+    size_t c = ALIAS_MIN_CAP;
 
-    normalize_callsign_key(callsign, key, sizeof(key));
-    if (!key[0])
-        return;
+    if (n < ALIAS_MIN_CAP)
+        return ALIAS_MIN_CAP;
+    while (c < n)
+        c <<= 1;
+    return c;
+}
 
-    h = hash_id(id) % ID_BUCKETS;
-    for (ie = a->id_buckets[h]; ie; ie = ie->next) {
-        if (ie->id == id) {
-            strncpy(ie->callsign, key, 10);
-            ie->callsign[10] = '\0';
-            return;
+/* Rehash into new power-of-two capacity. Returns 0 on success. */
+static int alias_rehash(ysf2dmr_aliases_t *a, size_t new_cap)
+{
+    alias_id_slot_t *nid;
+    alias_cs_slot_t *ncs;
+    size_t i, mask;
+
+    if (new_cap < ALIAS_MIN_CAP || (new_cap & (new_cap - 1)) != 0)
+        return -1;
+
+    nid = (alias_id_slot_t *)calloc(new_cap, sizeof(*nid));
+    ncs = (alias_cs_slot_t *)calloc(new_cap, sizeof(*ncs));
+    if (!nid || !ncs) {
+        free(nid);
+        free(ncs);
+        return -1;
+    }
+
+    mask = new_cap - 1;
+    if (a->id_tab) {
+        for (i = 0; i < a->cap; i++) {
+            int id = a->id_tab[i].id;
+            unsigned h;
+
+            if (id == 0)
+                continue;
+            h = hash_id(id) & (unsigned)mask;
+            while (nid[h].id != 0)
+                h = (h + 1) & (unsigned)mask;
+            nid[h] = a->id_tab[i];
         }
     }
-    ie = (id_entry_t *)calloc(1, sizeof(*ie));
-    if (!ie)
+    if (a->cs_tab) {
+        for (i = 0; i < a->cap; i++) {
+            unsigned h;
+
+            if (!a->cs_tab[i].callsign[0])
+                continue;
+            h = hash_str(a->cs_tab[i].callsign) & (unsigned)mask;
+            while (ncs[h].callsign[0])
+                h = (h + 1) & (unsigned)mask;
+            ncs[h] = a->cs_tab[i];
+        }
+    }
+
+    free(a->id_tab);
+    free(a->cs_tab);
+    a->id_tab = nid;
+    a->cs_tab = ncs;
+    a->cap = new_cap;
+    return 0;
+}
+
+static int alias_ensure_cap(ysf2dmr_aliases_t *a)
+{
+    size_t need;
+
+    if (a->cap == 0)
+        return alias_rehash(a, ALIAS_MIN_CAP);
+
+    need = a->count + 1;
+    if (need * ALIAS_LOAD_DEN < a->cap * ALIAS_LOAD_NUM)
+        return 0;
+    return alias_rehash(a, next_pow2(a->cap + 1));
+}
+
+static int alias_put_id(ysf2dmr_aliases_t *a, int id, const char *key)
+{
+    unsigned h, mask;
+
+    if (alias_ensure_cap(a) != 0)
+        return 0;
+    mask = (unsigned)(a->cap - 1);
+    h = hash_id(id) & mask;
+    for (;;) {
+        if (a->id_tab[h].id == 0) {
+            a->id_tab[h].id = id;
+            strncpy(a->id_tab[h].callsign, key, 10);
+            a->id_tab[h].callsign[10] = '\0';
+            a->count++;
+            return 1;
+        }
+        if (a->id_tab[h].id == id) {
+            strncpy(a->id_tab[h].callsign, key, 10);
+            a->id_tab[h].callsign[10] = '\0';
+            return 0;
+        }
+        h = (h + 1) & mask;
+    }
+}
+
+static void alias_put_cs(ysf2dmr_aliases_t *a, int id, const char *key, int prefer)
+{
+    unsigned h, mask;
+
+    if (!a->cs_tab || a->cap == 0)
         return;
-    ie->id = id;
-    strncpy(ie->callsign, key, 10);
-    ie->callsign[10] = '\0';
-    ie->next = a->id_buckets[h];
-    a->id_buckets[h] = ie;
+    mask = (unsigned)(a->cap - 1);
+    h = hash_str(key) & mask;
+    for (;;) {
+        if (!a->cs_tab[h].callsign[0]) {
+            strncpy(a->cs_tab[h].callsign, key, 10);
+            a->cs_tab[h].callsign[10] = '\0';
+            a->cs_tab[h].id = id;
+            return;
+        }
+        if (strcmp(a->cs_tab[h].callsign, key) == 0) {
+            if (prefer)
+                a->cs_tab[h].id = id;
+            return;
+        }
+        h = (h + 1) & mask;
+    }
 }
 
 static void insert_alias(ysf2dmr_aliases_t *a, int id, const char *callsign)
 {
     char key[16];
-    unsigned h;
-    cs_entry_t *ce;
 
     if (id <= 0 || !callsign || !callsign[0])
         return;
-
     normalize_callsign_key(callsign, key, sizeof(key));
     if (!key[0])
         return;
 
-    h = hash_str(key) % CS_BUCKETS;
-    for (ce = a->cs_buckets[h]; ce; ce = ce->next) {
-        if (strcmp(ce->callsign, key) == 0) {
-            /* Keep first primary id; still index this id→callsign (DMR→YSF). */
-            alias_index_id(a, id, callsign);
-            return;
-        }
-    }
-    ce = (cs_entry_t *)calloc(1, sizeof(*ce));
-    if (!ce)
-        return;
-    ce->callsign = strdup(key);
-    if (!ce->callsign) {
-        free(ce);
-        return;
-    }
-    ce->id = id;
-    ce->next = a->cs_buckets[h];
-    a->cs_buckets[h] = ce;
-    a->count++;
-    alias_index_id(a, id, callsign);
+    alias_put_id(a, id, key);
+    alias_put_cs(a, id, key, 0);
 }
 
 static void upsert_alias(ysf2dmr_aliases_t *a, int id, const char *callsign)
 {
     char key[16];
-    unsigned h;
-    cs_entry_t *ce;
 
     if (id <= 0 || !callsign || !callsign[0])
         return;
-
     normalize_callsign_key(callsign, key, sizeof(key));
     if (!key[0])
         return;
 
-    h = hash_str(key) % CS_BUCKETS;
-    for (ce = a->cs_buckets[h]; ce; ce = ce->next) {
-        if (strcmp(ce->callsign, key) == 0) {
-            ce->id = id; /* local overlay wins for YSF→DMR */
-            break;
-        }
-    }
-    if (!ce) {
-        ce = (cs_entry_t *)calloc(1, sizeof(*ce));
-        if (!ce)
-            return;
-        ce->callsign = strdup(key);
-        if (!ce->callsign) {
-            free(ce);
-            return;
-        }
-        ce->id = id;
-        ce->next = a->cs_buckets[h];
-        a->cs_buckets[h] = ce;
-        a->count++;
-    }
-
-    alias_index_id(a, id, callsign);
+    alias_put_id(a, id, key);
+    alias_put_cs(a, id, key, 1);
 }
 
 static int parse_subscriber_json(ysf2dmr_aliases_t *a, const char *path, int local_override)
@@ -996,9 +1052,10 @@ static int aliases_build(const ysf2dmr_aliases_cfg_t *cfg, ysf2dmr_aliases_t **o
     if (a->count == 0) {
         LOG_WARNING("aliases: no subscriber records loaded (YSF talker lookup disabled)\n");
     } else {
-        LOG_INFO("aliases: in-memory table ready (%zu unique callsigns; "
-                 "all DMR IDs indexed for DMR→YSF)\n",
-                 a->count);
+        LOG_INFO("aliases: in-memory table ready (%zu subscriber IDs, open-addr cap=%zu, ~%.1f MiB)\n",
+                 a->count, a->cap,
+                 (a->cap * (sizeof(alias_id_slot_t) + sizeof(alias_cs_slot_t)))
+                     / (1024.0 * 1024.0));
     }
 
     *out = a;
@@ -1164,65 +1221,56 @@ int ysf2dmr_aliases_maybe_refresh(const ysf2dmr_aliases_cfg_t *cfg,
 
 void ysf2dmr_aliases_free(ysf2dmr_aliases_t *a)
 {
-    unsigned i;
-
     if (!a)
         return;
-    for (i = 0; i < CS_BUCKETS; i++) {
-        cs_entry_t *ce = a->cs_buckets[i];
-        while (ce) {
-            cs_entry_t *n = ce->next;
-            free(ce->callsign);
-            free(ce);
-            ce = n;
-        }
-    }
-    for (i = 0; i < ID_BUCKETS; i++) {
-        id_entry_t *ie = a->id_buckets[i];
-        while (ie) {
-            id_entry_t *n = ie->next;
-            free(ie);
-            ie = n;
-        }
-    }
+    free(a->id_tab);
+    free(a->cs_tab);
     free(a);
 }
 
 int ysf2dmr_alias_lookup_id(const ysf2dmr_aliases_t *aliases, const char *callsign)
 {
     char key[16];
-    unsigned h;
-    cs_entry_t *ce;
+    unsigned h, mask;
+    size_t probes;
 
-    if (!aliases || !callsign || !callsign[0])
+    if (!aliases || !aliases->cs_tab || aliases->cap == 0 || !callsign || !callsign[0])
         return 0;
     normalize_callsign_key(callsign, key, sizeof(key));
     if (!key[0])
         return 0;
-    h = hash_str(key) % CS_BUCKETS;
-    for (ce = aliases->cs_buckets[h]; ce; ce = ce->next) {
-        if (strcmp(ce->callsign, key) == 0)
-            return ce->id;
+    mask = (unsigned)(aliases->cap - 1);
+    h = hash_str(key) & mask;
+    for (probes = 0; probes < aliases->cap; probes++) {
+        if (!aliases->cs_tab[h].callsign[0])
+            return 0;
+        if (strcmp(aliases->cs_tab[h].callsign, key) == 0)
+            return aliases->cs_tab[h].id;
+        h = (h + 1) & mask;
     }
     return 0;
 }
 
 int ysf2dmr_alias_lookup_callsign(const ysf2dmr_aliases_t *aliases, int dmrid, char out[10])
 {
-    unsigned h;
-    id_entry_t *ie;
+    unsigned h, mask;
+    size_t probes;
     int i;
 
-    if (!aliases || dmrid <= 0 || !out)
+    if (!aliases || !aliases->id_tab || aliases->cap == 0 || dmrid <= 0 || !out)
         return 0;
     memset(out, ' ', 10);
-    h = hash_id(dmrid) % ID_BUCKETS;
-    for (ie = aliases->id_buckets[h]; ie; ie = ie->next) {
-        if (ie->id == dmrid) {
-            for (i = 0; i < 10 && ie->callsign[i]; i++)
-                out[i] = (char)toupper((unsigned char)ie->callsign[i]);
+    mask = (unsigned)(aliases->cap - 1);
+    h = hash_id(dmrid) & mask;
+    for (probes = 0; probes < aliases->cap; probes++) {
+        if (aliases->id_tab[h].id == 0)
+            return 0;
+        if (aliases->id_tab[h].id == dmrid) {
+            for (i = 0; i < 10 && aliases->id_tab[h].callsign[i]; i++)
+                out[i] = (char)toupper((unsigned char)aliases->id_tab[h].callsign[i]);
             return 1;
         }
+        h = (h + 1) & mask;
     }
     return 0;
 }
