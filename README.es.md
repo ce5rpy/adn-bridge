@@ -143,19 +143,6 @@ La voz siempre cruza; solo cambia la identidad mostrada/transmitida.
 | `mmdvm/` | ModeConv + Golay24128 (YSF2DMR de MMDVM_CM) |
 | `vendor/yyjson/` | Parser JSON (MIT) |
 
-## Releases
-
-Semver con [python-semantic-release](https://github.com/python-semantic-release/python-semantic-release) en push a **`master`** (mismo flujo que adn-server / adn-monitor):
-
-| PR | Base | Método de merge |
-|----|------|-----------------|
-| Feature | `develop` | Squash OK |
-| Release | `master` ← `develop` | Solo **Create a merge commit** — nunca squash |
-
-CI sube la versión según conventional commits (`feat:` → minor, `fix:`/`perf:` → patch), actualiza `VERSION` / `CHANGELOG.md` / stamps, etiqueta `vX.Y.Z`, crea el GitHub Release y hace fast-forward `develop` ← `master`. La config está en `semantic-release.toml` (no hay paquete Python). No subir a mano `VERSION` ni commitear `chore(release):` en local.
-
-Primera publicación: crear **`master`** desde `develop` (ahora solo existe `develop`). Con baseline `0.0.1` y el `feat:` del historial, el primer run de CI libera **0.1.0**.
-
 ## Licencia
 
 **GPL v3** (o posterior). Ver [LICENSE](LICENSE).
