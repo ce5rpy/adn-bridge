@@ -22,8 +22,14 @@
 #include <stddef.h>
 
 typedef struct {
-    int try_download;
-    int stale_minutes; /* re-download files older than this (0 = always) */
+    /* Re-download when file age exceeds this many minutes.
+     * 0 = always download on start; no periodic download while running.
+     * >0 = also re-check while running and download when stale. */
+    int stale_minutes;
+    /* How often (minutes) to check whether on-disk JSON is newer than the
+     * in-memory table (mtime). If newer, rebuild RAM without downloading.
+     * 0 = only rebuild after our own download / startup load. Default 15. */
+    int reload_minutes;
     char data_dir[256];
     char subscriber_file[64];
     char subscriber_url[256];
@@ -39,14 +45,21 @@ void ysf2dmr_aliases_cfg_init(ysf2dmr_aliases_cfg_t *cfg);
 /* Download (if enabled) and load subscriber alias files. Returns 0 on success. */
 int ysf2dmr_aliases_load(const ysf2dmr_aliases_cfg_t *cfg, ysf2dmr_aliases_t **out);
 
+/* Periodic maintenance: re-download when stale/checksum mismatch; and/or
+ * rebuild RAM when on-disk mtime is newer than the last load (reload_minutes).
+ * Returns 1 if the table was replaced, 0 if unchanged, -1 on failure
+ * (previous table kept). */
+int ysf2dmr_aliases_maybe_refresh(const ysf2dmr_aliases_cfg_t *cfg,
+                                  ysf2dmr_aliases_t **aliases);
+
 void ysf2dmr_aliases_free(ysf2dmr_aliases_t *aliases);
 
-/* callsign -> DMR ID; 0 if unknown. When one callsign has several IDs in the DB,
- * the first subscriber row wins (YSF->DMR direction). */
+/* callsign -> primary DMR ID; 0 if unknown. First file-order ID wins for
+ * YSF→DMR (local overlay may overwrite). Every ID is still indexed for
+ * DMR→YSF (e.g. 7300391 and 7300392 → CE5RPY). */
 int ysf2dmr_alias_lookup_id(const ysf2dmr_aliases_t *aliases, const char *callsign);
 
-/* DMR ID -> callsign padded to 10 chars; exact id match (DMR->YSF direction).
- * Every id row is indexed even when callsign duplicates another entry. */
+/* DMR ID -> callsign padded to 10 chars; exact id match (DMR->YSF). */
 int ysf2dmr_alias_lookup_callsign(const ysf2dmr_aliases_t *aliases, int dmrid,
                                   char out[10]);
 
