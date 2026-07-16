@@ -1,0 +1,105 @@
+# Release workflow
+#
+#   master: python-semantic-release on push → semver tag + GitHub Release → sync develop
+
+name: release
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.repository }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Reset to workflow SHA
+        run: git reset --hard ${{ github.sha }}
+
+      - name: Semantic Release
+        id: semantic
+        uses: python-semantic-release/python-semantic-release@v10.6.1
+        with:
+          config_file: semantic-release.toml
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          git_committer_name: github-actions[bot]
+          git_committer_email: 41898282+github-actions[bot]@users.noreply.github.com
+          vcs_release: "false"
+
+      - name: Create GitHub Release
+        if: steps.semantic.outputs.released == 'true' && steps.semantic.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.semantic.outputs.tag }}
+          VERSION: ${{ steps.semantic.outputs.version }}
+          RELEASE_NOTES: ${{ steps.semantic.outputs.release_notes }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release already exists for $TAG"
+            gh release view "$TAG" --json url -q .url
+            exit 0
+          fi
+          NOTES_FILE="$(mktemp)"
+          if [[ -n "$RELEASE_NOTES" ]]; then
+            printf '%s\n' "$RELEASE_NOTES" > "$NOTES_FILE"
+          else
+            printf 'Release %s\n' "$VERSION" > "$NOTES_FILE"
+          fi
+          gh release create "$TAG" --title "$VERSION" --notes-file "$NOTES_FILE"
+          rm -f "$NOTES_FILE"
+
+      - name: Verify GitHub Release
+        if: steps.semantic.outputs.released == 'true' && steps.semantic.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.semantic.outputs.tag }}
+        run: gh release view "$TAG"
+
+      - name: Sync develop from master
+        if: steps.semantic.outputs.released == 'true'
+        env:
+          VERSION: ${{ steps.semantic.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin master develop
+          git checkout -B develop origin/develop
+          phantom_before="$(git rev-list --count origin/master..HEAD)"
+          echo "Develop commits not in master (before sync): ${phantom_before}"
+          # Fast-forward works when the release PR used "Create a merge commit" (not squash):
+          # develop's commits are ancestors of master, so develop can catch up without force-push.
+          if git merge origin/master --ff-only; then
+            echo "Fast-forwarded develop to master (branches aligned)"
+          else
+            echo "::warning::Could not fast-forward develop to master."
+            echo "::warning::The release PR was likely squash-merged. Use 'Create a merge commit' on develop→master PRs."
+            echo "::warning::Applying fallback merge sync (phantom commits on develop will remain until a merge-commit release)."
+            git merge origin/master --no-edit \
+              -m "chore: sync develop from master after release ${VERSION}"
+          fi
+          git push origin develop
+          git fetch origin master develop
+          phantom_after="$(git rev-list --count origin/master..HEAD)"
+          echo "Develop commits not in master (after sync): ${phantom_after}"
+          if [[ "${phantom_after}" -eq 0 ]]; then
+            echo "Develop and master are aligned (next release PR will list only new commits)"
+          else
+            echo "::notice::Develop still has ${phantom_after} commit(s) not in master."
+            echo "::notice::Merge the next release PR with 'Create a merge commit' to realign automatically."
+          fi

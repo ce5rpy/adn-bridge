@@ -1,0 +1,80 @@
+# Remind release PR authors to use merge commit (not squash) so post-release
+# develop sync can fast-forward and release PRs do not accumulate phantom commits.
+
+name: release-pr-check
+
+on:
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  check:
+    if: github.event.pull_request.head.ref == 'develop'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout develop tip
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Measure delta vs master
+        id: delta
+        run: |
+          set -euo pipefail
+          git fetch origin master
+          commits="$(git rev-list --count origin/master..HEAD)"
+          echo "commits=${commits}" >> "$GITHUB_OUTPUT"
+          echo "Commits on develop not in master: ${commits}"
+          git diff origin/master...HEAD --stat | tail -1 || true
+
+      - name: Post merge-method reminder
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- release-pr-check -->';
+            const commits = '${{ steps.delta.outputs.commits }}';
+            const body = [
+              marker,
+              '## Release PR — merge method',
+              '',
+              `**Commits listed on this PR:** ${commits} (file diff may be smaller — that is normal when squash releases stacked up).`,
+              '',
+              '### Required',
+              'Merge with **Create a merge commit**. Do **not** use **Squash and merge**.',
+              '',
+              '### Why',
+              '- Squash on `master` creates new commit SHAs; `develop` keeps the original squash commits from feature PRs.',
+              '- The next release PR then lists old fixes again even though `master` already has them.',
+              '- **Merge commit** keeps the same SHAs on both branches; CI **fast-forwards** `develop` to `master` after `chore(release)` — no force-push, local `git pull` on `develop` still works.',
+              '',
+              '### One-time cleanup',
+              'If this PR lists commits from earlier releases again, merge once with **merge commit**; post-release sync realigns `develop` with `master` automatically.',
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

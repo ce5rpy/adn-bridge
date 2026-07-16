@@ -1,5 +1,7 @@
 # ysf2dmrcon
 
+**Version 0.0.1**
+
 Standalone **YSF reflector ↔ DMR server** voice bridge. Registers as a Homebrew
 DMR peer (MMDVMHost-style login) and as a YSF client (YSFP + DGID room).
 
@@ -138,6 +140,19 @@ Voice always crosses; only the displayed/transmitted identity changes.
 | `hbp/dmr_hbp.c` | DMR HBP auth + LC/embedded codec |
 | `mmdvm/` | ModeConv + Golay24128 (MMDVM_CM YSF2DMR) |
 | `vendor/yyjson/` | JSON parser (MIT) |
+
+## Releases
+
+Semver via [python-semantic-release](https://github.com/python-semantic-release/python-semantic-release) on push to **`master`** (same flow as adn-server / adn-monitor):
+
+| PR | Base | Merge method |
+|----|------|--------------|
+| Feature | `develop` | Squash OK |
+| Release | `master` ← `develop` | **Create a merge commit** only — never squash |
+
+CI bumps version from conventional commits (`feat:` → minor, `fix:`/`perf:` → patch), updates `VERSION` / `CHANGELOG.md` / stamps, tags `vX.Y.Z`, creates a GitHub Release, then fast-forwards `develop` ← `master`. Config lives in `semantic-release.toml` (no Python package). Do not hand-bump `VERSION` or commit `chore(release):` locally.
+
+First publish: seed **`master`** from `develop` (repo currently has only `develop`). With baseline `0.0.1` and the existing `feat:` history, the first CI run releases **0.1.0**.
 
 ## License
 
