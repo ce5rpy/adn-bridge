@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <limits.h>
 
@@ -175,12 +176,29 @@ int main(int argc, char **argv)
     else
         LOG_INFO("YSF DGID %d; DMR no RPTO; connect PTT TG %d (1s)\n",
                  cfg.dgid, cfg.dmr_tg);
+    if (cfg.aliases.stale_minutes > 0)
+        LOG_INFO("aliases: re-download when files older than %d min\n",
+                 cfg.aliases.stale_minutes);
+    if (cfg.aliases.reload_minutes > 0)
+        LOG_INFO("aliases: reload RAM if on-disk JSON newer (check every %d min)\n",
+                 cfg.aliases.reload_minutes);
+
+    time_t last_alias_poll = time(NULL);
 
     while (keep_running) {
         int from_dmr = 0, from_ysf = 0, len;
+        time_t now;
 
         peer_dmr_tick(&bridge.dmr);
         peer_ysf_tick(&bridge.ysf);
+
+        now = time(NULL);
+        if ((cfg.aliases.stale_minutes > 0 || cfg.aliases.reload_minutes > 0)
+            && now - last_alias_poll >= 60) {
+            last_alias_poll = now;
+            if (ysf2dmr_aliases_maybe_refresh(&cfg.aliases, &g_aliases) > 0)
+                bridge.aliases = g_aliases;
+        }
 
         /* Short poll timeouts: the voice pacing in bridge_tick() needs the
          * loop to spin every few ms; 50ms blocks starved DMR TX to ~75% of

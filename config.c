@@ -134,7 +134,7 @@ static void apply_key(ysf2dmr_config_t *cfg, const char *section, const char *ke
     }
     if (strcmp(section, "aliases") == 0) {
         if (strcmp(key, "try_download") == 0)
-            cfg->aliases.try_download = (atoi(val) != 0);
+            ; /* legacy key ignored — downloads are always enabled */
         else if (strcmp(key, "stale_minutes") == 0)
             set_int(&cfg->aliases.stale_minutes, val);
         else if (strcmp(key, "stale_days") == 0) {
@@ -142,6 +142,8 @@ static void apply_key(ysf2dmr_config_t *cfg, const char *section, const char *ke
             set_int(&cfg->aliases.stale_minutes, val);
             cfg->aliases.stale_minutes *= 24 * 60;
         }
+        else if (strcmp(key, "reload_minutes") == 0)
+            set_int(&cfg->aliases.reload_minutes, val);
         else if (strcmp(key, "data_dir") == 0)
             set_str(cfg->aliases.data_dir, sizeof(cfg->aliases.data_dir), val);
         else if (strcmp(key, "subscriber_file") == 0)

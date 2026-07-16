@@ -12,8 +12,24 @@ Referencia upstream: [MMDVM_CM](https://github.com/juribeparada/MMDVM_CM).
 
 ## Compilación
 
+### Dependencias (Debian / Ubuntu)
+
 ```bash
-cd /opt/ysf2dmr
+sudo apt-get update
+sudo apt-get install -y build-essential libssl-dev curl
+```
+
+| Paquete | Para qué |
+|---------|----------|
+| `build-essential` | `gcc`, `g++`, `make` |
+| `libssl-dev` | OpenSSL (`-lcrypto`) para checksums blake2b de aliases |
+| `curl` | Descarga en runtime de JSON de suscriptores / checksums |
+
+yyjson y ModeConv (MMDVM) van vendored; no hacen falta más paquetes apt.
+
+### Compilar
+
+```bash
 make
 ```
 
@@ -101,12 +117,12 @@ Misma estructura que `ALIASES` en new-adn-server. Archivos en `data_dir`
 
 | Clave | Descripción |
 |-------|-------------|
-| `try_download` | `1` = descargar al inicio si falta o está obsoleto |
-| `stale_minutes` | Re-descargar si el archivo supera esta antigüedad (`0` = siempre al inicio) |
+| `stale_minutes` | Re-descargar si supera esta antigüedad; también en runtime (por defecto `1440` = 24 h; `0` = solo al inicio, siempre) |
+| `reload_minutes` | Cada cuánto mirar si el JSON en disco es más nuevo que la RAM y reconstruir; si falta el archivo, fuerza descarga (`0` = off; default `15`) |
 | `data_dir` | Directorio de los JSON (por defecto `./data`) |
 | `subscriber_file` / `subscriber_url` | Base principal ID ↔ indicativo |
 | `local_subscriber_file` | Superposición local opcional |
-| `checksum_file` / `checksum_url` | Manifiesto de checksums opcional |
+| `checksum_file` / `checksum_url` | Manifiesto blake2b opcional (igual que adn-server). Si existe, `subscriber_ids` debe coincidir; si falta, se acepta un JSON válido |
 
 ### `[log]`
 

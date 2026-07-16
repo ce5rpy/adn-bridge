@@ -8,12 +8,28 @@ DMR peer (MMDVMHost-style login) and as a YSF client (YSFP + DGID room).
 Self-contained build — vendored code under `hbp/`, `mmdvm/`, and `vendor/`.
 Upstream reference: [MMDVM_CM](https://github.com/juribeparada/MMDVM_CM).
 
-**Spanish documentation:** [README.es.md](README.es.md)
+**Documentación en español:** [README.es.md](README.es.md)
 
 ## Build
 
+### Dependencies (Debian / Ubuntu)
+
 ```bash
-cd /opt/ysf2dmr
+sudo apt-get update
+sudo apt-get install -y build-essential libssl-dev curl
+```
+
+| Package | Why |
+|---------|-----|
+| `build-essential` | `gcc`, `g++`, `make` |
+| `libssl-dev` | OpenSSL (`-lcrypto`) for blake2b alias checksums |
+| `curl` | Runtime download of subscriber / checksum JSON |
+
+yyjson and MMDVM ModeConv sources are vendored; no extra apt packages for those.
+
+### Compile
+
+```bash
 make
 ```
 
@@ -99,12 +115,12 @@ Same layout as `ALIASES` in new-adn-server. Files live under `data_dir`
 
 | Key | Description |
 |-----|-------------|
-| `try_download` | `1` = download on start if missing or stale |
-| `stale_minutes` | Re-download when file age exceeds this (`0` = always on start) |
+| `stale_minutes` | Re-download when file age exceeds this; also checked while running (default `1440` = 24 h; `0` = always on start only) |
+| `reload_minutes` | How often to check if on-disk JSON is newer than RAM and rebuild; missing file forces download (`0` = off; default `15`) |
 | `data_dir` | Directory for JSON files (default `./data`) |
 | `subscriber_file` / `subscriber_url` | Main ID ↔ callsign database |
 | `local_subscriber_file` | Optional local overlay |
-| `checksum_file` / `checksum_url` | Optional checksum manifest |
+| `checksum_file` / `checksum_url` | Optional; if absent, a valid subscriber JSON is accepted |
 
 ### `[log]`
 

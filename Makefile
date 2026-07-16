@@ -7,7 +7,7 @@ CC ?= gcc
 CXX ?= g++
 CFLAGS ?= -Wall -Wextra -O2 -I. -Ivendor/yyjson
 CXXFLAGS ?= -Wall -Wextra -O2 -std=c++11 -Immdvm
-LDFLAGS ?=
+LDFLAGS ?= -lcrypto
 
 BUILD = build
 
@@ -27,7 +27,7 @@ BINDIR ?= $(PREFIX)/bin
 all: ysf2dmrcon
 
 ysf2dmrcon: $(OBJS)
-	$(CXX) $(LDFLAGS) -o $@ $(OBJS)
+	$(CXX) -o $@ $(OBJS) $(LDFLAGS)
 
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
