@@ -8,12 +8,28 @@ DMR peer (MMDVMHost-style login) and as a YSF client (YSFP + DGID room).
 Self-contained build — vendored code under `hbp/`, `mmdvm/`, and `vendor/`.
 Upstream reference: [MMDVM_CM](https://github.com/juribeparada/MMDVM_CM).
 
-**Spanish documentation:** [README.es.md](README.es.md)
+**Documentación en español:** [README.es.md](README.es.md)
 
 ## Build
 
+### Dependencies (Debian / Ubuntu)
+
 ```bash
-cd /opt/ysf2dmr
+sudo apt-get update
+sudo apt-get install -y build-essential libssl-dev curl
+```
+
+| Package | Why |
+|---------|-----|
+| `build-essential` | `gcc`, `g++`, `make` |
+| `libssl-dev` | OpenSSL (`-lcrypto`) for blake2b alias checksums |
+| `curl` | Runtime download of subscriber / checksum JSON |
+
+yyjson and MMDVM ModeConv sources are vendored; no extra apt packages for those.
+
+### Compile
+
+```bash
 make
 ```
 
@@ -99,12 +115,12 @@ Same layout as `ALIASES` in new-adn-server. Files live under `data_dir`
 
 | Key | Description |
 |-----|-------------|
-| `try_download` | `1` = download on start if missing or stale |
-| `stale_minutes` | Re-download when file age exceeds this (`0` = always on start) |
+| `stale_minutes` | Re-download when file age exceeds this; also checked while running (default `1440` = 24 h; `0` = always on start only) |
+| `reload_minutes` | How often to check if on-disk JSON is newer than RAM and rebuild; missing file forces download (`0` = off; default `15`) |
 | `data_dir` | Directory for JSON files (default `./data`) |
 | `subscriber_file` / `subscriber_url` | Main ID ↔ callsign database |
 | `local_subscriber_file` | Optional local overlay |
-| `checksum_file` / `checksum_url` | Optional checksum manifest |
+| `checksum_file` / `checksum_url` | Optional; if absent, a valid subscriber JSON is accepted |
 
 ### `[log]`
 
@@ -124,7 +140,10 @@ Voice always crosses; only the displayed/transmitted identity changes.
 
 1. Strip suffix after the first `-` or `/` (`HP3ICC-FT3` → `HP3ICC`).
 2. If the base callsign exists in JSON → use that callsign and the **first**
-   DMR ID listed for that callsign in the file.
+   DMR ID listed for that callsign in the file. In-memory index is two
+   contiguous open-addressing tables (`id→callsign` and `callsign→primary id`);
+   every ID is kept so DMR→YSF resolves e.g. both `7300391` and `7300392` to
+   `CE5RPY`.
 3. If unknown → use bridge identity from `[dmr]` (`callsign` + `dmrid`).
 
 ## Project layout
@@ -140,19 +159,6 @@ Voice always crosses; only the displayed/transmitted identity changes.
 | `hbp/dmr_hbp.c` | DMR HBP auth + LC/embedded codec |
 | `mmdvm/` | ModeConv + Golay24128 (MMDVM_CM YSF2DMR) |
 | `vendor/yyjson/` | JSON parser (MIT) |
-
-## Releases
-
-Semver via [python-semantic-release](https://github.com/python-semantic-release/python-semantic-release) on push to **`master`** (same flow as adn-server / adn-monitor):
-
-| PR | Base | Merge method |
-|----|------|--------------|
-| Feature | `develop` | Squash OK |
-| Release | `master` ← `develop` | **Create a merge commit** only — never squash |
-
-CI bumps version from conventional commits (`feat:` → minor, `fix:`/`perf:` → patch), updates `VERSION` / `CHANGELOG.md` / stamps, tags `vX.Y.Z`, creates a GitHub Release, then fast-forwards `develop` ← `master`. Config lives in `semantic-release.toml` (no Python package). Do not hand-bump `VERSION` or commit `chore(release):` locally.
-
-First publish: seed **`master`** from `develop` (repo currently has only `develop`). With baseline `0.0.1` and the existing `feat:` history, the first CI run releases **0.1.0**.
 
 ## License
 

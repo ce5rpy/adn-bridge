@@ -12,8 +12,24 @@ Referencia upstream: [MMDVM_CM](https://github.com/juribeparada/MMDVM_CM).
 
 ## Compilación
 
+### Dependencias (Debian / Ubuntu)
+
 ```bash
-cd /opt/ysf2dmr
+sudo apt-get update
+sudo apt-get install -y build-essential libssl-dev curl
+```
+
+| Paquete | Para qué |
+|---------|----------|
+| `build-essential` | `gcc`, `g++`, `make` |
+| `libssl-dev` | OpenSSL (`-lcrypto`) para checksums blake2b de aliases |
+| `curl` | Descarga en runtime de JSON de suscriptores / checksums |
+
+yyjson y ModeConv (MMDVM) van vendored; no hacen falta más paquetes apt.
+
+### Compilar
+
+```bash
 make
 ```
 
@@ -101,12 +117,12 @@ Misma estructura que `ALIASES` en new-adn-server. Archivos en `data_dir`
 
 | Clave | Descripción |
 |-------|-------------|
-| `try_download` | `1` = descargar al inicio si falta o está obsoleto |
-| `stale_minutes` | Re-descargar si el archivo supera esta antigüedad (`0` = siempre al inicio) |
+| `stale_minutes` | Re-descargar si supera esta antigüedad; también en runtime (por defecto `1440` = 24 h; `0` = solo al inicio, siempre) |
+| `reload_minutes` | Cada cuánto mirar si el JSON en disco es más nuevo que la RAM y reconstruir; si falta el archivo, fuerza descarga (`0` = off; default `15`) |
 | `data_dir` | Directorio de los JSON (por defecto `./data`) |
 | `subscriber_file` / `subscriber_url` | Base principal ID ↔ indicativo |
 | `local_subscriber_file` | Superposición local opcional |
-| `checksum_file` / `checksum_url` | Manifiesto de checksums opcional |
+| `checksum_file` / `checksum_url` | Manifiesto blake2b opcional (igual que adn-server). Si existe, `subscriber_ids` debe coincidir; si falta, se acepta un JSON válido |
 
 ### `[log]`
 
@@ -126,7 +142,9 @@ La voz siempre cruza; solo cambia la identidad mostrada/transmitida.
 
 1. Se quita el sufijo tras el primer `-` o `/` (`HP3ICC-FT3` → `HP3ICC`).
 2. Si el indicativo base está en el JSON → se usa ese indicativo y el **primer**
-   ID DMR asociado en el archivo.
+   ID DMR asociado en el archivo. El índice en memoria son dos tablas contiguas
+   open-addressing (`id→indicativo` e `indicativo→id` primario); todos los IDs
+   se conservan, así DMR→YSF resuelve p. ej. `7300391` y `7300392` → `CE5RPY`.
 3. Si no está en la base → identidad del puente en `[dmr]` (`callsign` + `dmrid`).
 
 ## Estructura del proyecto
@@ -142,19 +160,6 @@ La voz siempre cruza; solo cambia la identidad mostrada/transmitida.
 | `hbp/dmr_hbp.c` | Autenticación HBP y códec LC/embebido |
 | `mmdvm/` | ModeConv + Golay24128 (YSF2DMR de MMDVM_CM) |
 | `vendor/yyjson/` | Parser JSON (MIT) |
-
-## Releases
-
-Semver con [python-semantic-release](https://github.com/python-semantic-release/python-semantic-release) en push a **`master`** (mismo flujo que adn-server / adn-monitor):
-
-| PR | Base | Método de merge |
-|----|------|-----------------|
-| Feature | `develop` | Squash OK |
-| Release | `master` ← `develop` | Solo **Create a merge commit** — nunca squash |
-
-CI sube la versión según conventional commits (`feat:` → minor, `fix:`/`perf:` → patch), actualiza `VERSION` / `CHANGELOG.md` / stamps, etiqueta `vX.Y.Z`, crea el GitHub Release y hace fast-forward `develop` ← `master`. La config está en `semantic-release.toml` (no hay paquete Python). No subir a mano `VERSION` ni commitear `chore(release):` en local.
-
-Primera publicación: crear **`master`** desde `develop` (ahora solo existe `develop`). Con baseline `0.0.1` y el `feat:` del historial, el primer run de CI libera **0.1.0**.
 
 ## Licencia
 
