@@ -67,8 +67,10 @@ Same EchoLink peer + remote AMBE vocoder as `echolink-dmr`. Voice crosses ModeCo
 
 | Direction | Flow |
 |-----------|------|
-| EL → YSF | GSM PCM → encode → `put_ambe7_ysf` ×5 → ModeConv (same as DMR→YSF) → paced YSFD @90 ms; CSD/DCH RadioID `*****`, src = full `[echolink] callsign` (e.g. `CE5RPY-L`) |
+| EL → YSF | GSM PCM → encode → `put_ambe7_ysf` ×5 → ModeConv (same as DMR→YSF) → paced YSFD @90 ms; CSD/DCH RadioID `*****`, src = **remote** EchoLink talker from inbound RTCP SDES (else connected node) |
 | YSF → EL | YSFD → `put_ysf*` → `get_dmr` → `dmr33_to_ambe` → decode → EL PCM |
+
+Inbound RTCP SDES (UDP 5199) supplies the remote identity: `NAME` may be `NODE (TALKER)` on conferences; otherwise `CNAME` / connected `host`. That callsign is used for EL→YSF `net_src` and EL→DMR RF id (subscriber alias lookup, fallback `[dmr] dmrid`).
 
 Half-duplex: one active call at a time (`call_active` 1 = EL→YSF, 2 = YSF→EL). EL→YSF uses the same PCM-presence hang + cooldown as EL→DMR. YSF→EL releases the slot after ~1.5 s without YSFD (missing EOT). YSF framing matches the existing YSF↔DMR bridge (sync, FICH, DCH slots, HP3ICC `ysf_modeconv_chunk` repack).
 
