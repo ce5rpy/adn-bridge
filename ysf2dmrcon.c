@@ -216,7 +216,7 @@ static int run_echolink(ysf2dmr_config_t *cfg)
     if (use_ysf) {
         char ysf_cs[10];
 
-        /* Gateway YSFP callsign: EchoLink base (same role as [dmr] callsign in DMR→YSF). */
+        /* Gateway YSFP callsign: full [echolink] callsign (incl. -L/-R). */
         bridge_el_format_callsign10(ysf_cs, cfg->echolink.callsign);
         if (peer_ysf_open(&bridge_el.ysf, cfg->ysf_host, cfg->ysf_port, ysf_cs,
                           (uint8_t)cfg->dgid) < 0)

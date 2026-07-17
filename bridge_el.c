@@ -658,13 +658,12 @@ void bridge_el_format_callsign10(char out[10], const char *src)
     memset(out, ' ', 10);
     if (!src)
         return;
+    /* Keep full EchoLink callsign including -L/-R (e.g. CE5RPY-L). */
     for (i = 0; src[i] && j < 10; i++) {
         unsigned char c = (unsigned char)src[i];
 
         if (c == ' ' || c == '\t')
             continue;
-        if (c == '-' || c == '/')
-            break;
         out[j++] = (char)toupper(c);
     }
 }
@@ -914,7 +913,7 @@ static void bridge_el_begin_el_to_ysf(bridge_el_t *b)
      * Identity slots identical to DMR→YSF:
      *   CSD/DCH RadioID = *****
      *   wire dst = ALL
-     *   net_src = talker callsign (here: [echolink] callsign without -L/-R)
+     *   net_src = talker callsign (here: full [echolink] callsign, e.g. CE5RPY-L)
      * HEADER is queued like putDMRHeader; CSD bytes filled on emit.
      */
     bridge_el_format_callsign10(b->net_src, b->el.callsign);

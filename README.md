@@ -151,8 +151,8 @@ unknown YSF talkers fall back to this section’s `callsign` + `dmrid`.
 
 In **`echolink-ysf`** mode no DMR peer is opened: `host`/`port`/`password` are
 unused (password may be a placeholder). `callsign` / `dmrid` still feed YSF
-CSD/DCH RadioID. The YSF talker/gateway callsign on the wire is the **EchoLink
-base** callsign (`CE5RPY-L` → `CE5RPY`), using the same CSD/DCH layout as
+CSD/DCH RadioID. The YSF talker/gateway callsign on the wire is the **full**
+`[echolink] callsign` (e.g. `CE5RPY-L`), using the same CSD/DCH layout as
 DMR→YSF.
 
 ### `[echolink]` — EchoLink station (echolink-* modes)

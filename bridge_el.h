@@ -68,7 +68,7 @@ void bridge_el_tick(bridge_el_t *b);
 void bridge_el_process_el_audio(bridge_el_t *b);
 /* Drain EL PCM through vocoder into YSF (echolink-ysf). */
 void bridge_el_process_el_to_ysf(bridge_el_t *b);
-/* EchoLink CE5RPY-L → space-padded YSF "CE5RPY    " (stop at - or /). */
+/* EchoLink callsign → space-padded YSF 10 chars (keeps -L/-R). */
 void bridge_el_format_callsign10(char out[10], const char *src);
 
 #endif

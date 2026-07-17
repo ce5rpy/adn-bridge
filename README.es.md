@@ -154,8 +154,8 @@ esta sección.
 En modo **`echolink-ysf`** no se abre peer DMR: `host`/`port`/`password` no
 se usan (`password` puede ser un placeholder). `callsign` / `dmrid` siguen
 alimentando el RadioID de CSD/DCH YSF. El indicativo de locutor/gateway en el
-wire es el **base EchoLink** (`CE5RPY-L` → `CE5RPY`), con el mismo layout
-CSD/DCH que DMR→YSF.
+wire es el `[echolink] callsign` **completo** (p. ej. `CE5RPY-L`), con el mismo
+layout CSD/DCH que DMR→YSF.
 
 ### `[echolink]` — Estación EchoLink (modos echolink-*)
 
