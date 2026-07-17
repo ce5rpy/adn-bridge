@@ -25,7 +25,33 @@
 #include "log.h"
 #include "aliases.h"
 
+#define YSF2DMR_MODE_YSF_DMR      0
+#define YSF2DMR_MODE_ECHOLINK_DMR 1
+#define YSF2DMR_MODE_ECHOLINK_YSF 2
+
+#define YSF2DMR_EL_DIR_MAX 8
+
 typedef struct {
+    char callsign[16];
+    char password[64];
+    char bind_addr[64];
+    char host[128]; /* node/conference callsign, e.g. CA5RPY-L or *REDCHILE* */
+    char qth[32];
+    char email[64];
+    char directory_servers[YSF2DMR_EL_DIR_MAX][128];
+    int directory_server_count;
+    /* tlb LoginInterval / StationListInterval (seconds); 0 disables */
+    int login_interval;
+    int station_list_interval;
+} ysf2dmr_echolink_cfg_t;
+
+typedef struct {
+    char host[128];
+    int port;
+} ysf2dmr_vocoder_cfg_t;
+
+typedef struct {
+    int mode; /* YSF2DMR_MODE_* */
     char callsign[16];
     int dmrid;
     char description[20];
@@ -41,6 +67,8 @@ typedef struct {
     int default_ysf_dmrid; /* legacy INI key; bridge [dmr] dmrid is used instead */
     log_level_t log_level; /* [log] level=DEBUG|INFO|WARNING|ERROR */
     ysf2dmr_aliases_cfg_t aliases;
+    ysf2dmr_echolink_cfg_t echolink;
+    ysf2dmr_vocoder_cfg_t vocoder;
 } ysf2dmr_config_t;
 
 void ysf2dmr_config_init(ysf2dmr_config_t *cfg);
@@ -49,5 +77,6 @@ int ysf2dmr_config_default_path(const char *argv0, char *path, size_t pathlen);
 /* Returns 0 on success, -1 on error (message in err, errlen). */
 int ysf2dmr_config_load(const char *path, ysf2dmr_config_t *cfg, char *err, size_t errlen);
 int ysf2dmr_config_valid(const ysf2dmr_config_t *cfg, char *err, size_t errlen);
+const char *ysf2dmr_mode_name(int mode);
 
 #endif

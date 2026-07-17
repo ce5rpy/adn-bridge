@@ -30,9 +30,24 @@
 void ysf2dmr_config_init(ysf2dmr_config_t *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
+    cfg->mode = YSF2DMR_MODE_YSF_DMR;
     cfg->log_level = LOG_LEVEL_INFO;
     cfg->default_ysf_dmrid = 0;
     ysf2dmr_aliases_cfg_init(&cfg->aliases);
+    strncpy(cfg->vocoder.host, "127.0.0.1", sizeof(cfg->vocoder.host) - 1);
+    cfg->vocoder.port = 2460;
+    /* tlb defaults: LoginInterval=360, StationListInterval=600 */
+    cfg->echolink.login_interval = 360;
+    cfg->echolink.station_list_interval = 600;
+}
+
+const char *ysf2dmr_mode_name(int mode)
+{
+    switch (mode) {
+    case YSF2DMR_MODE_ECHOLINK_DMR: return "echolink-dmr";
+    case YSF2DMR_MODE_ECHOLINK_YSF: return "echolink-ysf";
+    default:                        return "ysf-dmr";
+    }
 }
 
 int ysf2dmr_config_default_path(const char *argv0, char *path, size_t pathlen)
@@ -97,11 +112,45 @@ static void apply_identity_key(ysf2dmr_config_t *cfg, const char *key, const cha
         set_str(cfg->location, sizeof(cfg->location), val);
 }
 
+static void parse_directory_servers(ysf2dmr_echolink_cfg_t *el, const char *val)
+{
+    char buf[512];
+    char *tok, *save = NULL;
+    int n = 0;
+
+    if (!val || !*val)
+        return;
+    strncpy(buf, val, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    for (tok = strtok_r(buf, ", \t", &save); tok && n < YSF2DMR_EL_DIR_MAX;
+         tok = strtok_r(NULL, ", \t", &save)) {
+        set_str(el->directory_servers[n], sizeof(el->directory_servers[n]), tok);
+        n++;
+    }
+    el->directory_server_count = n;
+}
+
+static int parse_mode(const char *val)
+{
+    if (!val || !*val)
+        return YSF2DMR_MODE_YSF_DMR;
+    if (strcmp(val, "echolink-dmr") == 0 || strcmp(val, "el-dmr") == 0)
+        return YSF2DMR_MODE_ECHOLINK_DMR;
+    if (strcmp(val, "echolink-ysf") == 0 || strcmp(val, "el-ysf") == 0)
+        return YSF2DMR_MODE_ECHOLINK_YSF;
+    return YSF2DMR_MODE_YSF_DMR;
+}
+
 static void apply_key(ysf2dmr_config_t *cfg, const char *section, const char *key, const char *val)
 {
     if (!section || !key)
         return;
 
+    if (strcmp(section, "bridge") == 0) {
+        if (strcmp(key, "mode") == 0)
+            cfg->mode = parse_mode(val);
+        return;
+    }
     if (strcmp(section, "ysf") == 0) {
         if (strcmp(key, "host") == 0)
             set_str(cfg->ysf_host, sizeof(cfg->ysf_host), val);
@@ -109,7 +158,6 @@ static void apply_key(ysf2dmr_config_t *cfg, const char *section, const char *ke
             set_int(&cfg->ysf_port, val);
         else if (strcmp(key, "dgid") == 0)
             set_int(&cfg->dgid, val);
-        /* radio_id / radio_model ignored — CSD RadioID is hardcoded ***** */
         return;
     }
     if (strcmp(section, "dmr") == 0) {
@@ -132,13 +180,42 @@ static void apply_key(ysf2dmr_config_t *cfg, const char *section, const char *ke
             set_int(&cfg->default_ysf_dmrid, val);
         return;
     }
+    if (strcmp(section, "echolink") == 0) {
+        if (strcmp(key, "callsign") == 0)
+            set_str(cfg->echolink.callsign, sizeof(cfg->echolink.callsign), val);
+        else if (strcmp(key, "password") == 0)
+            set_str(cfg->echolink.password, sizeof(cfg->echolink.password), val);
+        else if (strcmp(key, "bind_addr") == 0)
+            set_str(cfg->echolink.bind_addr, sizeof(cfg->echolink.bind_addr), val);
+        else if (strcmp(key, "host") == 0)
+            set_str(cfg->echolink.host, sizeof(cfg->echolink.host), val);
+        else if (strcmp(key, "qth") == 0)
+            set_str(cfg->echolink.qth, sizeof(cfg->echolink.qth), val);
+        else if (strcmp(key, "email") == 0)
+            set_str(cfg->echolink.email, sizeof(cfg->echolink.email), val);
+        else if (strcmp(key, "directory_servers") == 0)
+            parse_directory_servers(&cfg->echolink, val);
+        else if (strcmp(key, "login_interval") == 0
+                 || strcmp(key, "LoginInterval") == 0)
+            set_int(&cfg->echolink.login_interval, val);
+        else if (strcmp(key, "station_list_interval") == 0
+                 || strcmp(key, "StationListInterval") == 0)
+            set_int(&cfg->echolink.station_list_interval, val);
+        return;
+    }
+    if (strcmp(section, "vocoder") == 0) {
+        if (strcmp(key, "host") == 0)
+            set_str(cfg->vocoder.host, sizeof(cfg->vocoder.host), val);
+        else if (strcmp(key, "port") == 0)
+            set_int(&cfg->vocoder.port, val);
+        return;
+    }
     if (strcmp(section, "aliases") == 0) {
         if (strcmp(key, "try_download") == 0)
             ; /* legacy key ignored — downloads are always enabled */
         else if (strcmp(key, "stale_minutes") == 0)
             set_int(&cfg->aliases.stale_minutes, val);
         else if (strcmp(key, "stale_days") == 0) {
-            /* legacy key: days -> minutes */
             set_int(&cfg->aliases.stale_minutes, val);
             cfg->aliases.stale_minutes *= 24 * 60;
         }
@@ -214,15 +291,31 @@ int ysf2dmr_config_load(const char *path, ysf2dmr_config_t *cfg, char *err, size
 
     fclose(fp);
 
-    /* Treat options="" as empty → no RPTO. Otherwise send options as-is. */
     if (strcmp(cfg->dmr_options, "\"\"") == 0)
         cfg->dmr_options[0] = '\0';
+
+    /* Default directory servers if EL mode and none configured */
+    if ((cfg->mode == YSF2DMR_MODE_ECHOLINK_DMR || cfg->mode == YSF2DMR_MODE_ECHOLINK_YSF)
+        && cfg->echolink.directory_server_count == 0) {
+        static const char *defs[] = {
+            "server1.echolink.org", "server2.echolink.org",
+            "server3.echolink.org", "server4.echolink.org"
+        };
+        int i;
+        for (i = 0; i < 4; i++)
+            set_str(cfg->echolink.directory_servers[i],
+                    sizeof(cfg->echolink.directory_servers[i]), defs[i]);
+        cfg->echolink.directory_server_count = 4;
+    }
 
     return 0;
 }
 
 int ysf2dmr_config_valid(const ysf2dmr_config_t *cfg, char *err, size_t errlen)
 {
+    int el = (cfg->mode == YSF2DMR_MODE_ECHOLINK_DMR
+              || cfg->mode == YSF2DMR_MODE_ECHOLINK_YSF);
+
     if (!cfg->callsign[0]) {
         snprintf(err, errlen, "missing [dmr] callsign");
         return -1;
@@ -231,26 +324,50 @@ int ysf2dmr_config_valid(const ysf2dmr_config_t *cfg, char *err, size_t errlen)
         snprintf(err, errlen, "missing [dmr] dmrid");
         return -1;
     }
-    if (!cfg->ysf_host[0] || cfg->ysf_port <= 0) {
-        snprintf(err, errlen, "missing [ysf] host/port");
-        return -1;
-    }
-    if (!cfg->dmr_host[0] || cfg->dmr_port <= 0) {
-        snprintf(err, errlen, "missing [dmr] host/port");
-        return -1;
-    }
-    if (cfg->dmr_tg <= 0) {
-        snprintf(err, errlen, "missing [dmr] tg");
-        return -1;
-    }
-    /* options optional: empty → no RPTO; any non-empty string is sent as RPTO. */
     if (!cfg->dmr_password[0]) {
         snprintf(err, errlen, "missing [dmr] password (or passphrase)");
         return -1;
     }
-    if (cfg->dgid < 0 || cfg->dgid > 99) {
-        snprintf(err, errlen, "invalid [ysf] dgid (0-99)");
-        return -1;
+
+    if (cfg->mode == YSF2DMR_MODE_YSF_DMR || cfg->mode == YSF2DMR_MODE_ECHOLINK_YSF) {
+        if (!cfg->ysf_host[0] || cfg->ysf_port <= 0) {
+            snprintf(err, errlen, "missing [ysf] host/port");
+            return -1;
+        }
+        if (cfg->dgid < 0 || cfg->dgid > 99) {
+            snprintf(err, errlen, "invalid [ysf] dgid (0-99)");
+            return -1;
+        }
+    }
+
+    if (cfg->mode == YSF2DMR_MODE_YSF_DMR || cfg->mode == YSF2DMR_MODE_ECHOLINK_DMR) {
+        if (!cfg->dmr_host[0] || cfg->dmr_port <= 0) {
+            snprintf(err, errlen, "missing [dmr] host/port");
+            return -1;
+        }
+        if (cfg->dmr_tg <= 0) {
+            snprintf(err, errlen, "missing [dmr] tg");
+            return -1;
+        }
+    }
+
+    if (el) {
+        if (!cfg->echolink.callsign[0]) {
+            snprintf(err, errlen, "missing [echolink] callsign");
+            return -1;
+        }
+        if (!cfg->echolink.password[0]) {
+            snprintf(err, errlen, "missing [echolink] password");
+            return -1;
+        }
+        if (!cfg->echolink.bind_addr[0]) {
+            snprintf(err, errlen, "missing [echolink] bind_addr");
+            return -1;
+        }
+        if (!cfg->vocoder.host[0] || cfg->vocoder.port <= 0) {
+            snprintf(err, errlen, "missing [vocoder] host/port");
+            return -1;
+        }
     }
     return 0;
 }

@@ -685,6 +685,101 @@ void CModeConv::putAMBE2DMR(unsigned int dat_a, unsigned int dat_b, unsigned int
 	m_dmrN += 1U;
 }
 
+void CModeConv::ambe7ToABC(const unsigned char* ambe7, unsigned int* a, unsigned int* b, unsigned int* c)
+{
+	*a = ((unsigned int)ambe7[0] << 4) | ((unsigned int)ambe7[1] >> 4);
+	*b = (((unsigned int)ambe7[1] & 0x0FU) << 8) | (unsigned int)ambe7[2];
+	*c = ((unsigned int)ambe7[3] << 17) | ((unsigned int)ambe7[4] << 9)
+	   | ((unsigned int)ambe7[5] << 1) | ((unsigned int)ambe7[6] >> 7);
+}
+
+void CModeConv::abcToAMBE7(unsigned int a, unsigned int b, unsigned int c, unsigned char* ambe7)
+{
+	ambe7[0] = (unsigned char)((a >> 4) & 0xFFU);
+	ambe7[1] = (unsigned char)(((a & 0x0FU) << 4) | ((b >> 8) & 0x0FU));
+	ambe7[2] = (unsigned char)(b & 0xFFU);
+	ambe7[3] = (unsigned char)((c >> 17) & 0xFFU);
+	ambe7[4] = (unsigned char)((c >> 9) & 0xFFU);
+	ambe7[5] = (unsigned char)((c >> 1) & 0xFFU);
+	ambe7[6] = (unsigned char)((c << 7) & 0x80U);
+}
+
+void CModeConv::putAMBE7(const unsigned char* ambe7)
+{
+	unsigned int a, b, c;
+
+	assert(ambe7 != NULL);
+	ambe7ToABC(ambe7, &a, &b, &c);
+	putAMBE2DMR(a, b, c);
+}
+
+void CModeConv::putAMBE7YSF(const unsigned char* ambe7)
+{
+	unsigned int a, b, c;
+
+	assert(ambe7 != NULL);
+	ambe7ToABC(ambe7, &a, &b, &c);
+	putAMBE2YSF(a, b, c);
+}
+
+void CModeConv::dmr33ToAMBE(const unsigned char* dmr33, unsigned char ambe[3][7])
+{
+	unsigned int a1 = 0U, a2 = 0U, a3 = 0U;
+	unsigned int b1 = 0U, b2 = 0U, b3 = 0U;
+	unsigned int c1 = 0U, c2 = 0U, c3 = 0U;
+	unsigned int MASK;
+
+	assert(dmr33 != NULL);
+
+	MASK = 0x800000U;
+	for (unsigned int i = 0U; i < 24U; i++, MASK >>= 1) {
+		unsigned int a1Pos = DMR_A_TABLE[i];
+		unsigned int a2Pos = a1Pos + 72U;
+		if (a2Pos >= 108U)
+			a2Pos += 48U;
+		unsigned int a3Pos = a1Pos + 192U;
+		if (READ_BIT(dmr33, a1Pos)) a1 |= MASK;
+		if (READ_BIT(dmr33, a2Pos)) a2 |= MASK;
+		if (READ_BIT(dmr33, a3Pos)) a3 |= MASK;
+	}
+
+	MASK = 0x400000U;
+	for (unsigned int i = 0U; i < 23U; i++, MASK >>= 1) {
+		unsigned int b1Pos = DMR_B_TABLE[i];
+		unsigned int b2Pos = b1Pos + 72U;
+		if (b2Pos >= 108U)
+			b2Pos += 48U;
+		unsigned int b3Pos = b1Pos + 192U;
+		if (READ_BIT(dmr33, b1Pos)) b1 |= MASK;
+		if (READ_BIT(dmr33, b2Pos)) b2 |= MASK;
+		if (READ_BIT(dmr33, b3Pos)) b3 |= MASK;
+	}
+
+	MASK = 0x1000000U;
+	for (unsigned int i = 0U; i < 25U; i++, MASK >>= 1) {
+		unsigned int c1Pos = DMR_C_TABLE[i];
+		unsigned int c2Pos = c1Pos + 72U;
+		if (c2Pos >= 108U)
+			c2Pos += 48U;
+		unsigned int c3Pos = c1Pos + 192U;
+		if (READ_BIT(dmr33, c1Pos)) c1 |= MASK;
+		if (READ_BIT(dmr33, c2Pos)) c2 |= MASK;
+		if (READ_BIT(dmr33, c3Pos)) c3 |= MASK;
+	}
+
+	/* Strip Golay/FEC to recover raw AMBE fields (same as putDMR → putAMBE2YSF path). */
+	unsigned int da1 = a1 >> 12;
+	unsigned int da2 = a2 >> 12;
+	unsigned int da3 = a3 >> 12;
+	unsigned int db1 = (b1 ^ (PRNG_TABLE[da1] >> 1)) >> 11;
+	unsigned int db2 = (b2 ^ (PRNG_TABLE[da2] >> 1)) >> 11;
+	unsigned int db3 = (b3 ^ (PRNG_TABLE[da3] >> 1)) >> 11;
+
+	abcToAMBE7(da1, db1, c1, ambe[0]);
+	abcToAMBE7(da2, db2, c2, ambe[1]);
+	abcToAMBE7(da3, db3, c3, ambe[2]);
+}
+
 void CModeConv::putDummyYSF()
 {
 	// We have a total of 5 VCH sections

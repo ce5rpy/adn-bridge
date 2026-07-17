@@ -6,3 +6,5 @@ debug/
 # Local instance configs (keep the template tracked)
 *.ini
 !ysf2dmrcon.example.ini
+!ysf2dmrcon-echolink-dmr.example.ini
+!ysf2dmrcon-echolink-ysf.example.ini
