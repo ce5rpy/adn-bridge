@@ -45,6 +45,7 @@ typedef struct {
     char net_dst[10];
     int16_t pcm_el_acc[160];
     int pcm_el_acc_n;
+    float el_pcm_gain; /* [echolink] gain — EL→DMR/YSF PCM scale (1.0 = unity) */
     struct timespec last_dmr_tx;
     struct timespec last_dmr_rx; /* last DMRD/YSFD while peer->EL (call_active==2) */
     struct timespec last_ysf_tx;
@@ -61,7 +62,8 @@ typedef struct {
 } bridge_el_t;
 
 void bridge_el_init(bridge_el_t *b, int mode, const char *dmr_options,
-                    ysf2dmr_aliases_t *aliases, int bridge_dmrid);
+                    ysf2dmr_aliases_t *aliases, int bridge_dmrid,
+                    float el_pcm_gain);
 void bridge_el_on_dmrd(bridge_el_t *b, const uint8_t *pkt, int len);
 void bridge_el_on_ysfd(bridge_el_t *b, const uint8_t *pkt, int len);
 void bridge_el_tick(bridge_el_t *b);

@@ -27,6 +27,11 @@ Do **not** put these ports in the INI. Configure only:
 - `directory_servers` — comma-separated directory hostnames
 - `login_interval` — tlb `LoginInterval` (default **360** s); directory presence login
 - `station_list_interval` — tlb `StationListInterval` (default **600** s); full station-list refresh and peer IP update
+- `gain` — linear PCM scale for **EchoLink → DMR/YSF** (before AMBE encode), range **above 0 .. 4**:
+  - omit or **`1.0`** — unchanged (unity, default)
+  - **`0.5`** — typical if Fusion/DMR clips (~−6 dB)
+  - **`4.0`** — maximum boost
+  - does not change YSF/DMR → EchoLink level
 
 Directory timing matches thelinkbox `RTCP_Handler`:
 

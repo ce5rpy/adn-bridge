@@ -42,6 +42,7 @@ void ysf2dmr_config_init(ysf2dmr_config_t *cfg)
     /* tlb defaults: LoginInterval=360, StationListInterval=600 */
     cfg->echolink.login_interval = 360;
     cfg->echolink.station_list_interval = 600;
+    cfg->echolink.gain = 1.0f;
     cfg->echolink.log_level = -1;
 }
 
@@ -102,6 +103,19 @@ static void set_int(int *dst, const char *val)
     if (!val || !*val)
         return;
     *dst = atoi(val);
+}
+
+static void set_float(float *dst, const char *val)
+{
+    char *end = NULL;
+    float v;
+
+    if (!val || !*val || !dst)
+        return;
+    v = strtof(val, &end);
+    if (end == val)
+        return;
+    *dst = v;
 }
 
 static void apply_identity_key(ysf2dmr_config_t *cfg, const char *key, const char *val)
@@ -209,6 +223,8 @@ static void apply_key(ysf2dmr_config_t *cfg, const char *section, const char *ke
         else if (strcmp(key, "station_list_interval") == 0
                  || strcmp(key, "StationListInterval") == 0)
             set_int(&cfg->echolink.station_list_interval, val);
+        else if (strcmp(key, "gain") == 0)
+            set_float(&cfg->echolink.gain, val);
         else if (strcmp(key, "log_level") == 0 || strcmp(key, "log") == 0)
             cfg->echolink.log_level = (int)log_level_from_string(val);
         return;
@@ -403,6 +419,11 @@ int ysf2dmr_config_valid(const ysf2dmr_config_t *cfg, char *err, size_t errlen)
         }
         if (!cfg->echolink.bind_addr[0]) {
             snprintf(err, errlen, "missing [echolink] bind_addr");
+            return -1;
+        }
+        /* 1.0 = unity … up to 4.0 max; must be > 0 (mute not supported). */
+        if (cfg->echolink.gain <= 0.0f || cfg->echolink.gain > 4.0f) {
+            snprintf(err, errlen, "invalid [echolink] gain (use 0 < gain <= 4)");
             return -1;
         }
         if (!cfg->vocoder.host[0] || cfg->vocoder.port <= 0) {

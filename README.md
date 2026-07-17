@@ -172,6 +172,7 @@ UDP **5199** RTCP, TCP **5200** directory.
 | `directory_servers` | Comma-separated directory hosts (defaults to the four `serverN.echolink.org`) |
 | `login_interval` | Directory presence login period (default **360** s, tlb-compatible) |
 | `station_list_interval` | Station-list refresh / peer IP update (default **600** s) |
+| `gain` | Linear PCM scale **EchoLink → DMR/YSF** (before AMBE). Range **above 0 .. 4**: **1.0** = unchanged (default), `0.5` ≈ −6 dB, `4.0` = max. Does not affect DMR/YSF → EchoLink. |
 | `log_level` | Optional channel level (`DEBUG`…`ERROR`); else inherits `[log]` |
 
 Directory login/list runs on a **background thread** so TCP cannot stall audio.

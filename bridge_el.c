@@ -77,6 +77,24 @@ static int pcm_rms16(const int16_t *pcm, int n)
     return (int)sqrt((double)acc / (double)n);
 }
 
+/* Scale PCM in place; clamp to int16. gain==1.0 is a no-op. */
+static void pcm_apply_gain(int16_t *pcm, int n, float gain)
+{
+    int i;
+
+    if (!pcm || n <= 0 || gain == 1.0f)
+        return;
+    for (i = 0; i < n; i++) {
+        float v = (float)pcm[i] * gain;
+
+        if (v > 32767.0f)
+            v = 32767.0f;
+        else if (v < -32768.0f)
+            v = -32768.0f;
+        pcm[i] = (int16_t)v;
+    }
+}
+
 static int dbg_periodic(int *n)
 {
     (*n)++;
@@ -468,12 +486,14 @@ static void bridge_el_end_dmr_call(bridge_el_t *b)
 }
 
 void bridge_el_init(bridge_el_t *b, int mode, const char *dmr_options,
-                    ysf2dmr_aliases_t *aliases, int bridge_dmrid)
+                    ysf2dmr_aliases_t *aliases, int bridge_dmrid,
+                    float el_pcm_gain)
 {
     memset(b, 0, sizeof(*b));
     b->mode = mode;
     b->aliases = aliases;
     b->bridge_dmrid = bridge_dmrid;
+    b->el_pcm_gain = (el_pcm_gain > 0.0f && el_pcm_gain <= 4.0f) ? el_pcm_gain : 1.0f;
     b->dmr_slot_bit = 0x80;
     memcpy(b->net_dst, YSF_WIRE_DST_ALL, 10);
     (void)dmr_options;
@@ -532,6 +552,7 @@ void bridge_el_process_el_audio(bridge_el_t *b)
             }
         }
 
+        pcm_apply_gain(b->pcm_el_acc, 160, b->el_pcm_gain);
         if (vocoder_encode(&b->voc, b->pcm_el_acc, ambe) != 0) {
             static int voc_enc_fail;
             b->pcm_el_acc_n = 0;
@@ -1156,6 +1177,7 @@ void bridge_el_process_el_to_ysf(bridge_el_t *b)
             }
         }
 
+        pcm_apply_gain(b->pcm_el_acc, 160, b->el_pcm_gain);
         if (vocoder_encode(&b->voc, b->pcm_el_acc, ambe) != 0) {
             static int voc_enc_fail;
 

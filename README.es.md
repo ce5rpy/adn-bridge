@@ -174,6 +174,7 @@ RTCP, TCP **5200** directorio.
 | `directory_servers` | Hosts de directorio separados por coma (por defecto los cuatro `serverN.echolink.org`) |
 | `login_interval` | Periodo de login de presencia (por defecto **360** s, compatible tlb) |
 | `station_list_interval` | Refresco de lista / IP del peer (por defecto **600** s) |
+| `gain` | Escala lineal PCM **EchoLink → DMR/YSF** (antes del AMBE). Rango **mayor que 0 .. 4**: **1.0** = sin cambio (por defecto), `0.5` ≈ −6 dB, `4.0` = máximo. No afecta DMR/YSF → EchoLink. |
 | `log_level` | Nivel opcional del canal (`DEBUG`…`ERROR`); si no, hereda `[log]` |
 
 Login/lista de directorio van en un **hilo en segundo plano** para no bloquear
