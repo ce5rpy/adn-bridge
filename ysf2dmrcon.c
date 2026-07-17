@@ -197,7 +197,8 @@ static int run_echolink(ysf2dmr_config_t *cfg)
     int use_dmr = (cfg->mode == YSF2DMR_MODE_ECHOLINK_DMR);
     int use_ysf = (cfg->mode == YSF2DMR_MODE_ECHOLINK_YSF);
 
-    bridge_el_init(&bridge_el, cfg->mode, cfg->dmr_options, g_aliases, cfg->dmrid);
+    bridge_el_init(&bridge_el, cfg->mode, cfg->dmr_options, g_aliases, cfg->dmrid,
+                   cfg->echolink.gain);
 
     if (vocoder_open(&bridge_el.voc, cfg->vocoder.host, cfg->vocoder.port) < 0)
         return 1;
@@ -321,6 +322,8 @@ int main(int argc, char **argv)
         printf("EchoLink: %s bind %s", cfg.echolink.callsign, cfg.echolink.bind_addr);
         if (cfg.echolink.host[0])
             printf(" host %s", cfg.echolink.host);
+        if (cfg.echolink.gain != 1.0f)
+            printf(" gain %.3f", (double)cfg.echolink.gain);
         printf("\n");
         printf("Vocoder: %s:%d\n", cfg.vocoder.host, cfg.vocoder.port);
     }

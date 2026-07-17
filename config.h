@@ -43,6 +43,11 @@ typedef struct {
     /* tlb LoginInterval / StationListInterval (seconds); 0 disables */
     int login_interval;
     int station_list_interval;
+    /*
+     * Linear PCM gain for EchoLink → DMR/YSF (before AMBE encode).
+     * 1.0 = unity, 4.0 = max. Range (0, 4].
+     */
+    float gain;
     /* -1 = inherit [log] level=; else DEBUG|INFO|WARNING|ERROR */
     int log_level;
 } ysf2dmr_echolink_cfg_t;
