@@ -815,19 +815,19 @@ static void el_apply_remote_sdes(peer_echolink_t *p, const char *cname, const ch
         lp = strrchr(name, '(');
         rp = strrchr(name, ')');
         if (lp && rp && rp > lp + 1) {
+            char paren[64];
+
             n = 0;
-            for (i = 1; lp[i] && &lp[i] < rp && n + 1 < sizeof(cand); i++) {
+            for (i = 1; lp[i] && &lp[i] < rp && n + 1 < sizeof(paren); i++) {
                 unsigned char c = (unsigned char)lp[i];
 
-                if (c == ' ' && n == 0)
-                    continue;
                 if (c < 32 || c > 126)
                     continue;
-                cand[n++] = (char)toupper(c);
+                paren[n++] = (char)c;
             }
-            while (n > 0 && cand[n - 1] == ' ')
-                n--;
-            cand[n] = '\0';
+            paren[n] = '\0';
+            /* "HP3ICC Esteban" / "Conference [2/8]" → first token only. */
+            el_copy_token(cand, sizeof(cand), paren);
             if (el_looks_like_callsign(cand))
                 copy_z(talker, sizeof(talker), cand);
         }
