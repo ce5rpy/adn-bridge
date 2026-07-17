@@ -41,12 +41,6 @@ static void pad_copy(char *dst, size_t n, const char *src)
     }
 }
 
-/*
- * Devuelve la longitud del callsign "base", cortando en el primer
- * separador de sufijo (-, / o _). Esto permite pasar callsigns con
- * sufijos de enlace tipo "HP3ICC-LNK", "HP3ICC/LNK" o "HP3ICC_LNK"
- * y quedarnos solo con "HP3ICC" para el login/registro DMR.
- */
 static size_t base_callsign_len(const char *cs)
 {
     size_t i = 0;
