@@ -796,12 +796,30 @@ static int el_looks_like_callsign(const char *s)
     return letters > 0;
 }
 
+/* Case-insensitive station token compare (HP3ICC vs hp3icc). */
+static int el_same_station(const char *a, const char *b)
+{
+    if (!a || !b)
+        return 0;
+    while (*a && *b) {
+        if (toupper((unsigned char)*a) != toupper((unsigned char)*b))
+            return 0;
+        a++;
+        b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
 /*
  * Derive remote talker from inbound SDES:
  *   NAME "NODE (CE5ABC) CONF" → CE5ABC (only if paren text looks like callsign)
- *   NAME "CA5RPY-L (Conference [2/8]) CONF" → CA5RPY-L (paren is status, skip)
+ *   NAME "CA5RPY-L (Conference [2/8]) CONF" → keep last user if recent RTP
  *   NAME "CALLSIGN Name" → first token
  *   else CNAME / connected host
+ *
+ * thelinkbox often sends (User Name) while keyed, then Conference [n/m]
+ * while RTP is still flowing — keep the user only during that active RX.
+ * bridge clears the sticky talker when the EL→DMR/YSF call ends.
  */
 static void el_apply_remote_sdes(peer_echolink_t *p, const char *cname, const char *name)
 {
@@ -809,6 +827,8 @@ static void el_apply_remote_sdes(peer_echolink_t *p, const char *cname, const ch
     char cand[sizeof(p->remote_talker)];
     const char *lp, *rp;
     size_t i, n;
+    int from_paren = 0;
+    time_t now;
 
     talker[0] = '\0';
     if (name && name[0]) {
@@ -828,8 +848,10 @@ static void el_apply_remote_sdes(peer_echolink_t *p, const char *cname, const ch
             paren[n] = '\0';
             /* "HP3ICC Esteban" / "Conference [2/8]" → first token only. */
             el_copy_token(cand, sizeof(cand), paren);
-            if (el_looks_like_callsign(cand))
+            if (el_looks_like_callsign(cand)) {
                 copy_z(talker, sizeof(talker), cand);
+                from_paren = 1;
+            }
         }
         if (!talker[0]) {
             el_copy_token(cand, sizeof(cand), name);
@@ -846,9 +868,27 @@ static void el_apply_remote_sdes(peer_echolink_t *p, const char *cname, const ch
         el_copy_token(p->remote_cname, sizeof(p->remote_cname), cname);
     if (!talker[0])
         return;
-    if (strcmp(p->remote_talker, talker) == 0)
+
+    /*
+     * Weak update (node / Conference status): keep explicit user only while
+     * RTP is still active (~2s). Call-end clears sticky for the next QSO.
+     */
+    if (!from_paren && p->remote_talker_explicit && p->remote_talker[0]
+        && !el_same_station(p->remote_talker, talker)) {
+        now = time(NULL);
+        if (p->last_rtp_rx != 0 && now >= p->last_rtp_rx
+            && (now - p->last_rtp_rx) < 2) {
+            return;
+        }
+    }
+
+    if (strcmp(p->remote_talker, talker) == 0) {
+        if (from_paren)
+            p->remote_talker_explicit = 1;
         return;
+    }
     copy_z(p->remote_talker, sizeof(p->remote_talker), talker);
+    p->remote_talker_explicit = from_paren;
     LOG_EL_INFO("echolink: remote talker=%s (cname=%s name=%s)\n",
                 p->remote_talker,
                 p->remote_cname[0] ? p->remote_cname : "-",
@@ -1176,6 +1216,9 @@ void peer_el_tick(peer_echolink_t *p)
         pthread_mutex_lock(&p->dir_mu);
         p->linked = 0;
         p->status = PEER_EL_DIR_OK;
+        p->remote_talker_explicit = 0;
+        if (p->host[0])
+            copy_z(p->remote_talker, sizeof(p->remote_talker), p->host);
         pthread_mutex_unlock(&p->dir_mu);
         el_send_sdes(p);
     }
@@ -1322,6 +1365,22 @@ const char *peer_el_remote_talker(const peer_echolink_t *p)
     if (p->host[0])
         return p->host;
     return "";
+}
+
+int peer_el_remote_talker_explicit(const peer_echolink_t *p)
+{
+    return p && p->remote_talker_explicit && p->remote_talker[0];
+}
+
+void peer_el_clear_remote_talker(peer_echolink_t *p)
+{
+    if (!p)
+        return;
+    p->remote_talker_explicit = 0;
+    if (p->host[0])
+        copy_z(p->remote_talker, sizeof(p->remote_talker), p->host);
+    else
+        p->remote_talker[0] = '\0';
 }
 
 void peer_el_on_sigint(peer_echolink_t *p)

@@ -261,10 +261,14 @@ static void bridge_el_resolve_el_talker(bridge_el_t *b)
         id = ysf2dmr_alias_lookup_id(b->aliases, base);
 
     if (b->mode == YSF2DMR_MODE_ECHOLINK_YSF) {
-        /* Full EchoLink callsign on YSF wire (e.g. CA5RPY-L). */
+        char prev[10];
+
+        memcpy(prev, b->net_src, 10);
+        /* Full EchoLink callsign on YSF wire (e.g. CA5RPY-L / HP3ICC). */
         bridge_el_format_callsign10(b->net_src, raw);
         b->el_rf_id = id > 0 ? id : b->bridge_dmrid;
-        LOG_YSF_INFO("EL->YSF talker raw=%s base=%s\n", raw, base[0] ? base : "?");
+        if (memcmp(prev, b->net_src, 10) != 0)
+            LOG_YSF_INFO("EL->YSF talker raw=%s base=%s\n", raw, base[0] ? base : "?");
         return;
     }
 
@@ -422,6 +426,7 @@ static void bridge_el_finish_dmr_end(bridge_el_t *b)
     b->el_speech_run = 0;
     b->el_rf_id = 0;
     peer_el_drop_pcm_in(&b->el);
+    peer_el_clear_remote_talker(&b->el);
     modeconv_reset();
     stamp_now(&b->last_el_tx_end);
 }
@@ -1003,6 +1008,7 @@ static int bridge_el_emit_ysf_from_conv(bridge_el_t *b)
         b->el_speech_run = 0;
         b->el_rf_id = 0;
         peer_el_drop_pcm_in(&b->el);
+        peer_el_clear_remote_talker(&b->el);
         modeconv_reset();
         stamp_now(&b->last_el_tx_end);
         return 1;
@@ -1037,6 +1043,7 @@ static void bridge_el_begin_el_to_ysf(bridge_el_t *b)
      *   wire dst = ALL
      *   net_src = remote EchoLink talker (inbound SDES), else connected node
      * HEADER is queued like putDMRHeader; CSD bytes filled on emit.
+     * Previous QSO talker is cleared on call end; late SDES → re-HEADER.
      */
     bridge_el_resolve_el_talker(b);
     memcpy(b->net_dst, YSF_WIRE_DST_ALL, 10);
@@ -1050,6 +1057,29 @@ static void bridge_el_begin_el_to_ysf(bridge_el_t *b)
     modeconv_put_dmr_header();
     b->el.rtp_rx_packets = 0;
     LOG_YSF_INFO("EL->YSF call start (src %.10s)\n", b->net_src);
+}
+
+/* Late SDES user talker: radios lock HEADER — re-queue HEADER with new CSD. */
+static void bridge_el_ysf_reheader_if_talker_changed(bridge_el_t *b)
+{
+    const char *raw;
+    char want[10];
+    char prev[10];
+
+    if (b->call_active != 1 || b->ysf_ending)
+        return;
+    raw = peer_el_remote_talker(&b->el);
+    if (!raw || !raw[0])
+        return;
+    bridge_el_format_callsign10(want, raw);
+    if (memcmp(want, b->net_src, 10) == 0)
+        return;
+    memcpy(prev, b->net_src, 10);
+    bridge_el_resolve_el_talker(b);
+    if (memcmp(prev, b->net_src, 10) == 0)
+        return;
+    modeconv_put_dmr_header();
+    LOG_YSF_INFO("EL->YSF re-HEADER talker %.10s -> %.10s\n", prev, b->net_src);
 }
 
 static void bridge_el_drain_ysf_to_el_pcm(bridge_el_t *b)
@@ -1087,6 +1117,10 @@ void bridge_el_process_el_to_ysf(bridge_el_t *b)
         return;
     if (b->call_active == 2 || b->ysf_ending)
         return; /* YSF RX has the slot, or EOT drain in progress */
+
+    /* SDES talker often arrives after first RTP — re-HEADER so radios update. */
+    if (b->call_active == 1)
+        bridge_el_ysf_reheader_if_talker_changed(b);
 
     while ((n = peer_el_read_pcm(&b->el, pcm, 160)) > 0) {
         int i;
