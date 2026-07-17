@@ -53,6 +53,11 @@ typedef struct {
     char email[64];
     /* SDES NAME while bridging a remote talker (YSF/DMR→EL); empty = use callsign */
     char talker_name[32];
+    /* Inbound SDES: peer station (CNAME) and active talker (NAME or CNAME/host). */
+    char remote_cname[32];
+    char remote_talker[32];
+    /* 1 = talker came from NAME parentheses (real user); keep across Conference status. */
+    int remote_talker_explicit;
     char directory_servers[YSF2DMR_EL_DIR_MAX][128];
     int directory_server_count;
     int status; /* PEER_EL_* */
@@ -107,6 +112,12 @@ void peer_el_flush_pcm(peer_echolink_t *p);
 void peer_el_drop_pcm_in(peer_echolink_t *p);
 /* Set/clear SDES NAME for remote talker display (NULL/"" clears). Sends SDES. */
 void peer_el_set_talker_name(peer_echolink_t *p, const char *name);
+/* Best remote identity for EL→DMR/YSF (talker, else CNAME, else host). */
+const char *peer_el_remote_talker(const peer_echolink_t *p);
+/* 1 = current remote_talker came from NAME parentheses (real user). */
+int peer_el_remote_talker_explicit(const peer_echolink_t *p);
+/* After EL→DMR/YSF hangtime: drop sticky user talker so the next QSO starts clean. */
+void peer_el_clear_remote_talker(peer_echolink_t *p);
 void peer_el_on_sigint(peer_echolink_t *p);
 
 #endif

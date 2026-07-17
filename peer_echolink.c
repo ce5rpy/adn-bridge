@@ -707,6 +707,231 @@ static void el_send_sdes(peer_echolink_t *p)
     sendto(sock, buf, (size_t)n, 0, (struct sockaddr *)&dest, sizeof(dest));
 }
 
+/* Copy SDES item text into dst (printable ASCII, trimmed). */
+static void el_sdes_copy_item(char *dst, size_t dstlen, const uint8_t *data, int ilen)
+{
+    size_t n = 0;
+    int i;
+
+    if (!dst || dstlen == 0)
+        return;
+    dst[0] = '\0';
+    if (!data || ilen <= 0)
+        return;
+    for (i = 0; i < ilen && n + 1 < dstlen; i++) {
+        unsigned char c = data[i];
+
+        if (c < 32 || c > 126)
+            continue;
+        dst[n++] = (char)c;
+    }
+    while (n > 0 && dst[n - 1] == ' ')
+        n--;
+    dst[n] = '\0';
+}
+
+/* Copy first whitespace-delimited token, uppercased. */
+static void el_copy_token(char *dst, size_t dstlen, const char *src)
+{
+    size_t n = 0;
+
+    dst[0] = '\0';
+    if (!src || dstlen == 0)
+        return;
+    while (*src == ' ' || *src == '\t')
+        src++;
+    while (*src && *src != ' ' && *src != '\t' && n + 1 < dstlen) {
+        unsigned char c = (unsigned char)*src++;
+
+        if (c < 32 || c > 126)
+            continue;
+        dst[n++] = (char)toupper(c);
+    }
+    dst[n] = '\0';
+}
+
+/*
+ * Accept real station callsigns / conferences; reject status text such as
+ * "Conference [2/8]" that thelinkbox puts inside NAME parentheses.
+ */
+static int el_looks_like_callsign(const char *s)
+{
+    int i, n = 0, letters = 0, digits = 0;
+
+    if (!s || !s[0])
+        return 0;
+    if (strncasecmp(s, "CONFERENCE", 10) == 0)
+        return 0;
+    if (strcasecmp(s, "CALLSIGN") == 0)
+        return 0;
+    if (strchr(s, '[') || strchr(s, ']'))
+        return 0;
+    for (i = 0; s[i]; i++) {
+        unsigned char c = (unsigned char)s[i];
+
+        if (c == ' ' || c == '\t')
+            break;
+        if (isalpha(c)) {
+            letters++;
+            n++;
+            continue;
+        }
+        if (isdigit(c)) {
+            digits++;
+            n++;
+            continue;
+        }
+        /* -L/-R, *CONF*, /suffix */
+        if (c == '-' || c == '*' || c == '/') {
+            n++;
+            continue;
+        }
+        return 0;
+    }
+    /* Need a letter (or leading * for conferences) and a few chars. */
+    if (n < 3)
+        return 0;
+    if (s[0] == '*')
+        return 1;
+    return letters > 0;
+}
+
+/* Case-insensitive station token compare (HP3ICC vs hp3icc). */
+static int el_same_station(const char *a, const char *b)
+{
+    if (!a || !b)
+        return 0;
+    while (*a && *b) {
+        if (toupper((unsigned char)*a) != toupper((unsigned char)*b))
+            return 0;
+        a++;
+        b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+/*
+ * Derive remote talker from inbound SDES:
+ *   NAME "NODE (CE5ABC) CONF" → CE5ABC (only if paren text looks like callsign)
+ *   NAME "CA5RPY-L (Conference [2/8]) CONF" → keep last user if recent RTP
+ *   NAME "CALLSIGN Name" → first token
+ *   else CNAME / connected host
+ *
+ * thelinkbox often sends (User Name) while keyed, then Conference [n/m]
+ * while RTP is still flowing — keep the user only during that active RX.
+ * bridge clears the sticky talker when the EL→DMR/YSF call ends.
+ */
+static void el_apply_remote_sdes(peer_echolink_t *p, const char *cname, const char *name)
+{
+    char talker[sizeof(p->remote_talker)];
+    char cand[sizeof(p->remote_talker)];
+    const char *lp, *rp;
+    size_t i, n;
+    int from_paren = 0;
+    time_t now;
+
+    talker[0] = '\0';
+    if (name && name[0]) {
+        lp = strrchr(name, '(');
+        rp = strrchr(name, ')');
+        if (lp && rp && rp > lp + 1) {
+            char paren[64];
+
+            n = 0;
+            for (i = 1; lp[i] && &lp[i] < rp && n + 1 < sizeof(paren); i++) {
+                unsigned char c = (unsigned char)lp[i];
+
+                if (c < 32 || c > 126)
+                    continue;
+                paren[n++] = (char)c;
+            }
+            paren[n] = '\0';
+            /* "HP3ICC Esteban" / "Conference [2/8]" → first token only. */
+            el_copy_token(cand, sizeof(cand), paren);
+            if (el_looks_like_callsign(cand)) {
+                copy_z(talker, sizeof(talker), cand);
+                from_paren = 1;
+            }
+        }
+        if (!talker[0]) {
+            el_copy_token(cand, sizeof(cand), name);
+            if (el_looks_like_callsign(cand))
+                copy_z(talker, sizeof(talker), cand);
+        }
+    }
+    if (!talker[0] && cname && cname[0] && el_looks_like_callsign(cname))
+        el_copy_token(talker, sizeof(talker), cname);
+    if (!talker[0] && p->host[0])
+        copy_z(talker, sizeof(talker), p->host);
+
+    if (cname && cname[0] && el_looks_like_callsign(cname))
+        el_copy_token(p->remote_cname, sizeof(p->remote_cname), cname);
+    if (!talker[0])
+        return;
+
+    /*
+     * Weak update (node / Conference status): keep explicit user only while
+     * RTP is still active (~2s). Call-end clears sticky for the next QSO.
+     */
+    if (!from_paren && p->remote_talker_explicit && p->remote_talker[0]
+        && !el_same_station(p->remote_talker, talker)) {
+        now = time(NULL);
+        if (p->last_rtp_rx != 0 && now >= p->last_rtp_rx
+            && (now - p->last_rtp_rx) < 2) {
+            return;
+        }
+    }
+
+    if (strcmp(p->remote_talker, talker) == 0) {
+        if (from_paren)
+            p->remote_talker_explicit = 1;
+        return;
+    }
+    copy_z(p->remote_talker, sizeof(p->remote_talker), talker);
+    p->remote_talker_explicit = from_paren;
+    LOG_EL_INFO("echolink: remote talker=%s (cname=%s name=%s)\n",
+                p->remote_talker,
+                p->remote_cname[0] ? p->remote_cname : "-",
+                (name && name[0]) ? name : "-");
+}
+
+static void el_parse_sdes_packet(peer_echolink_t *p, const uint8_t *pkt, int plen)
+{
+    char cname[64];
+    char name[64];
+    int o;
+    int count;
+
+    if (plen < 8)
+        return;
+    cname[0] = '\0';
+    name[0] = '\0';
+    count = pkt[0] & 0x1f;
+    o = 4; /* after RTCP common header */
+    while (count-- > 0 && o + 4 <= plen) {
+        o += 4; /* SSRC */
+        while (o + 1 <= plen) {
+            uint8_t type = pkt[o];
+            uint8_t ilen = (o + 1 < plen) ? pkt[o + 1] : 0;
+
+            if (type == EL_SDES_END) {
+                o++;
+                while ((o & 3) != 0 && o < plen)
+                    o++;
+                break;
+            }
+            if (o + 2 + ilen > plen)
+                return;
+            if (type == EL_SDES_CNAME)
+                el_sdes_copy_item(cname, sizeof(cname), pkt + o + 2, ilen);
+            else if (type == EL_SDES_NAME)
+                el_sdes_copy_item(name, sizeof(name), pkt + o + 2, ilen);
+            o += 2 + ilen;
+        }
+    }
+    el_apply_remote_sdes(p, cname, name);
+}
+
 static void el_handle_rtcp(peer_echolink_t *p, const uint8_t *data, int len,
                            const struct sockaddr_in *from)
 {
@@ -723,6 +948,7 @@ static void el_handle_rtcp(peer_echolink_t *p, const uint8_t *data, int len,
         if (pt == EL_RTCP_SDES) {
             int just_linked = 0;
 
+            el_parse_sdes_packet(p, data + o, plen);
             pthread_mutex_lock(&p->dir_mu);
             p->last_peer_rtcp = time(NULL);
             if (!p->linked) {
@@ -852,6 +1078,9 @@ int peer_el_open(peer_echolink_t *p, const ysf2dmr_echolink_cfg_t *cfg)
     copy_z(p->host, sizeof(p->host), cfg->host);
     copy_z(p->qth, sizeof(p->qth), cfg->qth);
     copy_z(p->email, sizeof(p->email), cfg->email);
+    /* Until inbound SDES arrives, treat connected node as remote identity. */
+    if (p->host[0])
+        copy_z(p->remote_talker, sizeof(p->remote_talker), p->host);
     p->directory_server_count = cfg->directory_server_count;
     p->login_interval = cfg->login_interval;
     p->station_list_interval = cfg->station_list_interval;
@@ -987,6 +1216,9 @@ void peer_el_tick(peer_echolink_t *p)
         pthread_mutex_lock(&p->dir_mu);
         p->linked = 0;
         p->status = PEER_EL_DIR_OK;
+        p->remote_talker_explicit = 0;
+        if (p->host[0])
+            copy_z(p->remote_talker, sizeof(p->remote_talker), p->host);
         pthread_mutex_unlock(&p->dir_mu);
         el_send_sdes(p);
     }
@@ -1120,6 +1352,35 @@ void peer_el_set_talker_name(peer_echolink_t *p, const char *name)
     else
         LOG_EL_INFO("echolink: talker NAME cleared (CNAME=%s)\n", p->callsign);
     el_send_sdes(p);
+}
+
+const char *peer_el_remote_talker(const peer_echolink_t *p)
+{
+    if (!p)
+        return "";
+    if (p->remote_talker[0])
+        return p->remote_talker;
+    if (p->remote_cname[0])
+        return p->remote_cname;
+    if (p->host[0])
+        return p->host;
+    return "";
+}
+
+int peer_el_remote_talker_explicit(const peer_echolink_t *p)
+{
+    return p && p->remote_talker_explicit && p->remote_talker[0];
+}
+
+void peer_el_clear_remote_talker(peer_echolink_t *p)
+{
+    if (!p)
+        return;
+    p->remote_talker_explicit = 0;
+    if (p->host[0])
+        copy_z(p->remote_talker, sizeof(p->remote_talker), p->host);
+    else
+        p->remote_talker[0] = '\0';
 }
 
 void peer_el_on_sigint(peer_echolink_t *p)

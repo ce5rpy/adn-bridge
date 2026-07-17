@@ -27,7 +27,8 @@ typedef struct {
     vocoder_t voc;
     ysf2dmr_aliases_t *aliases;
     int mode; /* YSF2DMR_MODE_ECHOLINK_DMR or _YSF */
-    int bridge_dmrid; /* INI [dmr] dmrid — YSF CSD/DCH when set */
+    int bridge_dmrid; /* INI [dmr] dmrid — fallback RF id / alias miss */
+    int el_rf_id; /* EL→DMR talker RF id (alias of remote SDES talker) */
     uint32_t dmr_stream_id;    /* EL->DMR TX stream */
     uint32_t dmr_rx_stream_id; /* DMR->EL RX stream (dedupe VHEAD) */
     uint8_t dmr_seq;
