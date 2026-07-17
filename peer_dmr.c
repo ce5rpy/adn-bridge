@@ -41,6 +41,23 @@ static void pad_copy(char *dst, size_t n, const char *src)
     }
 }
 
+/*
+ * Devuelve la longitud del callsign "base", cortando en el primer
+ * separador de sufijo (-, / o _). Esto permite pasar callsigns con
+ * sufijos de enlace tipo "HP3ICC-LNK", "HP3ICC/LNK" o "HP3ICC_LNK"
+ * y quedarnos solo con "HP3ICC" para el login/registro DMR.
+ */
+static size_t base_callsign_len(const char *cs)
+{
+    size_t i = 0;
+
+    if (!cs)
+        return 0;
+    while (cs[i] && cs[i] != '-' && cs[i] != '/' && cs[i] != '_')
+        i++;
+    return i;
+}
+
 static void send_rptc(peer_dmr_t *p)
 {
     uint8_t out[302];
@@ -118,7 +135,7 @@ int peer_dmr_open(peer_dmr_t *p, const char *host, int port, const char *cs,
     strncpy(p->software_id, "MMDVMHost", sizeof(p->software_id) - 1);
     memset(p->callsign, ' ', 10);
     {
-        size_t cs_len = strlen(cs);
+        size_t cs_len = base_callsign_len(cs);
 
         if (cs_len > 10)
             cs_len = 10;
