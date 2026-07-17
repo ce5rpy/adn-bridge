@@ -78,19 +78,33 @@ static void send_rptc(peer_dmr_t *p)
             loc[0] ? loc : "(empty)", desc);
 }
 
+/*
+ * RPTO wire: "RPTO" + radio_id(4) + OPTIONS ASCII, variable length.
+ * Unlike RPTC (fixed fields space-padded via pad_copy / PR #1), do NOT pad
+ * OPTIONS with spaces or NULs — send exactly strlen(options) bytes (dmrcon /
+ * hblink / adn-server all treat _data[8:] as the raw options string).
+ */
 static void send_rpto(peer_dmr_t *p)
 {
     char out[200];
+    size_t opt_len;
     int len;
 
-    memset(out, 0, sizeof(out));
+    if (!p->options[0])
+        return;
+    /* Ensure terminator even if a prior strncpy filled the buffer. */
+    p->options[sizeof(p->options) - 1] = '\0';
+    opt_len = strlen(p->options);
+    if (opt_len > sizeof(out) - 9)
+        opt_len = sizeof(out) - 9;
+
     memcpy(out, "RPTO", 4);
     out[4] = (get_dmrid(1, 0) >> 24) & 0xff;
     out[5] = (get_dmrid(1, 0) >> 16) & 0xff;
     out[6] = (get_dmrid(1, 0) >> 8) & 0xff;
     out[7] = (get_dmrid(1, 0) >> 0) & 0xff;
-    snprintf(&out[8], sizeof(out) - 8, "%s", p->options);
-    len = 8 + (int)strlen(&out[8]);
+    memcpy(&out[8], p->options, opt_len);
+    len = 8 + (int)opt_len;
     sendto(p->sock, out, len, 0, (const struct sockaddr *)&p->peer, sizeof(p->peer));
     fprintf(stderr, "DMR: RPTO sent (OPTIONS=%s)\n", p->options);
 }
@@ -106,8 +120,10 @@ int peer_dmr_open(peer_dmr_t *p, const char *host, int port, const char *cs,
     p->sock = -1;
     p->dmrid = id;
     p->tg = tg;
-    if (options && options[0])
+    if (options && options[0]) {
         strncpy(p->options, options, sizeof(p->options) - 1);
+        p->options[sizeof(p->options) - 1] = '\0';
+    }
     p->slots = '0';
     strncpy(p->password, password ? password : "", sizeof(p->password) - 1);
     if (description && description[0])

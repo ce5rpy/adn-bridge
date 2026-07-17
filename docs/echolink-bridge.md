@@ -51,7 +51,28 @@ Wire protocol is DV3000 / AMBEServer style (UDP). Lab uses **md380-emu** (`emu-a
 | UDP to md380-emu @ RATET 34 | same 49 bits **interleaved** (`interleave49`) |
 | Analog_Bridge `useEmulator` | often **AMBE72** (RATET 33 / RATEP 3600x2450, 9-byte FEC) |
 
-With `log_level=DEBUG`, look for `vocoder ENC` / `vocoder DEC` lines (`raw=` vs `wire=`, `pcm_rms=`) and `DMR->EL ambe` / `EL->DMR ambe` in the bridge.
+Log channels (each can be `DEBUG|INFO|WARNING|ERROR`):
+
+- `[log] level=` — default for all channels (also `app`: main/aliases)
+- `[dmr] log_level=`, `[echolink] log_level=`, `[ysf] log_level=`, `[vocoder] log_level=`
+- Or under `[log]`: `dmr=`, `echolink=`, `ysf=`, `vocoder=`
+
+Lines look like `2026-07-17 10:44:12,350 DEBUG/dmr: …`. For DMR path noise, prefer `[dmr] log_level=DEBUG` with `[log] level=INFO` and quieter `echolink`/`vocoder`. Look for `vocoder ENC`/`DEC` (`raw=` vs `wire=`, `pcm_rms=`) and `DMR->EL ambe` / `EL->DMR ambe` or `EL->YSF` / `YSF->EL`.
+
+EL→DMR/YSF call end uses **PCM energy hangtime** (~700 ms below speech RMS), not RTP idle alone — EchoLink conferences often keep sending comfort-noise RTP after unkey. Idle residual PCM is dropped so it cannot open a new DMR stream. EL→DMR UDP TX is paced at ~55 ms/frame (same as YSF↔DMR) to avoid burst `RATE DROP` on the master. EL→DMR sends a **single** VHEAD (not three identical ones): adn-server PacketControl treats duplicate VHEAD CRC/`lastData` as loss.
+
+## EchoLink ↔ YSF path
+
+Same EchoLink peer + remote AMBE vocoder as `echolink-dmr`. Voice crosses ModeConv as AMBE7:
+
+| Direction | Flow |
+|-----------|------|
+| EL → YSF | GSM PCM → encode → `put_ambe7_ysf` ×5 → YSFD HEADER / VD2 VOICE / EOT |
+| YSF → EL | YSFD → `put_ysf*` → `get_dmr` → `dmr33_to_ambe` → decode → EL PCM |
+
+Half-duplex: one active call at a time (`call_active` 1 = EL→YSF, 2 = YSF→EL). EL→YSF ends after ~2 s RTP silence (`last_rtp_rx`). YSF framing matches the existing YSF↔DMR bridge (sync, FICH, DCH slots, HP3ICC `ysf_modeconv_chunk` repack).
+
+`[dmr] callsign` / `dmrid` are still required for YSF wire identity and CSD/DCH; no DMR UDP peer is opened in this mode (`password` may be a placeholder).
 
 ## Lab topology (ADN)
 
@@ -60,9 +81,14 @@ With `log_level=DEBUG`, look for `vocoder ENC` / `vocoder DEC` lines (`raw=` vs 
 | thelinkbox | CA5RPY-L | 44.31.61.72 |
 | ysf2dmrcon bridge | CE5RPY-L | 44.31.61.70 |
 | AMBEServer | — | 127.0.0.1:2460 |
+| YSF reflector (lab) | — | see local `ysf2dmrcon-echolink-ysf.ini` |
 
 ```bash
+# EchoLink <-> DMR
 ./ysf2dmrcon -c ysf2dmrcon-echolink.ini
+
+# EchoLink <-> YSF
+./ysf2dmrcon -c ysf2dmrcon-echolink-ysf.ini
 ```
 
 Connectivity: set `host=CA5RPY-L` (or a conference like `*REDCHILE*`). The bridge logs into the directory, looks up that callsign in the station list, then sends RTCP SDES to the resolved IP.

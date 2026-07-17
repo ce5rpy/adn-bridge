@@ -34,8 +34,6 @@
 #include "peer_echolink.h"
 #include "talker_alias.h"
 #include "vocoder.h"
-#include "mmdvm/modeconv_wrap.h"
-#include "ysf_fich.h"
 
 #define YSF2DMR_VERSION "0.2.0"
 
@@ -43,22 +41,32 @@ static ysf2dmr_bridge_t bridge;
 static bridge_el_t bridge_el;
 static ysf2dmr_aliases_t *g_aliases;
 static volatile sig_atomic_t keep_running = 1;
+/* Only set flags in the handler — never sendto/log (unsafe with blocking EL dir TCP). */
+static volatile sig_atomic_t alarm_pending = 0;
 
 static void on_signal(int sig)
 {
     if (sig == SIGINT)
         keep_running = 0;
     if (sig == SIGALRM) {
-        if (bridge.dmr.sock >= 0)
-            peer_dmr_on_alarm(&bridge.dmr);
-        if (bridge.ysf.sock >= 0)
-            peer_ysf_on_alarm(&bridge.ysf);
-        if (bridge_el.dmr.sock >= 0)
-            peer_dmr_on_alarm(&bridge_el.dmr);
-        if (bridge_el.ysf.sock >= 0)
-            peer_ysf_on_alarm(&bridge_el.ysf);
+        alarm_pending = 1;
         alarm(5);
     }
+}
+
+static void service_alarm(void)
+{
+    if (!alarm_pending)
+        return;
+    alarm_pending = 0;
+    if (bridge.dmr.sock >= 0)
+        peer_dmr_on_alarm(&bridge.dmr);
+    if (bridge.ysf.sock >= 0)
+        peer_ysf_on_alarm(&bridge.ysf);
+    if (bridge_el.dmr.sock >= 0)
+        peer_dmr_on_alarm(&bridge_el.dmr);
+    if (bridge_el.ysf.sock >= 0)
+        peer_ysf_on_alarm(&bridge_el.ysf);
 }
 
 static void print_credits(FILE *out)
@@ -149,6 +157,7 @@ static int run_ysf_dmr(ysf2dmr_config_t *cfg)
         int from_dmr = 0, from_ysf = 0, len;
         time_t now;
 
+        service_alarm();
         peer_dmr_tick(&bridge.dmr);
         peer_ysf_tick(&bridge.ysf);
 
@@ -182,83 +191,13 @@ static int run_ysf_dmr(ysf2dmr_config_t *cfg)
     return 0;
 }
 
-/* Minimal YSFD TX for echolink-ysf (VD mode 2 voice payload from ModeConv). */
-static void el_ysf_send_payload(bridge_el_t *b, const uint8_t payload120[120], uint8_t fi)
-{
-    uint8_t frame[155];
-    static uint8_t net_cnt;
-    static uint8_t fn;
-
-    memset(frame, 0, sizeof(frame));
-    memcpy(frame, "YSFD", 4);
-    memcpy(frame + 4, b->ysf.callsign, 10);
-    memcpy(frame + 14, b->ysf.callsign, 10);
-    memcpy(frame + 24, "ALL       ", 10);
-    frame[34] = net_cnt++;
-    memcpy(frame + 35, payload120, 120);
-    memcpy(frame + 35, "\xD4\x71\xC9\x63\x4D", 5);
-    ysf_fich_encode_outbound(frame + 40, fn, fi, 0x02U /* VD2 */, 0U);
-    peer_ysf_send_ysfd(&b->ysf, frame, 155);
-    fn = (uint8_t)((fn + 2) & 0x07);
-}
-
-static void bridge_el_process_el_to_ysf(bridge_el_t *b)
-{
-    int16_t pcm[160];
-    uint8_t ambe[7];
-    uint8_t ysf120[120];
-    static int ambe_n;
-    static uint8_t ambe_buf[5][7];
-    int n;
-
-    while ((n = peer_el_read_pcm(&b->el, pcm, 160)) > 0) {
-        int i;
-        for (i = 0; i < n && b->pcm_el_acc_n < 160; i++)
-            b->pcm_el_acc[b->pcm_el_acc_n++] = pcm[i];
-        if (b->pcm_el_acc_n < 160)
-            continue;
-        if (vocoder_encode(&b->voc, b->pcm_el_acc, ambe) != 0) {
-            b->pcm_el_acc_n = 0;
-            continue;
-        }
-        b->pcm_el_acc_n = 0;
-        memcpy(ambe_buf[ambe_n++], ambe, 7);
-        if (ambe_n < 5)
-            continue;
-        for (i = 0; i < 5; i++)
-            modeconv_put_ambe7_ysf(ambe_buf[i]);
-        ambe_n = 0;
-        if (modeconv_get_ysf(ysf120) == MODECONV_TAG_DATA)
-            el_ysf_send_payload(b, ysf120, 0x01U /* COMMUNICATIONS */);
-    }
-}
-
-static void bridge_el_on_ysfd(bridge_el_t *b, const uint8_t *pkt, int len)
-{
-    uint8_t voice33[33];
-    uint8_t ambe[3][7];
-    int16_t pcm[160];
-    int i;
-
-    if (len != 155 || memcmp(pkt, "YSFD", 4) != 0)
-        return;
-    modeconv_put_ysf_payload(pkt + 35);
-    while (modeconv_get_dmr(voice33) == MODECONV_TAG_DATA) {
-        modeconv_dmr33_to_ambe(voice33, ambe);
-        for (i = 0; i < 3; i++) {
-            if (vocoder_decode(&b->voc, ambe[i], pcm) == 0)
-                peer_el_write_pcm(&b->el, pcm, 160);
-        }
-    }
-}
-
 static int run_echolink(ysf2dmr_config_t *cfg)
 {
     time_t last_alias_poll = time(NULL);
     int use_dmr = (cfg->mode == YSF2DMR_MODE_ECHOLINK_DMR);
     int use_ysf = (cfg->mode == YSF2DMR_MODE_ECHOLINK_YSF);
 
-    bridge_el_init(&bridge_el, cfg->mode, cfg->dmr_options, g_aliases);
+    bridge_el_init(&bridge_el, cfg->mode, cfg->dmr_options, g_aliases, cfg->dmrid);
 
     if (vocoder_open(&bridge_el.voc, cfg->vocoder.host, cfg->vocoder.port) < 0)
         return 1;
@@ -286,6 +225,7 @@ static int run_echolink(ysf2dmr_config_t *cfg)
         int from_dmr = 0, from_ysf = 0, len;
         time_t now;
 
+        service_alarm();
         peer_el_tick(&bridge_el.el);
         if (use_dmr)
             peer_dmr_tick(&bridge_el.dmr);
@@ -310,13 +250,13 @@ static int run_echolink(ysf2dmr_config_t *cfg)
             len = peer_dmr_poll(&bridge_el.dmr, 5, &from_dmr);
             if (from_dmr && len == 55 && memcmp(bridge_el.dmr.buf, "DMRD", 4) == 0)
                 bridge_el_on_dmrd(&bridge_el, bridge_el.dmr.buf, len);
-            bridge_el_tick(&bridge_el);
         }
         if (use_ysf) {
             len = peer_ysf_poll(&bridge_el.ysf, 5, &from_ysf);
             if (from_ysf && len == 155)
                 bridge_el_on_ysfd(&bridge_el, bridge_el.ysf.buf, len);
         }
+        bridge_el_tick(&bridge_el);
     }
 
     peer_el_on_sigint(&bridge_el.el);
@@ -358,7 +298,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    log_set_level(cfg.log_level);
+    ysf2dmr_config_apply_log_levels(&cfg);
 
     print_credits(stdout);
     printf("\n");
@@ -381,7 +321,12 @@ int main(int argc, char **argv)
         printf("Vocoder: %s:%d\n", cfg.vocoder.host, cfg.vocoder.port);
     }
 
-    LOG_INFO("log level %s\n", log_level_name(log_get_level()));
+    LOG_INFO("log levels app=%s el=%s dmr=%s ysf=%s voc=%s\n",
+             log_level_name(log_get_channel_level(LOG_CH_APP)),
+             log_level_name(log_get_channel_level(LOG_CH_ECHOLINK)),
+             log_level_name(log_get_channel_level(LOG_CH_DMR)),
+             log_level_name(log_get_channel_level(LOG_CH_YSF)),
+             log_level_name(log_get_channel_level(LOG_CH_VOCODER)));
 
     if (ysf2dmr_aliases_load(&cfg.aliases, &g_aliases) != 0)
         LOG_WARNING("alias load failed; talker lookup may be limited\n");

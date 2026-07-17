@@ -43,11 +43,14 @@ typedef struct {
     /* tlb LoginInterval / StationListInterval (seconds); 0 disables */
     int login_interval;
     int station_list_interval;
+    /* -1 = inherit [log] level=; else DEBUG|INFO|WARNING|ERROR */
+    int log_level;
 } ysf2dmr_echolink_cfg_t;
 
 typedef struct {
     char host[128];
     int port;
+    int log_level; /* -1 = inherit [log] level= */
 } ysf2dmr_vocoder_cfg_t;
 
 typedef struct {
@@ -65,7 +68,9 @@ typedef struct {
     char dmr_password[64];
     int dmr_tg;            /* mandatory [dmr] tg= — voice + connect PTT */
     int default_ysf_dmrid; /* legacy INI key; bridge [dmr] dmrid is used instead */
-    log_level_t log_level; /* [log] level=DEBUG|INFO|WARNING|ERROR */
+    log_level_t log_level; /* [log] level= — default for all channels */
+    int dmr_log_level;     /* [dmr] log_level=; -1 = inherit */
+    int ysf_log_level;     /* [ysf] log_level=; -1 = inherit */
     ysf2dmr_aliases_cfg_t aliases;
     ysf2dmr_echolink_cfg_t echolink;
     ysf2dmr_vocoder_cfg_t vocoder;
@@ -77,6 +82,7 @@ int ysf2dmr_config_default_path(const char *argv0, char *path, size_t pathlen);
 /* Returns 0 on success, -1 on error (message in err, errlen). */
 int ysf2dmr_config_load(const char *path, ysf2dmr_config_t *cfg, char *err, size_t errlen);
 int ysf2dmr_config_valid(const ysf2dmr_config_t *cfg, char *err, size_t errlen);
+void ysf2dmr_config_apply_log_levels(const ysf2dmr_config_t *cfg);
 const char *ysf2dmr_mode_name(int mode);
 
 #endif

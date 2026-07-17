@@ -177,7 +177,7 @@ static int voc_recover_rate(vocoder_t *v)
     n = voc_exchange_once(v, DV3K_RATET_DMR, (int)sizeof(DV3K_RATET_DMR),
                           rsp, (int)sizeof(rsp), 300);
     if (n > 0) {
-        LOG_WARNING("vocoder: re-RATET 34 after %d consecutive failures\n",
+        LOG_VOC_WARNING("vocoder: re-RATET 34 after %d consecutive failures\n",
                     g_consec_fail);
         return 0;
     }
@@ -225,7 +225,7 @@ int vocoder_open(vocoder_t *v, const char *host, int port)
 
     v->sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (v->sock < 0) {
-        LOG_ERROR("vocoder: socket failed: %s\n", strerror(errno));
+        LOG_VOC_ERROR("vocoder: socket failed: %s\n", strerror(errno));
         return -1;
     }
 
@@ -235,7 +235,7 @@ int vocoder_open(vocoder_t *v, const char *host, int port)
     if (inet_aton(host, &v->peer.sin_addr) == 0) {
         he = gethostbyname(host);
         if (!he) {
-            LOG_ERROR("vocoder: cannot resolve %s\n", host);
+            LOG_VOC_ERROR("vocoder: cannot resolve %s\n", host);
             close(v->sock);
             v->sock = -1;
             return -1;
@@ -245,7 +245,7 @@ int vocoder_open(vocoder_t *v, const char *host, int port)
 
     n = voc_exchange(v, DV3K_PRODID_REQ, (int)sizeof(DV3K_PRODID_REQ), rsp, (int)sizeof(rsp));
     if (n <= 0) {
-        LOG_ERROR("vocoder: PRODID probe failed (%s:%d)%s\n", host, port,
+        LOG_VOC_ERROR("vocoder: PRODID probe failed (%s:%d)%s\n", host, port,
                   n == 0 ? " timeout" : "");
         close(v->sock);
         v->sock = -1;
@@ -265,24 +265,24 @@ int vocoder_open(vocoder_t *v, const char *host, int port)
 
     n = voc_exchange(v, DV3K_RATET_DMR, (int)sizeof(DV3K_RATET_DMR), rsp, (int)sizeof(rsp));
     if (n <= 0) {
-        LOG_ERROR("vocoder: DMR rate set failed%s\n", n == 0 ? " timeout" : "");
+        LOG_VOC_ERROR("vocoder: DMR rate set failed%s\n", n == 0 ? " timeout" : "");
         close(v->sock);
         v->sock = -1;
         return -1;
     }
     v->ready = 1;
-    LOG_INFO("vocoder ready at %s:%d (RATET 34 / 49-bit FEC=0, wire=interleave49, api=raw)\n",
+    LOG_VOC_INFO("vocoder ready at %s:%d (RATET 34 / 49-bit FEC=0, wire=interleave49, api=raw)\n",
              host, port);
     if (prod[0])
-        LOG_INFO("vocoder PRODID: %s\n", prod);
-    LOG_DEBUG("vocoder: Analog_Bridge soft path often uses AMBE72/RATET33; we use 49-bit+IL49\n");
+        LOG_VOC_INFO("vocoder PRODID: %s\n", prod);
+    LOG_VOC_DEBUG("vocoder: Analog_Bridge soft path often uses AMBE72/RATET33; we use 49-bit+IL49\n");
     return 0;
 }
 
 void vocoder_close(vocoder_t *v)
 {
     if (v->ready) {
-        LOG_INFO("vocoder stats: enc ok/fail=%u/%u dec ok/fail=%u/%u\n",
+        LOG_VOC_INFO("vocoder stats: enc ok/fail=%u/%u dec ok/fail=%u/%u\n",
                  g_enc_ok, g_enc_fail, g_dec_ok, g_dec_fail);
     }
     if (v->sock >= 0)
@@ -318,26 +318,33 @@ int vocoder_encode(vocoder_t *v, const int16_t pcm[VOC_PCM_SAMPLES], uint8_t amb
         req[7 + i * 2] = (uint8_t)(s & 0xff);
     }
 
-    n = voc_exchange(v, req, (int)(4 + plen), rsp, (int)sizeof(rsp));
-    if (n == 0) {
+    /* Retry once after re-RATET: a shared md380-emu can be left on RATET 33
+     * (72-bit) by another client; that still returns a valid AMBE packet so
+     * voc_exchange() would never trigger timeout-based recovery. */
+    for (i = 0; i < 2; i++) {
+        n = voc_exchange(v, req, (int)(4 + plen), rsp, (int)sizeof(rsp));
+        if (n == 0) {
+            g_enc_fail++;
+            if (dbg_periodic(&g_enc_log_n))
+                LOG_VOC_WARNING("vocoder ENC timeout (pcm_rms=%.0f ok/fail=%u/%u)\n",
+                            rms, g_enc_ok, g_enc_fail);
+            return -1;
+        }
+        if (n < 6 || rsp[3] != DV3K_TYPE_AMBE || rsp[4] != DV3K_AMBE_FIELD) {
+            g_enc_fail++;
+            if (dbg_periodic(&g_enc_log_n))
+                LOG_VOC_WARNING("vocoder ENC bad rsp n=%d type=0x%02x field=0x%02x (pcm_rms=%.0f)\n",
+                            n, n >= 4 ? rsp[3] : 0, n >= 5 ? rsp[4] : 0, rms);
+            return -1;
+        }
+        if (rsp[5] == 49)
+            break;
         g_enc_fail++;
         if (dbg_periodic(&g_enc_log_n))
-            LOG_WARNING("vocoder ENC timeout (pcm_rms=%.0f ok/fail=%u/%u)\n",
-                        rms, g_enc_ok, g_enc_fail);
-        return -1;
-    }
-    if (n < 6 || rsp[3] != DV3K_TYPE_AMBE || rsp[4] != DV3K_AMBE_FIELD) {
-        g_enc_fail++;
-        if (dbg_periodic(&g_enc_log_n))
-            LOG_WARNING("vocoder ENC bad rsp n=%d type=0x%02x field=0x%02x (pcm_rms=%.0f)\n",
-                        n, n >= 4 ? rsp[3] : 0, n >= 5 ? rsp[4] : 0, rms);
-        return -1;
-    }
-    if (rsp[5] != 49) {
-        g_enc_fail++;
-        if (dbg_periodic(&g_enc_log_n))
-            LOG_WARNING("vocoder ENC unexpected bits=%u (want 49; check RATET)\n",
+            LOG_VOC_WARNING("vocoder ENC unexpected bits=%u (want 49; check RATET)\n",
                         (unsigned)rsp[5]);
+        if (i == 0 && voc_recover_rate(v) == 0)
+            continue;
         return -1;
     }
     nbytes = (rsp[5] + 7) / 8;
@@ -353,7 +360,7 @@ int vocoder_encode(vocoder_t *v, const int16_t pcm[VOC_PCM_SAMPLES], uint8_t amb
     if (dbg_periodic(&g_enc_log_n)) {
         hex7(wire_h, sizeof(wire_h), wire);
         hex7(raw_h, sizeof(raw_h), ambe);
-        LOG_DEBUG("vocoder ENC #%u pcm_rms=%.0f wire=%s raw=%s ok/fail=%u/%u\n",
+        LOG_VOC_DEBUG("vocoder ENC #%u pcm_rms=%.0f wire=%s raw=%s ok/fail=%u/%u\n",
                   g_enc_ok, rms, wire_h, raw_h, g_enc_ok, g_enc_fail);
     }
     return 0;
@@ -390,7 +397,7 @@ int vocoder_decode(vocoder_t *v, const uint8_t ambe[VOC_AMBE_BYTES], int16_t pcm
         if (dbg_periodic(&g_dec_log_n)) {
             hex7(raw_h, sizeof(raw_h), ambe);
             hex7(wire_h, sizeof(wire_h), wire);
-            LOG_WARNING("vocoder DEC timeout raw=%s wire=%s ok/fail=%u/%u\n",
+            LOG_VOC_WARNING("vocoder DEC timeout raw=%s wire=%s ok/fail=%u/%u\n",
                         raw_h, wire_h, g_dec_ok, g_dec_fail);
         }
         return -1;
@@ -399,7 +406,7 @@ int vocoder_decode(vocoder_t *v, const uint8_t ambe[VOC_AMBE_BYTES], int16_t pcm
         g_dec_fail++;
         if (dbg_periodic(&g_dec_log_n)) {
             hex7(raw_h, sizeof(raw_h), ambe);
-            LOG_WARNING("vocoder DEC bad rsp n=%d type=0x%02x field=0x%02x raw=%s\n",
+            LOG_VOC_WARNING("vocoder DEC bad rsp n=%d type=0x%02x field=0x%02x raw=%s\n",
                         n, n >= 4 ? rsp[3] : 0, n >= 5 ? rsp[4] : 0, raw_h);
         }
         return -1;
@@ -422,7 +429,7 @@ int vocoder_decode(vocoder_t *v, const uint8_t ambe[VOC_AMBE_BYTES], int16_t pcm
     if (dbg_periodic(&g_dec_log_n)) {
         hex7(raw_h, sizeof(raw_h), ambe);
         hex7(wire_h, sizeof(wire_h), wire);
-        LOG_DEBUG("vocoder DEC #%u raw=%s wire=%s pcm_rms=%.0f ok/fail=%u/%u\n",
+        LOG_VOC_DEBUG("vocoder DEC #%u raw=%s wire=%s pcm_rms=%.0f ok/fail=%u/%u\n",
                   g_dec_ok, raw_h, wire_h, rms, g_dec_ok, g_dec_fail);
     }
     return 0;

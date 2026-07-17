@@ -16,6 +16,7 @@
 #include <errno.h>
 #include <netdb.h>
 #include <poll.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,8 +32,14 @@
 static void el_send_sdes(peer_echolink_t *p);
 static int el_try_directory_login(peer_echolink_t *p);
 static void el_flush_rtp_tx(peer_echolink_t *p);
+static void el_login_and_list(peer_echolink_t *p);
+static void el_station_list_only(peer_echolink_t *p);
+static void el_dir_op_begin(peer_echolink_t *p);
+static void el_dir_op_end(peer_echolink_t *p);
 
 #define EL_SDES_INTERVAL      5
+/* Peer silent longer than tlb ConfMemberTimeout → treat as unlinked. */
+#define EL_PEER_STALE_SEC     45
 /* tlb: first re-login is delayed 60s after startup LOGIN_AND_LIST */
 #define EL_FIRST_RELOGIN_DELAY 60
 #define EL_RTP_VERSION        3
@@ -67,6 +74,22 @@ static int udp_bind(const char *addr, int port, struct sockaddr_in *out)
         return -1;
     }
     return s;
+}
+
+/* Bounded copy without -Wstringop-truncation on same-sized src/dst arrays. */
+static void copy_z(char *dst, size_t dstlen, const char *src)
+{
+    size_t n;
+
+    if (!dst || dstlen == 0)
+        return;
+    if (!src) {
+        dst[0] = '\0';
+        return;
+    }
+    n = strnlen(src, dstlen - 1);
+    memcpy(dst, src, n);
+    dst[n] = '\0';
 }
 
 static void pcm_ring_push(peer_echolink_t *p, const int16_t *pcm, int n)
@@ -249,11 +272,11 @@ static int el_directory_lookup_on_server(peer_echolink_t *p, const char *server,
                         if (scrambled)
                             el_descramble_ip(iptry);
                         if (inet_aton(iptry, out)) {
-                            LOG_INFO("echolink: %s -> %s via %s\n",
+                            LOG_EL_INFO("echolink: %s -> %s via %s\n",
                                      want, iptry, server);
                             found = 1;
                         } else {
-                            LOG_WARNING("echolink: bad IP for %s (raw=%s)\n",
+                            LOG_EL_WARNING("echolink: bad IP for %s (raw=%s)\n",
                                         want, ipstr);
                         }
                     }
@@ -319,24 +342,37 @@ static int el_station_list_refresh_peer(peer_echolink_t *p)
     struct in_addr ip;
     char old_ip[INET_ADDRSTRLEN];
     char new_ip[INET_ADDRSTRLEN];
+    int had_peer;
+    uint32_t old_addr = 0;
 
     if (!p->host[0])
         return 0;
+    /* TCP/DNS lookup — must not hold dir_mu (audio path needs it briefly). */
     if (el_resolve_peer(p, &ip) != 0) {
-        LOG_WARNING("echolink: station list: %s not found\n", p->host);
+        LOG_EL_WARNING("echolink: station list: %s not found\n", p->host);
         return -1;
     }
-    if (p->peer_resolved && p->peer_rtp.sin_addr.s_addr == ip.s_addr)
-        return 0;
 
-    if (p->peer_resolved) {
-        inet_ntop(AF_INET, &p->peer_rtp.sin_addr, old_ip, sizeof(old_ip));
+    pthread_mutex_lock(&p->dir_mu);
+    had_peer = p->peer_resolved;
+    if (had_peer)
+        old_addr = p->peer_rtp.sin_addr.s_addr;
+    if (had_peer && old_addr == ip.s_addr) {
+        pthread_mutex_unlock(&p->dir_mu);
+        return 0;
+    }
+    if (had_peer) {
+        struct in_addr oa;
+
+        oa.s_addr = old_addr;
+        inet_ntop(AF_INET, &oa, old_ip, sizeof(old_ip));
         inet_ntop(AF_INET, &ip, new_ip, sizeof(new_ip));
-        LOG_INFO("echolink: %s IP changed %s -> %s\n", p->host, old_ip, new_ip);
+        LOG_EL_INFO("echolink: %s IP changed %s -> %s\n", p->host, old_ip, new_ip);
     } else {
-        LOG_INFO("echolink: connecting to %s (%s)\n", p->host, inet_ntoa(ip));
+        LOG_EL_INFO("echolink: connecting to %s (%s)\n", p->host, inet_ntoa(ip));
     }
     el_set_peer_addr(p, ip);
+    pthread_mutex_unlock(&p->dir_mu);
     el_send_sdes(p);
     return 0;
 }
@@ -344,14 +380,12 @@ static int el_station_list_refresh_peer(peer_echolink_t *p)
 /* Keep RTCP alive around blocking directory TCP (tlb ConfMemberTimeout). */
 static void el_dir_op_begin(peer_echolink_t *p)
 {
-    if (p->peer_resolved)
-        el_send_sdes(p);
+    el_send_sdes(p);
 }
 
 static void el_dir_op_end(peer_echolink_t *p)
 {
-    if (p->peer_resolved)
-        el_send_sdes(p);
+    el_send_sdes(p);
 }
 
 /* tlb SERV_REQ_LOGIN_AND_LIST */
@@ -373,6 +407,97 @@ static void el_station_list_only(peer_echolink_t *p)
     el_dir_op_end(p);
 }
 
+/* Schedule a directory job on the worker; returns 0 if accepted, -1 if busy/stopped. */
+static int el_dir_schedule(peer_echolink_t *p, int job)
+{
+    if (!p || !p->dir_thread_on || job == EL_DIR_JOB_NONE)
+        return -1;
+    pthread_mutex_lock(&p->dir_mu);
+    if (p->dir_stop || p->dir_busy || p->dir_job != EL_DIR_JOB_NONE) {
+        pthread_mutex_unlock(&p->dir_mu);
+        return -1;
+    }
+    p->dir_job = job;
+    pthread_cond_signal(&p->dir_cv);
+    pthread_mutex_unlock(&p->dir_mu);
+    return 0;
+}
+
+static void *el_dir_thread_main(void *arg)
+{
+    peer_echolink_t *p = (peer_echolink_t *)arg;
+
+    for (;;) {
+        int job;
+
+        pthread_mutex_lock(&p->dir_mu);
+        while (!p->dir_stop && p->dir_job == EL_DIR_JOB_NONE)
+            pthread_cond_wait(&p->dir_cv, &p->dir_mu);
+        if (p->dir_stop) {
+            pthread_mutex_unlock(&p->dir_mu);
+            break;
+        }
+        job = p->dir_job;
+        p->dir_job = EL_DIR_JOB_NONE;
+        p->dir_busy = 1;
+        pthread_mutex_unlock(&p->dir_mu);
+
+        switch (job) {
+        case EL_DIR_JOB_LOGIN:
+            el_dir_op_begin(p);
+            el_try_directory_login(p);
+            el_dir_op_end(p);
+            break;
+        case EL_DIR_JOB_LIST:
+            el_station_list_only(p);
+            break;
+        case EL_DIR_JOB_LOGIN_LIST:
+            el_login_and_list(p);
+            break;
+        default:
+            break;
+        }
+
+        pthread_mutex_lock(&p->dir_mu);
+        p->dir_busy = 0;
+        pthread_mutex_unlock(&p->dir_mu);
+    }
+    return NULL;
+}
+
+static int el_dir_thread_start(peer_echolink_t *p)
+{
+    int err;
+
+    p->dir_stop = 0;
+    p->dir_busy = 0;
+    p->dir_job = EL_DIR_JOB_NONE;
+    err = pthread_create(&p->dir_tid, NULL, el_dir_thread_main, p);
+    if (err != 0) {
+        LOG_EL_WARNING("echolink: directory thread create failed (%s); "
+                       "periodic refresh will block the audio loop\n",
+                       strerror(err));
+        p->dir_thread_on = 0;
+        return -1;
+    }
+    p->dir_thread_on = 1;
+    return 0;
+}
+
+static void el_dir_thread_stop(peer_echolink_t *p)
+{
+    if (!p->dir_thread_on)
+        return;
+    pthread_mutex_lock(&p->dir_mu);
+    p->dir_stop = 1;
+    pthread_cond_signal(&p->dir_cv);
+    pthread_mutex_unlock(&p->dir_mu);
+    pthread_join(p->dir_tid, NULL);
+    p->dir_thread_on = 0;
+    p->dir_busy = 0;
+    p->dir_job = EL_DIR_JOB_NONE;
+}
+
 /* Directory TCP login — returns 0 on OK. */
 static int el_directory_login(peer_echolink_t *p, const char *server)
 {
@@ -382,13 +507,14 @@ static int el_directory_login(peer_echolink_t *p, const char *server)
     char body[512];
     char ack[8];
     time_t now = time(NULL);
+    struct tm tm_buf;
     struct tm *tm;
     int n, body_len;
     uint8_t l = 'l';
     int i;
 
     if (resolve_dns(server, &ip) != 0) {
-        LOG_WARNING("echolink: cannot resolve directory %s\n", server);
+        LOG_EL_WARNING("echolink: cannot resolve directory %s\n", server);
         return -1;
     }
 
@@ -401,7 +527,7 @@ static int el_directory_login(peer_echolink_t *p, const char *server)
     local.sin_port = 0;
     if (inet_aton(p->bind_addr, &local.sin_addr) == 0
         || bind(fd, (struct sockaddr *)&local, sizeof(local)) < 0) {
-        LOG_WARNING("echolink: directory bind %s failed: %s\n",
+        LOG_EL_WARNING("echolink: directory bind %s failed: %s\n",
                     p->bind_addr, strerror(errno));
         close(fd);
         return -1;
@@ -413,12 +539,12 @@ static int el_directory_login(peer_echolink_t *p, const char *server)
     sa.sin_addr = ip;
 
     if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
-        LOG_WARNING("echolink: directory connect %s: %s\n", server, strerror(errno));
+        LOG_EL_WARNING("echolink: directory connect %s: %s\n", server, strerror(errno));
         close(fd);
         return -1;
     }
 
-    tm = localtime(&now);
+    tm = localtime_r(&now, &tm_buf);
     /* callsign AC AC password \r STATUS version B(HH:DD) \r QTH \r email \r */
     body_len = snprintf(body, sizeof(body),
                         "%s%c%c%s\rONLINE%sB(%02d:%02d)\r%s\r%s\r",
@@ -441,17 +567,21 @@ static int el_directory_login(peer_echolink_t *p, const char *server)
     n = (int)read(fd, ack, sizeof(ack) - 1);
     close(fd);
     if (n < 2) {
-        LOG_WARNING("echolink: directory %s short reply\n", server);
+        LOG_EL_WARNING("echolink: directory %s short reply\n", server);
         return -1;
     }
     ack[n] = '\0';
     if (strncmp(ack, "OK", 2) == 0) {
-        LOG_INFO("echolink: directory login OK (%s as %s)\n", server, p->callsign);
-        p->status = PEER_EL_DIR_OK;
+        LOG_EL_INFO("echolink: directory login OK (%s as %s)\n", server, p->callsign);
+        /* Do not demote PEER_EL_CONNECTED — login refresh must not clear link state. */
+        pthread_mutex_lock(&p->dir_mu);
+        if (p->status != PEER_EL_CONNECTED)
+            p->status = PEER_EL_DIR_OK;
         p->last_dir_login = now;
+        pthread_mutex_unlock(&p->dir_mu);
         return 0;
     }
-    LOG_WARNING("echolink: directory login rejected by %s: %.16s\n", server, ack);
+    LOG_EL_WARNING("echolink: directory login rejected by %s: %.16s\n", server, ack);
     (void)i;
     return -1;
 }
@@ -471,12 +601,14 @@ static int el_try_directory_login(peer_echolink_t *p)
 static int el_build_sdes(peer_echolink_t *p, uint8_t *out, int outlen)
 {
     time_t now = time(NULL);
-    struct tm *tm = localtime(&now);
+    struct tm tm_buf;
+    struct tm *tm = localtime_r(&now, &tm_buf);
     char phone[16];
     char tool[] = "ysf2dmrcon";
     int o = 0;
     int name_len, cname_len, email_len, phone_len, tool_len;
     int sdes_start, sdes_len_words;
+    int need;
 
     if (outlen < 128)
         return -1;
@@ -489,6 +621,11 @@ static int el_build_sdes(peer_echolink_t *p, uint8_t *out, int outlen)
     email_len = p->email[0] ? (int)strlen(p->email) : cname_len;
     phone_len = (int)strlen(phone);
     tool_len = (int)strlen(tool);
+    /* RR(8) + SDES hdr(8) + items + END + pad(<=3) */
+    need = 8 + 8 + (2 + cname_len) * 2 + (2 + email_len) + (2 + phone_len)
+           + (2 + tool_len) + 1 + 3;
+    if (need > outlen)
+        return -1;
 
     /* RR */
     out[o++] = (uint8_t)((EL_RTP_VERSION << 6)); /* v=3, p=0, count=0 */
@@ -548,16 +685,24 @@ static int el_build_sdes(peer_echolink_t *p, uint8_t *out, int outlen)
 static void el_send_sdes(peer_echolink_t *p)
 {
     uint8_t buf[256];
+    struct sockaddr_in dest;
     int n;
+    int sock;
 
-    if (!p->peer_resolved || p->rtcp_sock < 0)
+    pthread_mutex_lock(&p->dir_mu);
+    if (!p->peer_resolved || p->rtcp_sock < 0) {
+        pthread_mutex_unlock(&p->dir_mu);
         return;
+    }
+    sock = p->rtcp_sock;
+    dest = p->peer_rtcp;
     n = el_build_sdes(p, buf, (int)sizeof(buf));
+    if (n > 0)
+        p->last_sdes = time(NULL);
+    pthread_mutex_unlock(&p->dir_mu);
     if (n <= 0)
         return;
-    sendto(p->rtcp_sock, buf, (size_t)n, 0,
-           (struct sockaddr *)&p->peer_rtcp, sizeof(p->peer_rtcp));
-    p->last_sdes = time(NULL);
+    sendto(sock, buf, (size_t)n, 0, (struct sockaddr *)&dest, sizeof(dest));
 }
 
 static void el_handle_rtcp(peer_echolink_t *p, const uint8_t *data, int len,
@@ -574,11 +719,18 @@ static void el_handle_rtcp(peer_echolink_t *p, const uint8_t *data, int len,
         if (plen < 4 || o + plen > len)
             break;
         if (pt == EL_RTCP_SDES) {
+            int just_linked = 0;
+
+            pthread_mutex_lock(&p->dir_mu);
+            p->last_peer_rtcp = time(NULL);
             if (!p->linked) {
                 p->linked = 1;
                 p->status = PEER_EL_CONNECTED;
-                LOG_INFO("echolink: linked to %s (RTCP SDES)\n", p->host);
+                just_linked = 1;
             }
+            pthread_mutex_unlock(&p->dir_mu);
+            if (just_linked)
+                LOG_EL_INFO("echolink: linked to %s (RTCP SDES)\n", p->host);
             /* Reply SDES */
             el_send_sdes(p);
         }
@@ -592,10 +744,18 @@ static void el_handle_rtp(peer_echolink_t *p, const uint8_t *data, int len)
     int16_t pcm[EL_GSM_SAMPLES];
     int i;
     int frames;
+    time_t now;
+    static unsigned rtp_dbg;
+    static time_t rtp_dbg_last;
 
     /* EchoLink: 4 GSM frames / packet (144 bytes). Accept exact or with pad. */
-    if (len < EL_RTP_FRAME_LEN || !g)
+    if (len < EL_RTP_FRAME_LEN || !g) {
+        static int short_dbg;
+        if (++short_dbg <= 5 || (short_dbg % 50) == 0)
+            LOG_EL_DEBUG("echolink: RTP drop len=%d (need >=%d) from %s\n",
+                         len, EL_RTP_FRAME_LEN, p->host);
         return;
+    }
     frames = 4;
     for (i = 0; i < frames; i++) {
         const uint8_t *frame = data + 12 + i * EL_GSM_FRAME;
@@ -603,23 +763,46 @@ static void el_handle_rtp(peer_echolink_t *p, const uint8_t *data, int len)
             continue;
         pcm_ring_push(p, pcm, EL_GSM_SAMPLES);
     }
-    p->last_rtp_rx = time(NULL);
+    now = time(NULL);
+    /* New talk spurt after >=2s idle → reset DEBUG counter. */
+    if (rtp_dbg_last && (now - rtp_dbg_last) >= 2)
+        rtp_dbg = 0;
+    p->last_rtp_rx = now;
+    p->last_peer_rtcp = now; /* RTP also proves the peer path is alive */
+    rtp_dbg_last = now;
     p->rtp_rx_packets++;
     if (!p->linked) {
         p->linked = 1;
         p->status = PEER_EL_CONNECTED;
-        LOG_INFO("echolink: audio from %s\n", p->host);
+        LOG_EL_INFO("echolink: linked to %s (first RTP)\n", p->host);
     }
+    /* First packets of a spurt + every 25th while RX is active. */
+    rtp_dbg++;
+    if (rtp_dbg == 1 || rtp_dbg == 2 || (rtp_dbg % 25) == 0)
+        LOG_EL_DEBUG("echolink: RTP RX #%u len=%d pcm_in=%d pt=%u seq=%u from %s\n",
+                     rtp_dbg, len, p->pcm_in_count,
+                     (unsigned)(data[1] & 0x7f),
+                     (unsigned)((data[2] << 8) | data[3]),
+                     p->host);
 }
 
 static void el_flush_rtp_tx(peer_echolink_t *p)
 {
     uint8_t pkt[EL_RTP_FRAME_LEN];
+    struct sockaddr_in dest;
     gsm g = (gsm)p->gsm_enc;
     int i;
+    int sock;
 
-    if (!g || p->pcm_out_count <= 0 || !p->peer_resolved)
+    pthread_mutex_lock(&p->dir_mu);
+    if (!g || p->pcm_out_count <= 0 || !p->peer_resolved || p->rtp_sock < 0) {
+        pthread_mutex_unlock(&p->dir_mu);
         return;
+    }
+    sock = p->rtp_sock;
+    dest = p->peer_rtp;
+    pthread_mutex_unlock(&p->dir_mu);
+
     /* Pad short final packet with silence so VTERM audio is not dropped. */
     if (p->pcm_out_count < EL_RTP_SAMPLES)
         memset(p->pcm_out + p->pcm_out_count, 0,
@@ -640,8 +823,8 @@ static void el_flush_rtp_tx(peer_echolink_t *p)
         gsm_encode(g, (gsm_signal *)(p->pcm_out + i * EL_GSM_SAMPLES),
                    (gsm_byte *)(pkt + 12 + i * EL_GSM_FRAME));
     }
-    sendto(p->rtp_sock, pkt, EL_RTP_FRAME_LEN, 0,
-           (struct sockaddr *)&p->peer_rtp, sizeof(p->peer_rtp));
+    sendto(sock, pkt, EL_RTP_FRAME_LEN, 0,
+           (struct sockaddr *)&dest, sizeof(dest));
     p->pcm_out_count = 0;
     p->rtp_tx_packets++;
 }
@@ -653,45 +836,50 @@ int peer_el_open(peer_echolink_t *p, const ysf2dmr_echolink_cfg_t *cfg)
     memset(p, 0, sizeof(*p));
     p->rtp_sock = -1;
     p->rtcp_sock = -1;
-    if (!cfg || !cfg->callsign[0] || !cfg->bind_addr[0])
+    pthread_mutex_init(&p->dir_mu, NULL);
+    pthread_cond_init(&p->dir_cv, NULL);
+    if (!cfg || !cfg->callsign[0] || !cfg->bind_addr[0]) {
+        pthread_cond_destroy(&p->dir_cv);
+        pthread_mutex_destroy(&p->dir_mu);
         return -1;
+    }
 
-    strncpy(p->callsign, cfg->callsign, sizeof(p->callsign) - 1);
-    strncpy(p->password, cfg->password, sizeof(p->password) - 1);
-    strncpy(p->bind_addr, cfg->bind_addr, sizeof(p->bind_addr) - 1);
-    strncpy(p->host, cfg->host, sizeof(p->host) - 1);
-    strncpy(p->qth, cfg->qth, sizeof(p->qth) - 1);
-    strncpy(p->email, cfg->email, sizeof(p->email) - 1);
+    copy_z(p->callsign, sizeof(p->callsign), cfg->callsign);
+    copy_z(p->password, sizeof(p->password), cfg->password);
+    copy_z(p->bind_addr, sizeof(p->bind_addr), cfg->bind_addr);
+    copy_z(p->host, sizeof(p->host), cfg->host);
+    copy_z(p->qth, sizeof(p->qth), cfg->qth);
+    copy_z(p->email, sizeof(p->email), cfg->email);
     p->directory_server_count = cfg->directory_server_count;
     p->login_interval = cfg->login_interval;
     p->station_list_interval = cfg->station_list_interval;
     for (i = 0; i < cfg->directory_server_count && i < YSF2DMR_EL_DIR_MAX; i++)
-        strncpy(p->directory_servers[i], cfg->directory_servers[i],
-                sizeof(p->directory_servers[i]) - 1);
+        copy_z(p->directory_servers[i], sizeof(p->directory_servers[i]),
+               cfg->directory_servers[i]);
 
     p->gsm_enc = gsm_create();
     p->gsm_dec = gsm_create();
     if (!p->gsm_enc || !p->gsm_dec) {
-        LOG_ERROR("echolink: gsm_create failed\n");
+        LOG_EL_ERROR("echolink: gsm_create failed\n");
         peer_el_close(p);
         return -1;
     }
 
     p->rtp_sock = udp_bind(p->bind_addr, EL_RTP_PORT, &p->bind_rtp);
     if (p->rtp_sock < 0) {
-        LOG_ERROR("echolink: cannot bind %s:%d: %s\n",
+        LOG_EL_ERROR("echolink: cannot bind %s:%d: %s\n",
                   p->bind_addr, EL_RTP_PORT, strerror(errno));
         peer_el_close(p);
         return -1;
     }
     p->rtcp_sock = udp_bind(p->bind_addr, EL_RTCP_PORT, &p->bind_rtcp);
     if (p->rtcp_sock < 0) {
-        LOG_ERROR("echolink: cannot bind %s:%d: %s\n",
+        LOG_EL_ERROR("echolink: cannot bind %s:%d: %s\n",
                   p->bind_addr, EL_RTCP_PORT, strerror(errno));
         peer_el_close(p);
         return -1;
     }
-    LOG_INFO("echolink: bound %s:%d/%d as %s\n",
+    LOG_EL_INFO("echolink: bound %s:%d/%d as %s\n",
              p->bind_addr, EL_RTP_PORT, EL_RTCP_PORT, p->callsign);
 
     /*
@@ -705,7 +893,7 @@ int peer_el_open(peer_echolink_t *p, const ysf2dmr_echolink_cfg_t *cfg)
             p->next_login_time = now + EL_FIRST_RELOGIN_DELAY;
             if (p->station_list_interval > 0) {
                 p->next_station_list_time = now + p->station_list_interval;
-                LOG_INFO("echolink: directory timers login=%ds list=%ds (tlb)\n",
+                LOG_EL_INFO("echolink: directory timers login=%ds list=%ds (tlb)\n",
                          p->login_interval, p->station_list_interval);
                 el_login_and_list(p);
             } else {
@@ -720,11 +908,14 @@ int peer_el_open(peer_echolink_t *p, const ysf2dmr_echolink_cfg_t *cfg)
         }
     }
 
+    /* Periodic directory TCP must not block RTP/PCM after startup. */
+    el_dir_thread_start(p);
     return 0;
 }
 
 void peer_el_close(peer_echolink_t *p)
 {
+    el_dir_thread_stop(p);
     if (p->rtp_sock >= 0)
         close(p->rtp_sock);
     if (p->rtcp_sock >= 0)
@@ -738,23 +929,34 @@ void peer_el_close(peer_echolink_t *p)
     p->linked = 0;
     p->peer_resolved = 0;
     p->status = PEER_EL_DISCONNECTED;
+    pthread_cond_destroy(&p->dir_cv);
+    pthread_mutex_destroy(&p->dir_mu);
 }
 
 void peer_el_tick(peer_echolink_t *p)
 {
     time_t now = time(NULL);
 
-    /* tlb RTCP_Handler directory refresh (conference.c) */
+    /* tlb RTCP_Handler directory refresh — schedule worker (non-blocking). */
     if (p->login_interval > 0 && p->next_login_time > 0
         && now >= p->next_login_time) {
+        int job = EL_DIR_JOB_LOGIN;
+
         p->next_login_time = now + p->login_interval;
         if (p->next_station_list_time != 0
             && now >= p->next_station_list_time) {
             p->next_station_list_time = now + p->station_list_interval;
-            LOG_DEBUG("echolink: refreshing login and station list\n");
+            job = EL_DIR_JOB_LOGIN_LIST;
+            LOG_EL_DEBUG("echolink: refreshing login and station list\n");
+        } else {
+            LOG_EL_DEBUG("echolink: refreshing login\n");
+        }
+        if (p->dir_thread_on) {
+            if (el_dir_schedule(p, job) != 0)
+                LOG_EL_DEBUG("echolink: directory job busy — skip this cycle\n");
+        } else if (job == EL_DIR_JOB_LOGIN_LIST) {
             el_login_and_list(p);
         } else {
-            LOG_DEBUG("echolink: refreshing login\n");
             el_dir_op_begin(p);
             el_try_directory_login(p);
             el_dir_op_end(p);
@@ -762,13 +964,30 @@ void peer_el_tick(peer_echolink_t *p)
     } else if (p->login_interval > 0 && p->next_station_list_time > 0
                && now >= p->next_station_list_time) {
         p->next_station_list_time = now + p->station_list_interval;
-        LOG_DEBUG("echolink: refreshing station list\n");
-        el_station_list_only(p);
+        LOG_EL_DEBUG("echolink: refreshing station list\n");
+        if (p->dir_thread_on) {
+            if (el_dir_schedule(p, EL_DIR_JOB_LIST) != 0)
+                LOG_EL_DEBUG("echolink: directory job busy — skip this cycle\n");
+        } else {
+            el_station_list_only(p);
+        }
     }
 
     if (p->peer_resolved
         && (p->last_sdes == 0 || now - p->last_sdes >= EL_SDES_INTERVAL))
         el_send_sdes(p);
+
+    /* Conference dropped us (ConfMemberTimeout ~40s) or path died — recover. */
+    if (p->linked && p->last_peer_rtcp > 0
+        && now - p->last_peer_rtcp >= EL_PEER_STALE_SEC) {
+        LOG_EL_WARNING("echolink: peer %s silent %lds — unlinked, re-SDES\n",
+                       p->host, (long)(now - p->last_peer_rtcp));
+        pthread_mutex_lock(&p->dir_mu);
+        p->linked = 0;
+        p->status = PEER_EL_DIR_OK;
+        pthread_mutex_unlock(&p->dir_mu);
+        el_send_sdes(p);
+    }
 }
 
 int peer_el_linked(const peer_echolink_t *p)
@@ -854,6 +1073,15 @@ void peer_el_flush_pcm(peer_echolink_t *p)
 {
     if (p && p->pcm_out_count > 0)
         el_flush_rtp_tx(p);
+}
+
+void peer_el_drop_pcm_in(peer_echolink_t *p)
+{
+    if (!p)
+        return;
+    p->pcm_in_r = 0;
+    p->pcm_in_w = 0;
+    p->pcm_in_count = 0;
 }
 
 void peer_el_on_sigint(peer_echolink_t *p)

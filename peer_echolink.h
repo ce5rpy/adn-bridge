@@ -11,11 +11,18 @@
 #ifndef PEER_ECHOLINK_H
 #define PEER_ECHOLINK_H
 
+#include <pthread.h>
 #include <stdint.h>
 #include <time.h>
 #include <netinet/in.h>
 
 #include "config.h"
+
+/* Background directory worker jobs (peer_el_tick schedules; never blocks audio). */
+#define EL_DIR_JOB_NONE       0
+#define EL_DIR_JOB_LOGIN      1
+#define EL_DIR_JOB_LIST       2
+#define EL_DIR_JOB_LOGIN_LIST 3
 
 #define EL_RTP_PORT  5198
 #define EL_RTCP_PORT 5199
@@ -53,7 +60,8 @@ typedef struct {
     int station_list_interval;  /* tlb StationListInterval */
     uint16_t rtp_seq;
     uint32_t rtp_ts;
-    time_t last_sdes;
+    time_t last_sdes;              /* last SDES we transmitted */
+    time_t last_peer_rtcp;         /* last RTCP/SDES received from peer */
     time_t last_dir_login;
     time_t next_login_time;        /* tlb NextLoginTime */
     time_t next_station_list_time; /* tlb NextStationListTime; 0 = disabled */
@@ -71,6 +79,14 @@ typedef struct {
     uint8_t rx_buf[2048];
     void *gsm_enc;
     void *gsm_dec;
+    /* Directory TCP (login / station list) runs off the audio path. */
+    pthread_t dir_tid;
+    pthread_mutex_t dir_mu;
+    pthread_cond_t dir_cv;
+    int dir_thread_on;
+    int dir_stop;
+    int dir_busy;
+    int dir_job; /* EL_DIR_JOB_* */
 } peer_echolink_t;
 
 int peer_el_open(peer_echolink_t *p, const ysf2dmr_echolink_cfg_t *cfg);
@@ -85,6 +101,8 @@ int peer_el_read_pcm(peer_echolink_t *p, int16_t *pcm, int max_samples);
 int peer_el_write_pcm(peer_echolink_t *p, const int16_t *pcm, int samples);
 /* Pad/send any partial outbound RTP packet (call on DMR VTERM). */
 void peer_el_flush_pcm(peer_echolink_t *p);
+/* Drop inbound decoded PCM (call end — avoid residual silence restarting TX). */
+void peer_el_drop_pcm_in(peer_echolink_t *p);
 void peer_el_on_sigint(peer_echolink_t *p);
 
 #endif

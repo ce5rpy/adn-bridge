@@ -32,13 +32,17 @@ void ysf2dmr_config_init(ysf2dmr_config_t *cfg)
     memset(cfg, 0, sizeof(*cfg));
     cfg->mode = YSF2DMR_MODE_YSF_DMR;
     cfg->log_level = LOG_LEVEL_INFO;
+    cfg->dmr_log_level = -1;
+    cfg->ysf_log_level = -1;
     cfg->default_ysf_dmrid = 0;
     ysf2dmr_aliases_cfg_init(&cfg->aliases);
     strncpy(cfg->vocoder.host, "127.0.0.1", sizeof(cfg->vocoder.host) - 1);
     cfg->vocoder.port = 2460;
+    cfg->vocoder.log_level = -1;
     /* tlb defaults: LoginInterval=360, StationListInterval=600 */
     cfg->echolink.login_interval = 360;
     cfg->echolink.station_list_interval = 600;
+    cfg->echolink.log_level = -1;
 }
 
 const char *ysf2dmr_mode_name(int mode)
@@ -158,6 +162,8 @@ static void apply_key(ysf2dmr_config_t *cfg, const char *section, const char *ke
             set_int(&cfg->ysf_port, val);
         else if (strcmp(key, "dgid") == 0)
             set_int(&cfg->dgid, val);
+        else if (strcmp(key, "log_level") == 0 || strcmp(key, "log") == 0)
+            cfg->ysf_log_level = (int)log_level_from_string(val);
         return;
     }
     if (strcmp(section, "dmr") == 0) {
@@ -178,6 +184,8 @@ static void apply_key(ysf2dmr_config_t *cfg, const char *section, const char *ke
             set_str(cfg->dmr_password, sizeof(cfg->dmr_password), val);
         else if (strcmp(key, "default_ysf_dmrid") == 0)
             set_int(&cfg->default_ysf_dmrid, val);
+        else if (strcmp(key, "log_level") == 0 || strcmp(key, "log") == 0)
+            cfg->dmr_log_level = (int)log_level_from_string(val);
         return;
     }
     if (strcmp(section, "echolink") == 0) {
@@ -201,6 +209,8 @@ static void apply_key(ysf2dmr_config_t *cfg, const char *section, const char *ke
         else if (strcmp(key, "station_list_interval") == 0
                  || strcmp(key, "StationListInterval") == 0)
             set_int(&cfg->echolink.station_list_interval, val);
+        else if (strcmp(key, "log_level") == 0 || strcmp(key, "log") == 0)
+            cfg->echolink.log_level = (int)log_level_from_string(val);
         return;
     }
     if (strcmp(section, "vocoder") == 0) {
@@ -208,6 +218,8 @@ static void apply_key(ysf2dmr_config_t *cfg, const char *section, const char *ke
             set_str(cfg->vocoder.host, sizeof(cfg->vocoder.host), val);
         else if (strcmp(key, "port") == 0)
             set_int(&cfg->vocoder.port, val);
+        else if (strcmp(key, "log_level") == 0 || strcmp(key, "log") == 0)
+            cfg->vocoder.log_level = (int)log_level_from_string(val);
         return;
     }
     if (strcmp(section, "aliases") == 0) {
@@ -236,10 +248,39 @@ static void apply_key(ysf2dmr_config_t *cfg, const char *section, const char *ke
         return;
     }
     if (strcmp(section, "log") == 0) {
+        /* Default for all channels; per-stanza log_level= overrides after load. */
         if (strcmp(key, "level") == 0)
             cfg->log_level = log_level_from_string(val);
+        else if (strcmp(key, "echolink") == 0 || strcmp(key, "el") == 0)
+            cfg->echolink.log_level = (int)log_level_from_string(val);
+        else if (strcmp(key, "dmr") == 0)
+            cfg->dmr_log_level = (int)log_level_from_string(val);
+        else if (strcmp(key, "ysf") == 0)
+            cfg->ysf_log_level = (int)log_level_from_string(val);
+        else if (strcmp(key, "vocoder") == 0 || strcmp(key, "voc") == 0)
+            cfg->vocoder.log_level = (int)log_level_from_string(val);
         return;
     }
+}
+
+/* Apply [log] level + per-stanza overrides to runtime channels. */
+void ysf2dmr_config_apply_log_levels(const ysf2dmr_config_t *cfg)
+{
+    log_level_t def = cfg->log_level;
+
+    log_set_channel_level(LOG_CH_APP, def);
+    log_set_channel_level(LOG_CH_ECHOLINK,
+                          cfg->echolink.log_level >= 0
+                              ? (log_level_t)cfg->echolink.log_level : def);
+    log_set_channel_level(LOG_CH_DMR,
+                          cfg->dmr_log_level >= 0
+                              ? (log_level_t)cfg->dmr_log_level : def);
+    log_set_channel_level(LOG_CH_YSF,
+                          cfg->ysf_log_level >= 0
+                              ? (log_level_t)cfg->ysf_log_level : def);
+    log_set_channel_level(LOG_CH_VOCODER,
+                          cfg->vocoder.log_level >= 0
+                              ? (log_level_t)cfg->vocoder.log_level : def);
 }
 
 int ysf2dmr_config_load(const char *path, ysf2dmr_config_t *cfg, char *err, size_t errlen)
