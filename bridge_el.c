@@ -177,6 +177,7 @@ static void dmr_id_to_bytes3(int dmrid, uint8_t out[3])
     out[2] = (uint8_t)(id & 0xff);
 }
 
+/* EchoLink/YSF callsign before '-' or '/' (CA5RPY-L → CA5RPY), same as YSF→DMR. */
 static void bridge_el_callsign_base(const char *src, char out[16])
 {
     int i, j = 0;
@@ -199,32 +200,99 @@ static void bridge_el_callsign_base(const char *src, char out[16])
     out[j] = '\0';
 }
 
-/* Snapshot EchoLink remote talker (SDES) into net_src / el_rf_id for this call. */
+/* Space-padded base callsign for alias / numeric id (same shape as YSF→DMR). */
+static void bridge_el_format_base10(char out[10], const char *base)
+{
+    int i;
+
+    memset(out, ' ', 10);
+    if (!base)
+        return;
+    for (i = 0; base[i] && i < 10; i++)
+        out[i] = (char)toupper((unsigned char)base[i]);
+}
+
+static int bridge_el_callsign10_to_dmrid(const char cs[10])
+{
+    char digits[16];
+    int i, j = 0, has_digit = 0;
+
+    for (i = 0; i < 10; i++) {
+        if (cs[i] == ' ')
+            continue;
+        if (cs[i] >= '0' && cs[i] <= '9') {
+            has_digit = 1;
+            if (j < 15)
+                digits[j++] = cs[i];
+        } else {
+            return 0;
+        }
+    }
+    if (!has_digit || j == 0)
+        return 0;
+    digits[j] = '\0';
+    return atoi(digits);
+}
+
+/*
+ * Resolve EchoLink remote talker (inbound SDES / conference) like YSF→DMR:
+ *   callsign base → numeric id or subscriber alias → DMR RF id.
+ * Unknown talker falls back to bridge [dmr] callsign + dmrid.
+ * EL→YSF keeps the full wire callsign (incl. -L/-R) in net_src for the radio.
+ */
 static void bridge_el_resolve_el_talker(bridge_el_t *b)
 {
     const char *raw = peer_el_remote_talker(&b->el);
     char base[16];
+    char talker10[10];
     int id = 0;
 
     if (!raw || !raw[0])
         raw = b->el.callsign;
-    bridge_el_format_callsign10(b->net_src, raw);
     bridge_el_callsign_base(raw, base);
-
-    if (base[0] && b->aliases)
-        id = ysf2dmr_alias_lookup_id(b->aliases, base);
-    if (id <= 0) {
-        if (b->bridge_dmrid > 0)
-            id = b->bridge_dmrid;
-        else if (b->dmr.dmrid > 0)
-            id = b->dmr.dmrid;
-        if (id > 0 && base[0])
-            LOG_DMR_INFO("EL talker %s unknown in aliases -> bridge id %d\n",
-                         base, id);
-    } else {
-        LOG_DMR_INFO("EL talker %s -> DMR id %d (alias)\n", base, id);
+    if (!base[0]) {
+        bridge_el_callsign_base(b->el.callsign, base);
+        raw = b->el.callsign;
     }
-    b->el_rf_id = id;
+
+    bridge_el_format_base10(talker10, base);
+    id = bridge_el_callsign10_to_dmrid(talker10);
+    if (id <= 0 && base[0] && b->aliases)
+        id = ysf2dmr_alias_lookup_id(b->aliases, base);
+
+    if (b->mode == YSF2DMR_MODE_ECHOLINK_YSF) {
+        /* Full EchoLink callsign on YSF wire (e.g. CA5RPY-L). */
+        bridge_el_format_callsign10(b->net_src, raw);
+        b->el_rf_id = id > 0 ? id : b->bridge_dmrid;
+        LOG_YSF_INFO("EL->YSF talker raw=%s base=%s\n", raw, base[0] ? base : "?");
+        return;
+    }
+
+    /* EL→DMR: same callsign→id path as YSF→DMR (bridge_assign_ysf_talker). */
+    if (id > 0) {
+        memcpy(b->net_src, talker10, 10);
+        b->el_rf_id = id;
+        LOG_DMR_INFO("EL->DMR talker %s -> id %d (alias)\n", base, id);
+        return;
+    }
+
+    /* Unknown: cross on bridge identity (same policy as YSF→DMR). */
+    if (b->dmr.dmrid > 0) {
+        memcpy(b->net_src, b->dmr.callsign, 10);
+        b->el_rf_id = b->dmr.dmrid;
+        LOG_DMR_INFO("EL->DMR talker %s unknown -> bridge %.10s id %d\n",
+                     base[0] ? base : "?", b->net_src, b->el_rf_id);
+        return;
+    }
+    if (b->bridge_dmrid > 0) {
+        b->el_rf_id = b->bridge_dmrid;
+        LOG_DMR_INFO("EL->DMR talker %s unknown -> bridge id %d\n",
+                     base[0] ? base : "?", b->el_rf_id);
+        return;
+    }
+    b->el_rf_id = 0;
+    LOG_DMR_WARNING("EL->DMR talker %s: no DMR id (alias miss, no bridge dmrid)\n",
+                    base[0] ? base : "?");
 }
 
 static void bridge_el_send_dmrd(bridge_el_t *b, uint8_t frame_type, const uint8_t *voice33)
