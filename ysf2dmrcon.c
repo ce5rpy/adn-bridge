@@ -31,7 +31,7 @@
 #include "peer_dmr.h"
 #include "talker_alias.h"
 
-#define YSF2DMR_VERSION "0.2.0"
+#define YSF2DMR_VERSION "0.2.1"
 
 static ysf2dmr_bridge_t bridge;
 static ysf2dmr_aliases_t *g_aliases;

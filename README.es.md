@@ -1,6 +1,6 @@
 # ysf2dmrcon
 
-**Versión 0.2.0**
+**Versión 0.2.1**
 
 Puente de voz **reflector YSF ↔ servidor DMR**. Se registra como peer Homebrew
 (estilo MMDVMHost) y como cliente YSF (YSFP + sala DGID).

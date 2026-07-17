@@ -4,6 +4,14 @@ All notable changes to **ysf2dmrcon** are documented here.
 
 <!-- version list -->
 
+## v0.2.1 (2026-07-17)
+
+### Bug Fixes
+
+- Strip DMR RPTC callsign suffix ([#5](https://github.com/ce5rpy/ysf2dmrcon/pull/5),
+  [`e7d5390`](https://github.com/ce5rpy/ysf2dmrcon/commit/e7d53907b5981fd23cba5e45d5bf1fa9a7e4f9d3))
+
+
 ## v0.2.0 (2026-07-16)
 
 ### Bug Fixes

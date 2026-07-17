@@ -1,6 +1,6 @@
 # ysf2dmrcon
 
-**Version 0.2.0**
+**Version 0.2.1**
 
 Standalone **YSF reflector ↔ DMR server** voice bridge. Registers as a Homebrew
 DMR peer (MMDVMHost-style login) and as a YSF client (YSFP + DGID room).
