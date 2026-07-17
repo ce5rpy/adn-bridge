@@ -54,6 +54,8 @@ make install PREFIX=/usr/local
 
    ```bash
    cp ysf2dmrcon.example.ini ysf2dmrcon.ini
+   # same template under an explicit name:
+   # cp ysf2dmrcon-ysf-dmr.example.ini ysf2dmrcon-ysf-dmr.ini
    ```
 
 2. Set YSF reflector, DGID, DMR server, password, and talkgroup in `OPTIONS`.
@@ -112,8 +114,8 @@ mode = echolink-dmr     ; EchoLink <-> DMR
 mode = echolink-ysf     ; EchoLink <-> YSF
 ```
 
-Templates: `ysf2dmrcon.example.ini`, `ysf2dmrcon-echolink-dmr.example.ini`,
-`ysf2dmrcon-echolink-ysf.example.ini`.
+Templates: `ysf2dmrcon.example.ini` / `ysf2dmrcon-ysf-dmr.example.ini` (YSF↔DMR),
+`ysf2dmrcon-echolink-dmr.example.ini`, `ysf2dmrcon-echolink-ysf.example.ini`.
 
 ### `[ysf]` — YSF reflector
 
