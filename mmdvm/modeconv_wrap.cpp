@@ -74,3 +74,18 @@ extern "C" unsigned int modeconv_get_ysf(uint8_t *ysf120)
 {
     return g_conv.getYSF(ysf120);
 }
+
+extern "C" void modeconv_put_ambe7(const uint8_t ambe7[7])
+{
+    g_conv.putAMBE7(ambe7);
+}
+
+extern "C" void modeconv_put_ambe7_ysf(const uint8_t ambe7[7])
+{
+    g_conv.putAMBE7YSF(ambe7);
+}
+
+extern "C" void modeconv_dmr33_to_ambe(const uint8_t dmr33[33], uint8_t ambe[3][7])
+{
+    g_conv.dmr33ToAMBE(dmr33, ambe);
+}

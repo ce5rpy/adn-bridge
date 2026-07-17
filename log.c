@@ -22,21 +22,45 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <time.h>
 
-static log_level_t g_log_level = LOG_LEVEL_INFO;
+static log_level_t g_log_level[LOG_CH_COUNT] = {
+    LOG_LEVEL_INFO, LOG_LEVEL_INFO, LOG_LEVEL_INFO, LOG_LEVEL_INFO, LOG_LEVEL_INFO,
+};
 
 void log_set_level(log_level_t level)
 {
+    int i;
+
     if (level < LOG_LEVEL_DEBUG)
         level = LOG_LEVEL_DEBUG;
     if (level > LOG_LEVEL_ERROR)
         level = LOG_LEVEL_ERROR;
-    g_log_level = level;
+    for (i = 0; i < LOG_CH_COUNT; i++)
+        g_log_level[i] = level;
+}
+
+void log_set_channel_level(log_channel_t ch, log_level_t level)
+{
+    if ((int)ch < 0 || ch >= LOG_CH_COUNT)
+        return;
+    if (level < LOG_LEVEL_DEBUG)
+        level = LOG_LEVEL_DEBUG;
+    if (level > LOG_LEVEL_ERROR)
+        level = LOG_LEVEL_ERROR;
+    g_log_level[ch] = level;
 }
 
 log_level_t log_get_level(void)
 {
-    return g_log_level;
+    return g_log_level[LOG_CH_APP];
+}
+
+log_level_t log_get_channel_level(log_channel_t ch)
+{
+    if ((int)ch < 0 || ch >= LOG_CH_COUNT)
+        return LOG_LEVEL_INFO;
+    return g_log_level[ch];
 }
 
 const char *log_level_name(log_level_t level)
@@ -47,6 +71,18 @@ const char *log_level_name(log_level_t level)
     case LOG_LEVEL_WARNING: return "WARNING";
     case LOG_LEVEL_ERROR:   return "ERROR";
     default:                return "?";
+    }
+}
+
+const char *log_channel_name(log_channel_t ch)
+{
+    switch (ch) {
+    case LOG_CH_APP:      return "app";
+    case LOG_CH_ECHOLINK: return "el";
+    case LOG_CH_DMR:      return "dmr";
+    case LOG_CH_YSF:      return "ysf";
+    case LOG_CH_VOCODER:  return "voc";
+    default:              return "?";
     }
 }
 
@@ -78,16 +114,52 @@ log_level_t log_level_from_string(const char *s)
 
 int log_level_enabled(log_level_t level)
 {
-    return level >= g_log_level;
+    return log_channel_enabled(LOG_CH_APP, level);
+}
+
+int log_channel_enabled(log_channel_t ch, log_level_t level)
+{
+    if ((int)ch < 0 || ch >= LOG_CH_COUNT)
+        return 0;
+    return level >= g_log_level[ch];
 }
 
 void log_msg(log_level_t level, const char *fmt, ...)
 {
     va_list ap;
 
-    if (level < g_log_level)
+    va_start(ap, fmt);
+    /* Re-use channel path via vfprintf after header — call log_msg_ch style. */
+    if (log_channel_enabled(LOG_CH_APP, level)) {
+        struct timespec ts;
+        struct tm tm;
+        char tbuf[32];
+
+        clock_gettime(CLOCK_REALTIME, &ts);
+        localtime_r(&ts.tv_sec, &tm);
+        strftime(tbuf, sizeof(tbuf), "%Y-%m-%d %H:%M:%S", &tm);
+        fprintf(stderr, "%s,%03ld %s/app: ", tbuf, ts.tv_nsec / 1000000L,
+                log_level_name(level));
+        vfprintf(stderr, fmt, ap);
+    }
+    va_end(ap);
+}
+
+void log_msg_ch(log_channel_t ch, log_level_t level, const char *fmt, ...)
+{
+    va_list ap;
+    struct timespec ts;
+    struct tm tm;
+    char tbuf[32];
+
+    if (!log_channel_enabled(ch, level))
         return;
-    fprintf(stderr, "%s: ", log_level_name(level));
+
+    clock_gettime(CLOCK_REALTIME, &ts);
+    localtime_r(&ts.tv_sec, &tm);
+    strftime(tbuf, sizeof(tbuf), "%Y-%m-%d %H:%M:%S", &tm);
+    fprintf(stderr, "%s,%03ld %s/%s: ", tbuf, ts.tv_nsec / 1000000L,
+            log_level_name(level), log_channel_name(ch));
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);

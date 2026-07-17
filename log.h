@@ -26,17 +26,58 @@ typedef enum {
     LOG_LEVEL_ERROR = 3,
 } log_level_t;
 
-void log_set_level(log_level_t level);
-log_level_t log_get_level(void);
+/* Per-stanza / subsystem channels (INI log_level= or [log] keys). */
+typedef enum {
+    LOG_CH_APP = 0,      /* main, aliases, bridge shell — [log] level= */
+    LOG_CH_ECHOLINK = 1, /* [echolink] log_level= */
+    LOG_CH_DMR = 2,      /* [dmr] log_level= */
+    LOG_CH_YSF = 3,      /* [ysf] log_level= */
+    LOG_CH_VOCODER = 4,  /* [vocoder] log_level= */
+    LOG_CH_COUNT
+} log_channel_t;
+
+void log_set_level(log_level_t level); /* sets all channels (compat) */
+void log_set_channel_level(log_channel_t ch, log_level_t level);
+log_level_t log_get_level(void); /* APP channel */
+log_level_t log_get_channel_level(log_channel_t ch);
 const char *log_level_name(log_level_t level);
+const char *log_channel_name(log_channel_t ch);
 /* Parses DEBUG, INFO, WARNING, ERROR (case-insensitive). Returns INFO if unknown. */
 log_level_t log_level_from_string(const char *s);
-int log_level_enabled(log_level_t level);
+int log_level_enabled(log_level_t level); /* APP channel */
+int log_channel_enabled(log_channel_t ch, log_level_t level);
 void log_msg(log_level_t level, const char *fmt, ...);
+void log_msg_ch(log_channel_t ch, log_level_t level, const char *fmt, ...);
 
-#define LOG_DEBUG(...)   do { if (log_level_enabled(LOG_LEVEL_DEBUG))   log_msg(LOG_LEVEL_DEBUG,   __VA_ARGS__); } while (0)
-#define LOG_INFO(...)    do { if (log_level_enabled(LOG_LEVEL_INFO))    log_msg(LOG_LEVEL_INFO,    __VA_ARGS__); } while (0)
-#define LOG_WARNING(...) do { if (log_level_enabled(LOG_LEVEL_WARNING)) log_msg(LOG_LEVEL_WARNING, __VA_ARGS__); } while (0)
-#define LOG_ERROR(...)   do { if (log_level_enabled(LOG_LEVEL_ERROR))   log_msg(LOG_LEVEL_ERROR,   __VA_ARGS__); } while (0)
+#define LOG_CH_DEBUG(ch, ...)   do { if (log_channel_enabled((ch), LOG_LEVEL_DEBUG))   log_msg_ch((ch), LOG_LEVEL_DEBUG,   __VA_ARGS__); } while (0)
+#define LOG_CH_INFO(ch, ...)    do { if (log_channel_enabled((ch), LOG_LEVEL_INFO))    log_msg_ch((ch), LOG_LEVEL_INFO,    __VA_ARGS__); } while (0)
+#define LOG_CH_WARNING(ch, ...) do { if (log_channel_enabled((ch), LOG_LEVEL_WARNING)) log_msg_ch((ch), LOG_LEVEL_WARNING, __VA_ARGS__); } while (0)
+#define LOG_CH_ERROR(ch, ...)   do { if (log_channel_enabled((ch), LOG_LEVEL_ERROR))   log_msg_ch((ch), LOG_LEVEL_ERROR,   __VA_ARGS__); } while (0)
+
+/* Default channel = APP (aliases, main, uncategorized). */
+#define LOG_DEBUG(...)   LOG_CH_DEBUG(LOG_CH_APP, __VA_ARGS__)
+#define LOG_INFO(...)    LOG_CH_INFO(LOG_CH_APP, __VA_ARGS__)
+#define LOG_WARNING(...) LOG_CH_WARNING(LOG_CH_APP, __VA_ARGS__)
+#define LOG_ERROR(...)   LOG_CH_ERROR(LOG_CH_APP, __VA_ARGS__)
+
+#define LOG_EL_DEBUG(...)   LOG_CH_DEBUG(LOG_CH_ECHOLINK, __VA_ARGS__)
+#define LOG_EL_INFO(...)    LOG_CH_INFO(LOG_CH_ECHOLINK, __VA_ARGS__)
+#define LOG_EL_WARNING(...) LOG_CH_WARNING(LOG_CH_ECHOLINK, __VA_ARGS__)
+#define LOG_EL_ERROR(...)   LOG_CH_ERROR(LOG_CH_ECHOLINK, __VA_ARGS__)
+
+#define LOG_DMR_DEBUG(...)   LOG_CH_DEBUG(LOG_CH_DMR, __VA_ARGS__)
+#define LOG_DMR_INFO(...)    LOG_CH_INFO(LOG_CH_DMR, __VA_ARGS__)
+#define LOG_DMR_WARNING(...) LOG_CH_WARNING(LOG_CH_DMR, __VA_ARGS__)
+#define LOG_DMR_ERROR(...)   LOG_CH_ERROR(LOG_CH_DMR, __VA_ARGS__)
+
+#define LOG_YSF_DEBUG(...)   LOG_CH_DEBUG(LOG_CH_YSF, __VA_ARGS__)
+#define LOG_YSF_INFO(...)    LOG_CH_INFO(LOG_CH_YSF, __VA_ARGS__)
+#define LOG_YSF_WARNING(...) LOG_CH_WARNING(LOG_CH_YSF, __VA_ARGS__)
+#define LOG_YSF_ERROR(...)   LOG_CH_ERROR(LOG_CH_YSF, __VA_ARGS__)
+
+#define LOG_VOC_DEBUG(...)   LOG_CH_DEBUG(LOG_CH_VOCODER, __VA_ARGS__)
+#define LOG_VOC_INFO(...)    LOG_CH_INFO(LOG_CH_VOCODER, __VA_ARGS__)
+#define LOG_VOC_WARNING(...) LOG_CH_WARNING(LOG_CH_VOCODER, __VA_ARGS__)
+#define LOG_VOC_ERROR(...)   LOG_CH_ERROR(LOG_CH_VOCODER, __VA_ARGS__)
 
 #endif

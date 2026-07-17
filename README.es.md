@@ -2,11 +2,17 @@
 
 **Versión 0.2.1**
 
-Puente de voz **reflector YSF ↔ servidor DMR**. Se registra como peer Homebrew
-(estilo MMDVMHost) y como cliente YSF (YSFP + sala DGID).
+Puente de voz con tres modos:
+
+| Modo | Función |
+|------|---------|
+| `ysf-dmr` (por defecto) | Reflector YSF ↔ servidor DMR (peer Homebrew + YSFP/DGID) |
+| `echolink-dmr` | EchoLink ↔ DMR (GSM/RTP + vocoder AMBE remoto) |
+| `echolink-ysf` | EchoLink ↔ YSF (mismo camino EchoLink + vocoder) |
 
 Compilación autocontenida — código en `hbp/`, `mmdvm/` y `vendor/`.
 Referencia upstream: [MMDVM_CM](https://github.com/juribeparada/MMDVM_CM).
+Detalle EchoLink: [docs/echolink-bridge.md](docs/echolink-bridge.md).
 
 **Documentación en inglés:** [README.md](README.md)
 
@@ -16,7 +22,7 @@ Referencia upstream: [MMDVM_CM](https://github.com/juribeparada/MMDVM_CM).
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential libssl-dev curl
+sudo apt-get install -y build-essential libssl-dev curl libgsm1
 ```
 
 | Paquete | Para qué |
@@ -24,6 +30,7 @@ sudo apt-get install -y build-essential libssl-dev curl
 | `build-essential` | `gcc`, `g++`, `make` |
 | `libssl-dev` | OpenSSL (`-lcrypto`) para checksums blake2b de aliases |
 | `curl` | Descarga en runtime de JSON de suscriptores / checksums |
+| `libgsm1` | Audio GSM EchoLink (`libgsm.so.1`); cabeceras en `vendor/gsm/` |
 
 yyjson y ModeConv (MMDVM) van vendored; no hacen falta más paquetes apt.
 
@@ -40,6 +47,8 @@ make install PREFIX=/usr/local
 ```
 
 ## Inicio rápido
+
+### YSF ↔ DMR (por defecto)
 
 1. Copie la plantilla y edite sus datos:
 
@@ -60,6 +69,26 @@ make install PREFIX=/usr/local
 
 4. En producción use `[log] level = INFO` (o `WARNING`).
 
+### Modos EchoLink
+
+Hace falta un vocoder AMBE remoto (UDP DV3000 / AMBEServer, p. ej. md380-emu en
+`127.0.0.1:2460`) y un indicativo EchoLink validado (`-L` / `-R` / conferencia).
+
+```bash
+# EchoLink <-> DMR
+cp ysf2dmrcon-echolink-dmr.example.ini ysf2dmrcon-echolink-dmr.ini
+# editar contraseñas, bind_addr, master DMR, host EchoLink (nodo o *CONF*)
+./ysf2dmrcon -c ysf2dmrcon-echolink-dmr.ini
+
+# EchoLink <-> YSF
+cp ysf2dmrcon-echolink-ysf.example.ini ysf2dmrcon-echolink-ysf.ini
+# editar contraseñas, bind_addr, reflector YSF/DGID, host EchoLink
+./ysf2dmrcon -c ysf2dmrcon-echolink-ysf.ini
+```
+
+Los `*.ini` locales (con contraseñas) están en `.gitignore`; solo se versionan
+los `*.example.ini`. Ver [docs/echolink-bridge.md](docs/echolink-bridge.md).
+
 ## Varias instancias
 
 Un **proceso por puente** (DGID, TG DMR y `dmrid` distintos). Cada instancia
@@ -73,7 +102,19 @@ lleva su propio INI:
 Pueden compartir la misma base de suscriptores: use el mismo `[aliases] data_dir`
 en cada INI (por defecto `./data`).
 
-## Configuración (`ysf2dmrcon.ini`)
+## Configuración
+
+El modo se elige en `[bridge]`:
+
+```ini
+[bridge]
+mode = ysf-dmr          ; por defecto — YSF <-> DMR
+mode = echolink-dmr     ; EchoLink <-> DMR
+mode = echolink-ysf     ; EchoLink <-> YSF
+```
+
+Plantillas: `ysf2dmrcon.example.ini`, `ysf2dmrcon-echolink-dmr.example.ini`,
+`ysf2dmrcon-echolink-ysf.example.ini`.
 
 ### `[ysf]` — Reflector YSF
 
@@ -110,7 +151,46 @@ sufijo y usa solo el indicativo base para buscar en el JSON.
 locutor YSF no está en la base de datos, se usa el `callsign` + `dmrid` de
 esta sección.
 
+En modo **`echolink-ysf`** no se abre peer DMR: `host`/`port`/`password` no
+se usan (`password` puede ser un placeholder). `callsign` / `dmrid` siguen
+alimentando el RadioID de CSD/DCH YSF. El indicativo de locutor/gateway en el
+wire es el `[echolink] callsign` **completo** (p. ej. `CE5RPY-L`), con el mismo
+layout CSD/DCH que DMR→YSF.
+
+### `[echolink]` — Estación EchoLink (modos echolink-*)
+
+Puertos **fijos en código** (no van en el INI): UDP **5198** RTP, UDP **5199**
+RTCP, TCP **5200** directorio.
+
+| Clave | Descripción |
+|-------|-------------|
+| `callsign` | Estación EchoLink validada (`N0CALL-L`, `-R` o `*CONF*`) |
+| `password` | Contraseña del directorio EchoLink |
+| `bind_addr` | IP local para enlazar 5198/5199 |
+| `host` | Indicativo de nodo o conferencia a conectar (se resuelve por directorio); IPv4 aún aceptada en lab |
+| `qth` / `email` | Metadatos opcionales del directorio |
+| `directory_servers` | Hosts de directorio separados por coma (por defecto los cuatro `serverN.echolink.org`) |
+| `login_interval` | Periodo de login de presencia (por defecto **360** s, compatible tlb) |
+| `station_list_interval` | Refresco de lista / IP del peer (por defecto **600** s) |
+| `log_level` | Nivel opcional del canal (`DEBUG`…`ERROR`); si no, hereda `[log]` |
+
+Login/lista de directorio van en un **hilo en segundo plano** para no bloquear
+el audio. EL→DMR/YSF arranca con cualquier PCM entrante (incl. silencio con
+PTT); el hangtime sigue la presencia de PCM (~700 ms). Detalle:
+[docs/echolink-bridge.md](docs/echolink-bridge.md).
+
+### `[vocoder]` — AMBE remoto (modos echolink-*)
+
+| Clave | Descripción |
+|-------|-------------|
+| `host` / `port` | Endpoint UDP DV3000 / AMBEServer (lab: md380-emu `127.0.0.1:2460`) |
+| `log_level` | Opcional; conviene `WARNING` salvo depurar encode/decode |
+
+Usa RATET **34** (49 bit) con `interleave49` de md380-emu en el cable; ModeConv
+ve tramas 49-bit raw desintercaladas.
+
 ### `[aliases]` — Base de suscriptores
+
 
 Misma estructura que `ALIASES` en new-adn-server. Archivos en `data_dir`
 (por defecto `./data`).
@@ -128,7 +208,15 @@ Misma estructura que `ALIASES` en new-adn-server. Archivos en `data_dir`
 
 `level = DEBUG | INFO | WARNING | ERROR`
 
+Overrides opcionales por canal (también `log_level=` en cada sección, o
+`dmr=` / `echolink=` / `ysf=` / `vocoder=` bajo `[log]`):
+
+```text
+2026-07-17 14:33:59,754 INFO/ysf: EL->YSF call start (src CE5RPY    )
+```
+
 ## Identidad del locutor
+
 
 La voz siempre cruza; solo cambia la identidad mostrada/transmitida.
 
@@ -147,19 +235,29 @@ La voz siempre cruza; solo cambia la identidad mostrada/transmitida.
    se conservan, así DMR→YSF resuelve p. ej. `7300391` y `7300392` → `CE5RPY`.
 3. Si no está en la base → identidad del puente en `[dmr]` (`callsign` + `dmrid`).
 
+### EchoLink → DMR / YSF
+
+- La identidad del locutor es el indicativo **base de la estación EchoLink
+  local** (`[echolink] callsign`, cortando tras `-` / `/`), no el `host` remoto.
+- El framing CSD/DCH de EL→YSF coincide con DMR→YSF (compatible DMR2YSF).
+
 ## Estructura del proyecto
 
 | Ruta | Función |
 |------|---------|
 | `ysf2dmrcon.c` | Bucle principal, señales, configuración |
 | `peer_dmr.c` / `peer_ysf.c` | Peers UDP, reconexión, DGID/RPTO |
-| `bridge.c` | Puente de voz, identidad, ritmo ModeConv |
+| `peer_echolink.c` | Directorio EchoLink, RTP/GSM, RTCP |
+| `bridge.c` | Puente YSF↔DMR, identidad, ritmo ModeConv |
+| `bridge_el.c` | EchoLink↔DMR / EchoLink↔YSF |
+| `vocoder_remote.c` | Cliente UDP DV3000 / AMBEServer |
 | `aliases.c` | Carga/descarga/búsqueda de alias JSON |
 | `talker_alias.c` | Decodificación DMRA (solo log) |
 | `ysf_fich.c` | Códec FICH YSF y reescritura DGID |
 | `hbp/dmr_hbp.c` | Autenticación HBP y códec LC/embebido |
 | `mmdvm/` | ModeConv + Golay24128 (YSF2DMR de MMDVM_CM) |
 | `vendor/yyjson/` | Parser JSON (MIT) |
+| `docs/echolink-bridge.md` | Modos EchoLink, puertos, notas de vocoder |
 
 ## Licencia
 

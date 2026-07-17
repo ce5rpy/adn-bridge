@@ -333,7 +333,7 @@ static int bridge_assign_ysf_talker(ysf2dmr_bridge_t *b, const char *src)
     ysf_callsign_base_src(src, base);
     format_ysf_callsign10(talker, base);
     memcpy(b->net_src, talker, 10);
-    LOG_DEBUG("YSF->DMR callsign raw=%s base=%s\n", raw_label, base);
+    LOG_DMR_DEBUG("YSF->DMR callsign raw=%s base=%s\n", raw_label, base);
 
     id = callsign10_to_dmrid((const uint8_t *)talker);
     if (id <= 0) {
@@ -341,7 +341,7 @@ static int bridge_assign_ysf_talker(ysf2dmr_bridge_t *b, const char *src)
     }
     if (id > 0) {
         b->ysf_rf_id = id;
-        LOG_DEBUG("YSF->DMR base %s -> id %d (alias)\n", base, id);
+        LOG_DMR_DEBUG("YSF->DMR base %s -> id %d (alias)\n", base, id);
         return 1;
     }
 
@@ -349,7 +349,7 @@ static int bridge_assign_ysf_talker(ysf2dmr_bridge_t *b, const char *src)
     if (b->dmr.dmrid > 0) {
         memcpy(b->net_src, b->dmr.callsign, 10);
         b->ysf_rf_id = b->dmr.dmrid;
-        LOG_INFO("YSF->DMR talker %s unknown -> bridge %.10s id %d\n",
+        LOG_DMR_INFO("YSF->DMR talker %s unknown -> bridge %.10s id %d\n",
                  base, b->net_src, b->ysf_rf_id);
         return 1;
     }
@@ -387,20 +387,20 @@ static int bridge_resolve_ysf_header(ysf2dmr_bridge_t *b, const uint8_t *pkt)
             continue;
 
         if (bridge_assign_ysf_talker(b, csd_src)) {
-            LOG_DEBUG("YSF HEADER CSD src=%.10s dst=%.10s -> DMR id %d (try %d)\n",
+            LOG_YSF_DEBUG("YSF HEADER CSD src=%.10s dst=%.10s -> DMR id %d (try %d)\n",
                       csd_src, csd_dst, b->ysf_rf_id, i);
             return 1;
         }
-        LOG_DEBUG("YSF HEADER CSD src=%.10s dst=%.10s (no DMR id, try %d)\n",
+        LOG_YSF_DEBUG("YSF HEADER CSD src=%.10s dst=%.10s (no DMR id, try %d)\n",
                   csd_src, csd_dst, i);
     }
 
     if (bridge_wire_src_fallback(b, pkt)) {
-        LOG_DEBUG("YSF HEADER wire src=%.10s -> DMR id %d\n", b->net_src, b->ysf_rf_id);
+        LOG_YSF_DEBUG("YSF HEADER wire src=%.10s -> DMR id %d\n", b->net_src, b->ysf_rf_id);
         return 1;
     }
 
-    LOG_DEBUG("YSF HEADER: no talker DMR id (bridge dmrid not set)\n");
+    LOG_YSF_DEBUG("YSF HEADER: no talker DMR id (bridge dmrid not set)\n");
     return 0;
 }
 
@@ -437,14 +437,14 @@ static void bridge_resolve_dmr_to_ysf_identity(ysf2dmr_bridge_t *b, int rf, int 
 
     /* DMR radio id -> callsign from subscriber JSON only (never talker alias / DMRA). */
     if (bridge_lookup_dmr_callsign(b, rf, b->net_src)) {
-        LOG_DEBUG("DMR->YSF src id %d -> %.10s (subscriber DB)\n", rf, b->net_src);
+        LOG_DMR_DEBUG("DMR->YSF src id %d -> %.10s (subscriber DB)\n", rf, b->net_src);
     } else {
         format_id_callsign10(b->net_src, rf);
-        LOG_WARNING("DMR->YSF src id %d: not in subscriber DB, using numeric\n", rf);
+        LOG_DMR_WARNING("DMR->YSF src id %d: not in subscriber DB, using numeric\n", rf);
     }
 
     if (b->dmra.rf == rf && b->dmra.text[0]) {
-        LOG_DEBUG("DMR->YSF id %d DMRA '%s'\n",
+        LOG_DMR_DEBUG("DMR->YSF id %d DMRA '%s'\n",
                   rf, b->dmra.text);
     }
 
@@ -452,7 +452,7 @@ static void bridge_resolve_dmr_to_ysf_identity(ysf2dmr_bridge_t *b, int rf, int 
         format_tg_dst10(b->net_dst, dst);
 
     if (memcmp(prev, b->net_src, 10) != 0) {
-        LOG_INFO("DMR->YSF talker id %d -> %.10s\n", rf, b->net_src);
+        LOG_DMR_INFO("DMR->YSF talker id %d -> %.10s\n", rf, b->net_src);
     }
 }
 
@@ -483,7 +483,7 @@ void bridge_on_dmra(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
     if (dmra_decode_blocks(b->dmra.blocks, b->dmra.have, decoded, sizeof(decoded))) {
         strncpy(b->dmra.text, decoded, sizeof(b->dmra.text) - 1);
         b->dmra.text[sizeof(b->dmra.text) - 1] = '\0';
-        LOG_DEBUG("DMR DMRA rf=%d block=%d text='%s'\n",
+        LOG_DMR_DEBUG("DMR DMRA rf=%d block=%d text='%s'\n",
                   rf, block_id, b->dmra.text);
     }
 }
@@ -531,7 +531,7 @@ static void bridge_connect_ptt_finish(ysf2dmr_bridge_t *b)
     }
     bridge_send_dmrd(b, (uint8_t)(slot_bit | (DMRD_FT_DATA_SYNC << 4) | DMRD_DTYPE_VTERM),
                      DMR_SILENCE_DATA);
-    LOG_INFO("DMR connect PTT end (TG %d, %d voice frames)\n",
+    LOG_DMR_INFO("DMR connect PTT end (TG %d, %d voice frames)\n",
              b->dmr.tg, b->connect_ptt_voice_frames);
     b->connect_ptt_active = 0;
     b->connect_ptt_phase = 0;
@@ -567,7 +567,7 @@ static void bridge_start_connect_ptt(ysf2dmr_bridge_t *b)
     stamp_now(&b->last_dmr_tx);
     /* Force first emit immediately. */
     b->last_dmr_tx.tv_sec = 0;
-    LOG_INFO("DMR connect PTT start (TG %d, %d ms)\n", b->dmr.tg, CONNECT_PTT_MS);
+    LOG_DMR_INFO("DMR connect PTT start (TG %d, %d ms)\n", b->dmr.tg, CONNECT_PTT_MS);
 }
 
 static void bridge_emit_connect_ptt(ysf2dmr_bridge_t *b)
@@ -699,7 +699,7 @@ static void bridge_send_dmrd(ysf2dmr_bridge_t *b, uint8_t frame_type, const uint
     else
         rf_id = b->dmr.dmrid;
     if (rf_id <= 0) {
-        LOG_WARNING("DMR TX skipped: bridge dmrid not configured\n");
+        LOG_DMR_WARNING("DMR TX skipped: bridge dmrid not configured\n");
         return;
     }
     src_id = dmr_id_rf24(rf_id);
@@ -762,7 +762,7 @@ static void bridge_send_dmrd(ysf2dmr_bridge_t *b, uint8_t frame_type, const uint
         if (dbg_periodic(&tx_log)
             || (ft == DMRD_FT_DATA_SYNC
                 && (dtype == DMRD_DTYPE_VHEAD || dtype == DMRD_DTYPE_VTERM))) {
-            LOG_DEBUG("DMR TX %s b15=0x%02x rf=%d gw=%d tg=%d seq=%u stream=0x%08x\n",
+            LOG_DMR_DEBUG("DMR TX %s b15=0x%02x rf=%d gw=%d tg=%d seq=%u stream=0x%08x\n",
                 dmrd_class_label(pkt, 55), frame_type, src_id, b->dmr.dmrid,
                 b->dmr.tg, (unsigned)pkt[4], (unsigned)b->dmr_stream_id);
         }
@@ -780,7 +780,7 @@ static void bridge_emit_dmr_from_conv(ysf2dmr_bridge_t *b)
         return;
 
     if (dbg_periodic(&drain_log))
-        LOG_DEBUG("ModeConv->DMR %s (tx_frames=%d ysf_in=%d)\n",
+        LOG_DMR_DEBUG("ModeConv->DMR %s (tx_frames=%d ysf_in=%d)\n",
             modeconv_tag_name(tag), b->dmr_tx_frames, b->ysf_voice_frames);
 
     if (tag == MODECONV_TAG_HEADER) {
@@ -797,7 +797,7 @@ static void bridge_emit_dmr_from_conv(ysf2dmr_bridge_t *b)
             b->dmr_tx_frames++;
         }
         bridge_send_dmrd(b, (uint8_t)(slot_bit | (DMRD_FT_DATA_SYNC << 4) | DMRD_DTYPE_VTERM), voice);
-        LOG_INFO("YSF->DMR call end (%d DMR frames out, talker %.10s)\n",
+        LOG_DMR_INFO("YSF->DMR call end (%d DMR frames out, talker %.10s)\n",
                 b->dmr_tx_frames, b->net_src);
         bridge_reset_call(b);
         return;
@@ -909,7 +909,7 @@ static int bridge_send_ysfd(ysf2dmr_bridge_t *b, uint8_t fi, uint8_t ft, uint8_t
         if (log_tx) {
             /* DGID is applied in peer_ysf_send_ysfd before UDP send. */
             if (ysf_fich_decode_fields(frame, &wire_fi, &wire_fn, &wire_ft, &wire_cm, &wire_dt) == 0)
-                LOG_DEBUG("YSF TX %s fi=%u ft=%u fn=%u cm=%u dt=%u net=%3u src=%.10s dst=%.10s dgid_cfg=%u\n",
+                LOG_YSF_DEBUG("YSF TX %s fi=%u ft=%u fn=%u cm=%u dt=%u net=%3u src=%.10s dst=%.10s dgid_cfg=%u\n",
                     ysf_fi_name(fi), (unsigned)wire_fi, (unsigned)ft, (unsigned)wire_fn,
                     (unsigned)wire_cm, (unsigned)wire_dt,
                     (unsigned)net_cnt, frame + 14, frame + 24, (unsigned)b->ysf.dgid);
@@ -930,7 +930,7 @@ static int bridge_emit_ysf_from_conv(ysf2dmr_bridge_t *b)
         return 0;
 
     if (dbg_periodic(&drain_log))
-        LOG_DEBUG("ModeConv->YSF %s (dmr_in=%d ysf_cnt=%d)\n",
+        LOG_YSF_DEBUG("ModeConv->YSF %s (dmr_in=%d ysf_cnt=%d)\n",
             modeconv_tag_name(tag), b->dmr_voice_frames, b->ysf_cnt);
 
     if (tag == MODECONV_TAG_HEADER) {
@@ -949,10 +949,10 @@ static int bridge_emit_ysf_from_conv(ysf2dmr_bridge_t *b)
         bridge_send_ysfd(b, YSF_FI_TERMINATOR, YSF_FICH_FT, YSF_FICH_CM, 0,
                          b->ysf_cnt, NULL, csd1, csd2);
         if (b->dmr_dmrd_other)
-            LOG_INFO("DMR->YSF call end (%d voice frames in, %d other DMRD)\n",
+            LOG_DMR_INFO("DMR->YSF call end (%d voice frames in, %d other DMRD)\n",
                      b->dmr_voice_frames, b->dmr_dmrd_other);
         else
-            LOG_INFO("DMR->YSF call end (%d voice frames in)\n", b->dmr_voice_frames);
+            LOG_DMR_INFO("DMR->YSF call end (%d voice frames in)\n", b->dmr_voice_frames);
         bridge_reset_call(b);
         return 1;
     }
@@ -974,7 +974,7 @@ void bridge_on_dmrd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
     int rf, dst;
 
     if (len != 55 || memcmp(pkt, "DMRD", 4) != 0) {
-        LOG_DEBUG("DMR RX ignore len=%d (expected DMRD 55)\n", len);
+        LOG_DMR_DEBUG("DMR RX ignore len=%d (expected DMRD 55)\n", len);
         return;
     }
 
@@ -984,7 +984,7 @@ void bridge_on_dmrd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
         || dmrd_is_header(pkt, len) || dmrd_is_terminator(pkt, len)) {
         uint8_t ft, dtype;
         dmrd_parse_b15(pkt[15], &ft, &dtype);
-        LOG_DEBUG("DMR RX %s b15=0x%02x rf=%d dst=%d gw=%u seq=%u stream=0x%08x active=%d\n",
+        LOG_DMR_DEBUG("DMR RX %s b15=0x%02x rf=%d dst=%d gw=%u seq=%u stream=0x%08x active=%d\n",
             dmrd_class_label(pkt, len), pkt[15], rf, dst,
             (unsigned)((pkt[11] << 24) | (pkt[12] << 16) | (pkt[13] << 8) | pkt[14]),
             (unsigned)pkt[4], (unsigned)*(const uint32_t *)(pkt + 16), b->call_active);
@@ -997,7 +997,7 @@ void bridge_on_dmrd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
         if (!b->call_active
             || (stream != 0 && stream != b->dmr_stream_id)) {
             bridge_begin_dmr_to_ysf(b, pkt);
-            LOG_INFO("DMR->YSF call start (TG %d, src %.10s)\n", b->dmr.tg, b->net_src);
+            LOG_DMR_INFO("DMR->YSF call start (TG %d, src %.10s)\n", b->dmr.tg, b->net_src);
         } else {
             bridge_set_dmr_rx_identity(b, pkt);
         }
@@ -1005,12 +1005,12 @@ void bridge_on_dmrd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
         if (dtype != b->dmr_last_dtype)
             modeconv_put_dmr_header();
         else
-            LOG_DEBUG("DMR->YSF ignore duplicate VHEAD (src %.10s)\n", b->net_src);
+            LOG_DMR_DEBUG("DMR->YSF ignore duplicate VHEAD (src %.10s)\n", b->net_src);
         b->dmr_last_dtype = dtype;
         return;
     }
     if (dmrd_is_terminator(pkt, len)) {
-        LOG_DEBUG("DMR RX VTERM -> ModeConv EOT\n");
+        LOG_DMR_DEBUG("DMR RX VTERM -> ModeConv EOT\n");
         if (b->call_active)
             modeconv_put_dmr_eot();
         b->dmr_last_dtype = DMRD_DTYPE_VTERM;
@@ -1023,7 +1023,7 @@ void bridge_on_dmrd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
             bridge_begin_dmr_to_ysf(b, pkt);
             b->dmr_seq = pkt[4];
             modeconv_put_dmr_header();
-            LOG_INFO("DMR->YSF late entry (src %.10s)\n", b->net_src);
+            LOG_DMR_INFO("DMR->YSF late entry (src %.10s)\n", b->net_src);
         }
         modeconv_put_dmr_voice(pkt + 20);
         b->dmr_voice_frames++;
@@ -1035,7 +1035,7 @@ void bridge_on_dmrd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
         dmrd_parse_b15(pkt[15], &ft, &dtype);
         b->dmr_dmrd_other++;
         if (b->dmr_dmrd_other <= 3)
-            LOG_WARNING("DMR RX unclassified b15=0x%02x (ft=%u dtype=%u)\n",
+            LOG_DMR_WARNING("DMR RX unclassified b15=0x%02x (ft=%u dtype=%u)\n",
                         pkt[15], (unsigned)ft, (unsigned)dtype);
     }
 }
@@ -1047,36 +1047,36 @@ void bridge_on_ysfd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
     uint8_t rx_dgid;
 
     if (len != 155 || memcmp(pkt, "YSFD", 4) != 0) {
-        LOG_DEBUG("YSF RX ignore len=%d tag=%.4s\n", len, pkt);
+        LOG_YSF_DEBUG("YSF RX ignore len=%d tag=%.4s\n", len, pkt);
         return;
     }
 
     if (ysf_fich_decode_fields(pkt, &fi, &fn, &ft, &cm, &dt) != 0) {
-        LOG_DEBUG("YSF RX FICH decode failed\n");
+        LOG_YSF_DEBUG("YSF RX FICH decode failed\n");
         return;
     }
 
     rx_dgid = ysf_fich_get_dgid();
     dbg_label10(rpt, pkt + 4);
     dbg_label10(src, pkt + 14);
-    LOG_DEBUG("YSF RX %s fi=%u(%s) fn=%u ft=%u cm=%u dt=%u dgid=%u rpt=%s src=%s fn48=%u\n",
+    LOG_YSF_DEBUG("YSF RX %s fi=%u(%s) fn=%u ft=%u cm=%u dt=%u dgid=%u rpt=%s src=%s fn48=%u\n",
         ysf_fi_name(fi), (unsigned)fi, ysf_fi_name(fi), (unsigned)fn, (unsigned)ft,
         (unsigned)cm, (unsigned)dt, (unsigned)rx_dgid, rpt, src, (unsigned)pkt[48]);
 
     /* DG-ID 0 is untagged/open traffic: the reflector only relays what our
      * activated room should hear, so accept it; skip only other rooms (>=1). */
     if (b->ysf.dgid >= 1U && rx_dgid >= 1U && rx_dgid != b->ysf.dgid) {
-        LOG_DEBUG("YSF RX skip DGID %u (want %u)\n",
+        LOG_YSF_DEBUG("YSF RX skip DGID %u (want %u)\n",
             (unsigned)rx_dgid, (unsigned)b->ysf.dgid);
         return;
     }
 
     if (fi == YSF_FI_HEADER) {
         if (!bridge_resolve_ysf_header(b, pkt) || !bridge_ysf_talker_ready(b)) {
-            LOG_WARNING("YSF ignored HEADER: no talker DMR id\n");
+            LOG_YSF_WARNING("YSF ignored HEADER: no talker DMR id\n");
             return;
         }
-        LOG_DEBUG("YSF process HEADER -> ModeConv (talker id %d)\n", b->ysf_rf_id);
+        LOG_YSF_DEBUG("YSF process HEADER -> ModeConv (talker id %d)\n", b->ysf_rf_id);
         if (!b->call_active) {
             bridge_abort_connect_ptt(b);
             b->call_active = 1;
@@ -1086,7 +1086,7 @@ void bridge_on_ysfd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
             b->dmr_voice_frames = 0;
             b->ysf_fn = pkt[48];
             modeconv_reset();
-            LOG_INFO("YSF->DMR call start (TG %d, talker %.10s id %d)\n",
+            LOG_DMR_INFO("YSF->DMR call start (TG %d, talker %.10s id %d)\n",
                      b->dmr.tg, b->net_src, b->ysf_rf_id);
         }
         modeconv_put_ysf_header();
@@ -1094,24 +1094,24 @@ void bridge_on_ysfd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
     }
 
     if (fi == YSF_FI_TERMINATOR) {
-        LOG_DEBUG("YSF process EOT -> ModeConv (voice_in=%d)\n", b->ysf_voice_frames);
+        LOG_YSF_DEBUG("YSF process EOT -> ModeConv (voice_in=%d)\n", b->ysf_voice_frames);
         if (b->call_active) {
             modeconv_put_ysf_eot();
-            LOG_INFO("YSF->DMR terminator (%d voice frames in)\n", b->ysf_voice_frames);
+            LOG_DMR_INFO("YSF->DMR terminator (%d voice frames in)\n", b->ysf_voice_frames);
         }
         return;
     }
 
     if (fi == YSF_FI_COMMUNICATIONS) {
         if (!bridge_ysf_talker_ready(b)) {
-            LOG_WARNING("YSF ignored VOICE: no talker id (missing HEADER?)\n");
+            LOG_YSF_WARNING("YSF ignored VOICE: no talker id (missing HEADER?)\n");
             return;
         }
         if (dt != YSF_DT_VD_MODE2) {
-            LOG_DEBUG("YSF VOICE dt=%u (HP3ICC; YSF2DMR expects dt=2, using repack+putYSF)\n",
+            LOG_YSF_DEBUG("YSF VOICE dt=%u (HP3ICC; YSF2DMR expects dt=2, using repack+putYSF)\n",
                       (unsigned)dt);
         }
-        LOG_DEBUG("YSF process VOICE fn=%u -> ModeConv (talker id %d voice_in=%d)\n",
+        LOG_YSF_DEBUG("YSF process VOICE fn=%u -> ModeConv (talker id %d voice_in=%d)\n",
             (unsigned)fn, b->ysf_rf_id, b->ysf_voice_frames);
         if (!b->call_active) {
             bridge_abort_connect_ptt(b);
@@ -1123,7 +1123,7 @@ void bridge_on_ysfd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
             b->ysf_voice_frames = 0;
             b->ysf_fn = pkt[48];
             modeconv_reset();
-            LOG_INFO("YSF->DMR call start (TG %d, talker %.10s id %d)\n",
+            LOG_DMR_INFO("YSF->DMR call start (TG %d, talker %.10s id %d)\n",
                      b->dmr.tg, b->net_src, b->ysf_rf_id);
         }
         {
@@ -1135,7 +1135,7 @@ void bridge_on_ysfd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
         return;
     }
 
-    LOG_WARNING("YSF unhandled fi=%u ft=%u cm=%u dt=%u\n",
+    LOG_YSF_WARNING("YSF unhandled fi=%u ft=%u cm=%u dt=%u\n",
                 (unsigned)fi, (unsigned)ft, (unsigned)cm, (unsigned)dt);
 }
 
@@ -1148,8 +1148,8 @@ void bridge_tick(ysf2dmr_bridge_t *b)
 
     if (!peer_dmr_connected(&b->dmr) || !peer_ysf_linked(&b->ysf)) {
         time_t now = time(NULL);
-        if (log_level_enabled(LOG_LEVEL_DEBUG) && (now - last_stall >= 15 || last_stall == 0)) {
-            LOG_DEBUG("tick idle: dmr=%s ysf=%s call_active=%d ptt=%d\n",
+        if (log_channel_enabled(LOG_CH_DMR, LOG_LEVEL_DEBUG) && (now - last_stall >= 15 || last_stall == 0)) {
+            LOG_YSF_DEBUG("tick idle: dmr=%s ysf=%s call_active=%d ptt=%d\n",
                 peer_dmr_connected(&b->dmr) ? "up" : "down",
                 peer_ysf_linked(&b->ysf) ? "up" : "down",
                 b->call_active, b->connect_ptt_active);
