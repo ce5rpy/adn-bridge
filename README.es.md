@@ -54,6 +54,8 @@ make install PREFIX=/usr/local
 
    ```bash
    cp ysf2dmrcon.example.ini ysf2dmrcon.ini
+   # misma plantilla con nombre explícito:
+   # cp ysf2dmrcon-ysf-dmr.example.ini ysf2dmrcon-ysf-dmr.ini
    ```
 
 2. Configure reflector YSF, DGID, servidor DMR, contraseña y talkgroup en
@@ -113,8 +115,8 @@ mode = echolink-dmr     ; EchoLink <-> DMR
 mode = echolink-ysf     ; EchoLink <-> YSF
 ```
 
-Plantillas: `ysf2dmrcon.example.ini`, `ysf2dmrcon-echolink-dmr.example.ini`,
-`ysf2dmrcon-echolink-ysf.example.ini`.
+Plantillas: `ysf2dmrcon.example.ini` / `ysf2dmrcon-ysf-dmr.example.ini` (YSF↔DMR),
+`ysf2dmrcon-echolink-dmr.example.ini`, `ysf2dmrcon-echolink-ysf.example.ini`.
 
 ### `[ysf]` — Reflector YSF
 
