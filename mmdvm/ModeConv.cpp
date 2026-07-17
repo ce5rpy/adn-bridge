@@ -715,11 +715,19 @@ void CModeConv::putAMBE7(const unsigned char* ambe7)
 
 void CModeConv::putAMBE7YSF(const unsigned char* ambe7)
 {
-	unsigned int a, b, c;
+	unsigned int dat_a, dat_b, dat_c;
+	unsigned int a, b, p;
 
 	assert(ambe7 != NULL);
-	ambe7ToABC(ambe7, &a, &b, &c);
-	putAMBE2YSF(a, b, c);
+	/* ambe7 holds raw 12/12/25-bit AMBE fields. putAMBE2YSF expects the same
+	 * Golay/PRNG-packed a/b that putDMR extracts from a DMR voice frame —
+	 * passing raw fields makes dat_a = a>>12 always 0 (carrier, no audio). */
+	ambe7ToABC(ambe7, &dat_a, &dat_b, &dat_c);
+	a = CGolay24128::encode24128(dat_a);
+	p = PRNG_TABLE[dat_a] >> 1;
+	b = CGolay24128::encode23127(dat_b) >> 1;
+	b ^= p;
+	putAMBE2YSF(a, b, dat_c);
 }
 
 void CModeConv::dmr33ToAMBE(const unsigned char* dmr33, unsigned char ambe[3][7])

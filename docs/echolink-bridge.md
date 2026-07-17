@@ -59,7 +59,7 @@ Log channels (each can be `DEBUG|INFO|WARNING|ERROR`):
 
 Lines look like `2026-07-17 10:44:12,350 DEBUG/dmr: …`. For DMR path noise, prefer `[dmr] log_level=DEBUG` with `[log] level=INFO` and quieter `echolink`/`vocoder`. Look for `vocoder ENC`/`DEC` (`raw=` vs `wire=`, `pcm_rms=`) and `DMR->EL ambe` / `EL->DMR ambe` or `EL->YSF` / `YSF->EL`.
 
-EL→DMR/YSF call end uses **PCM energy hangtime** (~700 ms below speech RMS), not RTP idle alone — EchoLink conferences often keep sending comfort-noise RTP after unkey. Idle residual PCM is dropped so it cannot open a new DMR stream. EL→DMR UDP TX is paced at ~55 ms/frame (same as YSF↔DMR) to avoid burst `RATE DROP` on the master. EL→DMR sends a **single** VHEAD (not three identical ones): adn-server PacketControl treats duplicate VHEAD CRC/`lastData` as loss.
+EL→DMR/YSF starts on **any inbound EL PCM** (including key-down silence) so the TG / YSF stream activates immediately. Call end uses **PCM presence hangtime** (~700 ms without new EL PCM). A short post-TX cooldown absorbs residual conference RTP. EL→DMR UDP TX is paced at ~60 ms/frame to avoid burst `RATE DROP` on the master. EL→DMR sends a **single** VHEAD (not three identical ones): adn-server PacketControl treats duplicate VHEAD CRC/`lastData` as loss. Directory login/list runs on a background thread so TCP cannot stall audio.
 
 ## EchoLink ↔ YSF path
 
@@ -67,10 +67,10 @@ Same EchoLink peer + remote AMBE vocoder as `echolink-dmr`. Voice crosses ModeCo
 
 | Direction | Flow |
 |-----------|------|
-| EL → YSF | GSM PCM → encode → `put_ambe7_ysf` ×5 → YSFD HEADER / VD2 VOICE / EOT |
+| EL → YSF | GSM PCM → encode → `put_ambe7_ysf` ×5 → ModeConv (same as DMR→YSF) → paced YSFD @90 ms; CSD/DCH RadioID `*****`, src = `[echolink] callsign` without `-L`/`-R` |
 | YSF → EL | YSFD → `put_ysf*` → `get_dmr` → `dmr33_to_ambe` → decode → EL PCM |
 
-Half-duplex: one active call at a time (`call_active` 1 = EL→YSF, 2 = YSF→EL). EL→YSF ends after ~2 s RTP silence (`last_rtp_rx`). YSF framing matches the existing YSF↔DMR bridge (sync, FICH, DCH slots, HP3ICC `ysf_modeconv_chunk` repack).
+Half-duplex: one active call at a time (`call_active` 1 = EL→YSF, 2 = YSF→EL). EL→YSF uses the same PCM-presence hang + cooldown as EL→DMR. YSF→EL releases the slot after ~1.5 s without YSFD (missing EOT). YSF framing matches the existing YSF↔DMR bridge (sync, FICH, DCH slots, HP3ICC `ysf_modeconv_chunk` repack).
 
 `[dmr] callsign` / `dmrid` are still required for YSF wire identity and CSD/DCH; no DMR UDP peer is opened in this mode (`password` may be a placeholder).
 
@@ -92,6 +92,8 @@ Half-duplex: one active call at a time (`call_active` 1 = EL→YSF, 2 = YSF→EL
 ```
 
 Connectivity: set `host=CA5RPY-L` (or a conference like `*REDCHILE*`). The bridge logs into the directory, looks up that callsign in the station list, then sends RTCP SDES to the resolved IP.
+
+While bridging **YSF→EchoLink**, SDES **NAME** is set to `Callsign (YSFSRC)` (e.g. `CE5RPY-L (HP3ICC)`) so EchoLink clients/conferences can show the YSF talker; it clears on EOT/hang.
 
 ## Sources only
 

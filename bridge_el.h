@@ -45,12 +45,13 @@ typedef struct {
     int16_t pcm_el_acc[160];
     int pcm_el_acc_n;
     struct timespec last_dmr_tx;
-    struct timespec last_dmr_rx; /* last DMRD while DMR->EL (call_active==2) */
+    struct timespec last_dmr_rx; /* last DMRD/YSFD while peer->EL (call_active==2) */
     struct timespec last_ysf_tx;
     struct timespec last_el_speech; /* last inbound EL PCM (hang / activity) */
-    struct timespec last_el_tx_end; /* when EL->DMR call fully ended (cooldown) */
-    int el_speech_run; /* EL->DMR: start announced for current TX attempt */
+    struct timespec last_el_tx_end; /* when EL->DMR/YSF call fully ended (cooldown) */
+    int el_speech_run; /* EL TX: start announced for current attempt */
     int dmr_ending; /* paced superframe pad + VTERM in progress */
+    int ysf_ending; /* ModeConv EOT queued; paced YSFD drain in progress */
     int dmr_was_connected;
     int connect_ptt_active;
     int connect_ptt_phase;
@@ -67,5 +68,7 @@ void bridge_el_tick(bridge_el_t *b);
 void bridge_el_process_el_audio(bridge_el_t *b);
 /* Drain EL PCM through vocoder into YSF (echolink-ysf). */
 void bridge_el_process_el_to_ysf(bridge_el_t *b);
+/* EchoLink CE5RPY-L → space-padded YSF "CE5RPY    " (stop at - or /). */
+void bridge_el_format_callsign10(char out[10], const char *src);
 
 #endif

@@ -51,6 +51,8 @@ typedef struct {
     char host[128]; /* node/conference name to connect (not an IP) */
     char qth[32];
     char email[64];
+    /* SDES NAME while bridging a remote talker (YSF/DMR→EL); empty = use callsign */
+    char talker_name[32];
     char directory_servers[YSF2DMR_EL_DIR_MAX][128];
     int directory_server_count;
     int status; /* PEER_EL_* */
@@ -103,6 +105,8 @@ int peer_el_write_pcm(peer_echolink_t *p, const int16_t *pcm, int samples);
 void peer_el_flush_pcm(peer_echolink_t *p);
 /* Drop inbound decoded PCM (call end — avoid residual silence restarting TX). */
 void peer_el_drop_pcm_in(peer_echolink_t *p);
+/* Set/clear SDES NAME for remote talker display (NULL/"" clears). Sends SDES. */
+void peer_el_set_talker_name(peer_echolink_t *p, const char *name);
 void peer_el_on_sigint(peer_echolink_t *p);
 
 #endif

@@ -617,13 +617,14 @@ static int el_build_sdes(peer_echolink_t *p, uint8_t *out, int outlen)
              tm ? tm->tm_hour : 0, tm ? tm->tm_min : 0);
 
     cname_len = (int)strlen(p->callsign);
-    name_len = cname_len;
+    /* NAME carries remote talker when set (EchoLink UI / conference display). */
+    name_len = p->talker_name[0] ? (int)strlen(p->talker_name) : cname_len;
     email_len = p->email[0] ? (int)strlen(p->email) : cname_len;
     phone_len = (int)strlen(phone);
     tool_len = (int)strlen(tool);
     /* RR(8) + SDES hdr(8) + items + END + pad(<=3) */
-    need = 8 + 8 + (2 + cname_len) * 2 + (2 + email_len) + (2 + phone_len)
-           + (2 + tool_len) + 1 + 3;
+    need = 8 + 8 + (2 + cname_len) + (2 + name_len) + (2 + email_len)
+           + (2 + phone_len) + (2 + tool_len) + 1 + 3;
     if (need > outlen)
         return -1;
 
@@ -654,7 +655,8 @@ static int el_build_sdes(peer_echolink_t *p, uint8_t *out, int outlen)
 
     out[o++] = EL_SDES_NAME;
     out[o++] = (uint8_t)name_len;
-    memcpy(out + o, p->callsign, (size_t)name_len);
+    memcpy(out + o, p->talker_name[0] ? p->talker_name : p->callsign,
+           (size_t)name_len);
     o += name_len;
 
     out[o++] = EL_SDES_EMAIL;
@@ -1082,6 +1084,42 @@ void peer_el_drop_pcm_in(peer_echolink_t *p)
     p->pcm_in_r = 0;
     p->pcm_in_w = 0;
     p->pcm_in_count = 0;
+}
+
+void peer_el_set_talker_name(peer_echolink_t *p, const char *name)
+{
+    char buf[sizeof(p->talker_name)];
+    size_t i, n;
+
+    if (!p)
+        return;
+    buf[0] = '\0';
+    if (name && name[0]) {
+        /* Trim spaces; keep printable ASCII for SDES NAME. */
+        while (*name == ' ' || *name == '\t')
+            name++;
+        n = 0;
+        for (i = 0; name[i] && n + 1 < sizeof(buf); i++) {
+            unsigned char c = (unsigned char)name[i];
+            if (c < 32 || c > 126)
+                continue;
+            if (c == ' ' && (n == 0 || buf[n - 1] == ' '))
+                continue;
+            buf[n++] = (char)c;
+        }
+        while (n > 0 && buf[n - 1] == ' ')
+            n--;
+        buf[n] = '\0';
+    }
+    if (strcmp(p->talker_name, buf) == 0)
+        return;
+    copy_z(p->talker_name, sizeof(p->talker_name), buf);
+    if (buf[0])
+        LOG_EL_INFO("echolink: talker NAME=%s (CNAME=%s)\n",
+                    p->talker_name, p->callsign);
+    else
+        LOG_EL_INFO("echolink: talker NAME cleared (CNAME=%s)\n", p->callsign);
+    el_send_sdes(p);
 }
 
 void peer_el_on_sigint(peer_echolink_t *p)

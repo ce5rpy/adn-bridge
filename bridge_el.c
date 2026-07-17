@@ -24,16 +24,16 @@
 #include <time.h>
 
 #define DMR_FRAME_MS   60
+#define YSF_FRAME_MS   90 /* same pace as DMR→YSF (bridge.c / DMR2YSF) */
 #define CONNECT_PTT_MS 1000
 /* End EL->DMR/YSF after this much without inbound EL PCM (key-down silence
  * must still hold / activate the TG; hang follows PCM presence, not RMS). */
 #define EL_HANG_MS     700
-/* After VTERM, ignore residual conference PCM so we do not open a 1s phantom. */
+/* After EL->DMR/YSF end, ignore residual conference PCM (no phantom reopen). */
 #define EL_TX_COOLDOWN_MS 800
-/* EL->YSF still uses energy gate; DMR path starts on any PCM (incl. silence). */
-#define EL_SPEECH_RMS  300
-/* DMR->EL without VTERM used to leave call_active=2 forever and block EL->DMR. */
+/* DMR/YSF->EL without VTERM/EOT used to leave call_active=2 and block EL TX. */
 #define DMR_RX_HANG_MS 1500
+#define YSF_RX_HANG_MS 1500
 #define DMRD_FT_DATA_SYNC  2U
 #define DMRD_FT_VOICE_SYNC 1U
 #define DMRD_DTYPE_VHEAD   1U
@@ -651,7 +651,7 @@ static void dbg_label10(char out[11], const uint8_t raw[10])
     out[10] = '\0';
 }
 
-static void format_ysf_callsign10(char out[10], const char *src)
+void bridge_el_format_callsign10(char out[10], const char *src)
 {
     int i, j = 0;
 
@@ -669,17 +669,48 @@ static void format_ysf_callsign10(char out[10], const char *src)
     }
 }
 
-static void radio_id_to_dch5(uint8_t out[5], int dmrid)
+/* DMR2YSF/YSF2DMR default RadioID in CSD/DCH (not configurable). */
+static void radio_id_to_dch5(uint8_t out[5])
 {
-    char buf[16];
-    int i;
-
     memset(out, '*', 5);
-    if (dmrid <= 0)
+}
+
+/* Trim YSF/DMR wire callsign (10 chars, space-padded) for EchoLink SDES NAME. */
+static void wire_call_to_cstr(char out[16], const char src[10])
+{
+    int i, n = 0;
+
+    out[0] = '\0';
+    if (!src)
         return;
-    snprintf(buf, sizeof(buf), "%05d", dmrid % 100000);
-    for (i = 0; i < 5; i++)
-        out[i] = (uint8_t)buf[i];
+    for (i = 0; i < 10 && n < 15; i++) {
+        unsigned char c = (unsigned char)src[i];
+
+        if (c == '\0')
+            break;
+        if (c == ' ' || c == '\t') {
+            if (n == 0)
+                continue;
+            break;
+        }
+        out[n++] = (char)c;
+    }
+    out[n] = '\0';
+}
+
+static void bridge_el_set_ysf_talker_on_el(bridge_el_t *b)
+{
+    char talker[16];
+    char name[32];
+
+    wire_call_to_cstr(talker, b->net_src);
+    if (!talker[0]) {
+        peer_el_set_talker_name(&b->el, NULL);
+        return;
+    }
+    /* Conference-style NAME: "CE5RPY-L (HP3ICC)" — clients parse talker in parens. */
+    snprintf(name, sizeof(name), "%s (%s)", b->el.callsign, talker);
+    peer_el_set_talker_name(&b->el, name);
 }
 
 static int ysf_pkt_has_rf_sync(const uint8_t *pkt155)
@@ -707,22 +738,24 @@ static const uint8_t *ysf_modeconv_chunk(const uint8_t *pkt155, uint8_t scratch[
 
 static void bridge_el_fill_ysf_csd(bridge_el_t *b, uint8_t csd1[20], uint8_t csd2[20])
 {
+    /* Byte-identical to bridge_fill_ysf_csd / DMR2YSF: *****|RadioID|src. */
     uint8_t rid[5];
 
     memset(csd2, ' ', 20);
     memset(csd1, '*', 5);
-    radio_id_to_dch5(rid, b->bridge_dmrid);
+    radio_id_to_dch5(rid);
     memcpy(csd1 + 5, rid, 5);
     memcpy(csd1 + 10, b->net_src, 10);
 }
 
 static void bridge_el_apply_ysf_dch_slot(uint8_t *payload, uint8_t fn, bridge_el_t *b)
 {
+    /* Byte-identical FN slots to bridge_apply_ysf_dch_slot / DMR2YSF. */
     uint8_t dch[10];
     uint8_t rid[5];
 
     memset(dch, ' ', 10);
-    radio_id_to_dch5(rid, b->bridge_dmrid);
+    radio_id_to_dch5(rid);
     switch (fn) {
     case 0:
         memset(dch, '*', 5);
@@ -758,6 +791,7 @@ static void bridge_el_apply_ysf_dch_slot(uint8_t *payload, uint8_t fn, bridge_el
 
 static void bridge_el_fill_ysfd_headers(uint8_t *frame, bridge_el_t *b)
 {
+    /* Same YSFD envelope as bridge_fill_ysfd_headers. */
     memcpy(frame, "YSFD", 4);
     memcpy(frame + 4, b->ysf.callsign, 10);
     memcpy(frame + 14, b->net_src, 10);
@@ -774,6 +808,7 @@ static int bridge_el_send_ysfd(bridge_el_t *b, uint8_t fi, uint8_t ft, uint8_t c
 
     bridge_el_fill_ysfd_headers(frame, b);
     frame[34] = net_cnt;
+    /* Wire layout: sync at +35, FICH at +40 — same order as bridge_send_ysfd. */
     if (fi == YSF_FI_HEADER || fi == YSF_FI_TERMINATOR) {
         memset(frame + YSF_FICH_OFFSET_NET, 0, 120);
         memcpy(frame + YSF_FICH_OFFSET_NET, YSF_SYNC_BYTES, 5);
@@ -783,6 +818,7 @@ static int bridge_el_send_ysfd(bridge_el_t *b, uint8_t fi, uint8_t ft, uint8_t c
     } else {
         memcpy(frame + YSF_FICH_OFFSET_NET, payload120, 120);
         memcpy(frame + YSF_FICH_OFFSET_NET, YSF_SYNC_BYTES, 5);
+        /* YSF2DMR: sync, DCH slot, FICH */
         bridge_el_apply_ysf_dch_slot(frame + YSF_FICH_OFFSET_NET, fich_fn, b);
         ysf_fich_encode_outbound(frame + YSF_FICH_OFFSET_RX, fich_fn, fi, ft, cm);
     }
@@ -809,62 +845,88 @@ static int bridge_el_send_ysfd(bridge_el_t *b, uint8_t fi, uint8_t ft, uint8_t c
     return 1;
 }
 
-static void bridge_el_ysf_send_header(bridge_el_t *b)
+/* Drain one ModeConv YSF tag — same control flow as bridge_emit_ysf_from_conv. */
+static int bridge_el_emit_ysf_from_conv(bridge_el_t *b)
 {
-    uint8_t csd1[20], csd2[20];
+    uint8_t payload[120];
+    unsigned int tag;
 
-    b->ysf_cnt = 0;
-    bridge_el_fill_ysf_csd(b, csd1, csd2);
-    bridge_el_send_ysfd(b, YSF_FI_HEADER, YSF_FICH_FT, YSF_FICH_CM, 0, 0,
-                        NULL, csd1, csd2);
-    b->ysf_cnt = 1;
-}
+    memset(payload, 0, sizeof(payload));
+    tag = modeconv_get_ysf(payload);
+    if (tag == MODECONV_TAG_NODATA)
+        return 0;
 
-static void bridge_el_ysf_send_eot(bridge_el_t *b)
-{
-    uint8_t csd1[20], csd2[20];
+    if (tag == MODECONV_TAG_HEADER) {
+        uint8_t csd1[20], csd2[20];
 
-    bridge_el_fill_ysf_csd(b, csd1, csd2);
-    bridge_el_send_ysfd(b, YSF_FI_TERMINATOR, YSF_FICH_FT, YSF_FICH_CM, 0,
-                        b->ysf_cnt, NULL, csd1, csd2);
-}
+        b->ysf_cnt = 0;
+        bridge_el_fill_ysf_csd(b, csd1, csd2);
+        bridge_el_send_ysfd(b, YSF_FI_HEADER, YSF_FICH_FT, YSF_FICH_CM, 0, 0,
+                            NULL, csd1, csd2);
+        b->ysf_cnt = 1;
+        return 1;
+    }
+    if (tag == MODECONV_TAG_EOT) {
+        uint8_t csd1[20], csd2[20];
 
-static void bridge_el_ysf_send_voice(bridge_el_t *b, const uint8_t payload120[120])
-{
-    uint8_t fn = (uint8_t)((b->ysf_cnt - 1U) % (YSF_FICH_FT + 1U));
-    uint8_t net = (uint8_t)((b->ysf_cnt & 0x7FU) << 1);
+        bridge_el_fill_ysf_csd(b, csd1, csd2);
+        bridge_el_send_ysfd(b, YSF_FI_TERMINATOR, YSF_FICH_FT, YSF_FICH_CM, 0,
+                            b->ysf_cnt, NULL, csd1, csd2);
+        LOG_YSF_INFO("EL->YSF call end (%d voice frames out, el_rtp_rx=%u)\n",
+                     b->ysf_voice_frames, b->el.rtp_rx_packets);
+        b->call_active = 0;
+        b->ysf_ending = 0;
+        b->ysf_voice_frames = 0;
+        b->ysf_ambe_count = 0;
+        b->ysf_cnt = 0;
+        b->pcm_el_acc_n = 0;
+        b->el_speech_run = 0;
+        peer_el_drop_pcm_in(&b->el);
+        modeconv_reset();
+        stamp_now(&b->last_el_tx_end);
+        return 1;
+    }
+    if (tag == MODECONV_TAG_DATA) {
+        uint8_t fn = (uint8_t)((b->ysf_cnt - 1U) % (YSF_FICH_FT + 1U));
+        uint8_t net = (uint8_t)((b->ysf_cnt & 0x7FU) << 1);
 
-    bridge_el_send_ysfd(b, YSF_FI_COMMUNICATIONS, YSF_FICH_FT, YSF_FICH_CM,
-                        fn, net, payload120, NULL, NULL);
-    b->ysf_cnt++;
+        bridge_el_send_ysfd(b, YSF_FI_COMMUNICATIONS, YSF_FICH_FT, YSF_FICH_CM,
+                            fn, net, payload, NULL, NULL);
+        b->ysf_voice_frames++;
+        b->ysf_cnt++;
+        return 1;
+    }
+    return 0;
 }
 
 static void bridge_el_end_ysf_call(bridge_el_t *b)
 {
-    if (b->call_active != 1)
+    if (b->call_active != 1 || b->ysf_ending)
         return;
-    bridge_el_ysf_send_eot(b);
-    LOG_YSF_INFO("EL->YSF call end (%d voice frames out, el_rtp_rx=%u)\n",
-             b->ysf_voice_frames, b->el.rtp_rx_packets);
-    b->call_active = 0;
-    b->ysf_voice_frames = 0;
-    b->ysf_ambe_count = 0;
-    b->ysf_cnt = 0;
-    b->pcm_el_acc_n = 0;
-    peer_el_drop_pcm_in(&b->el);
-    modeconv_reset();
+    /* Same as DMR→YSF: queue ModeConv EOT; HEADER/CSD/EOT leave on paced emit. */
+    b->ysf_ending = 1;
+    modeconv_put_dmr_eot();
 }
 
 static void bridge_el_begin_el_to_ysf(bridge_el_t *b)
 {
-    format_ysf_callsign10(b->net_src, b->el.callsign);
+    /*
+     * Identity slots identical to DMR→YSF:
+     *   CSD/DCH RadioID = *****
+     *   wire dst = ALL
+     *   net_src = talker callsign (here: [echolink] callsign without -L/-R)
+     * HEADER is queued like putDMRHeader; CSD bytes filled on emit.
+     */
+    bridge_el_format_callsign10(b->net_src, b->el.callsign);
     memcpy(b->net_dst, YSF_WIRE_DST_ALL, 10);
     b->call_active = 1;
+    b->ysf_ending = 0;
     b->ysf_voice_frames = 0;
     b->ysf_ambe_count = 0;
     b->pcm_el_acc_n = 0;
+    b->ysf_cnt = 0;
     modeconv_reset();
-    bridge_el_ysf_send_header(b);
+    modeconv_put_dmr_header();
     b->el.rtp_rx_packets = 0;
     LOG_YSF_INFO("EL->YSF call start (src %.10s)\n", b->net_src);
 }
@@ -897,18 +959,18 @@ void bridge_el_process_el_to_ysf(bridge_el_t *b)
 {
     int16_t pcm[160];
     uint8_t ambe[7];
-    uint8_t ysf120[120];
     int n;
     int enc_fail_streak = 0;
 
     if (b->mode != YSF2DMR_MODE_ECHOLINK_YSF)
         return;
-    if (b->call_active == 2)
-        return; /* YSF has the slot */
+    if (b->call_active == 2 || b->ysf_ending)
+        return; /* YSF RX has the slot, or EOT drain in progress */
 
     while ((n = peer_el_read_pcm(&b->el, pcm, 160)) > 0) {
         int i;
         int rms;
+        int in_cooldown;
 
         for (i = 0; i < n && b->pcm_el_acc_n < 160; i++)
             b->pcm_el_acc[b->pcm_el_acc_n++] = pcm[i];
@@ -916,12 +978,27 @@ void bridge_el_process_el_to_ysf(bridge_el_t *b)
             continue;
 
         rms = pcm_rms16(b->pcm_el_acc, 160);
-        if (rms >= EL_SPEECH_RMS)
-            stamp_now(&b->last_el_speech);
-        if (!b->call_active && rms < EL_SPEECH_RMS) {
-            b->pcm_el_acc_n = 0;
-            b->ysf_ambe_count = 0;
-            continue;
+        /* Any inbound EL PCM (incl. silence) refreshes hang + may start TX. */
+        stamp_now(&b->last_el_speech);
+
+        in_cooldown = (b->last_el_tx_end.tv_sec || b->last_el_tx_end.tv_nsec)
+                      && ms_since(&b->last_el_tx_end) < EL_TX_COOLDOWN_MS;
+        if (!b->call_active) {
+            if (in_cooldown) {
+                static int drop_dbg;
+                if (++drop_dbg <= 3 || (drop_dbg % 50) == 0)
+                    LOG_EL_DEBUG("echolink: post-TX cooldown drop rms=%d (YSF)\n",
+                                 rms);
+                b->pcm_el_acc_n = 0;
+                b->ysf_ambe_count = 0;
+                b->el_speech_run = 0;
+                continue;
+            }
+            if (!b->el_speech_run) {
+                LOG_EL_INFO("echolink: EL audio rms=%d — starting EL->YSF path\n",
+                            rms);
+                b->el_speech_run = 1;
+            }
         }
 
         if (vocoder_encode(&b->voc, b->pcm_el_acc, ambe) != 0) {
@@ -962,14 +1039,10 @@ void bridge_el_process_el_to_ysf(bridge_el_t *b)
                           b->ysf_ambe_buf[0][6], b->ysf_voice_frames, rms);
             }
         }
+        /* Queue only — YSFD HEADER/VOICE/EOT leave via paced emit (DMR→YSF). */
         for (i = 0; i < 5; i++)
             modeconv_put_ambe7_ysf(b->ysf_ambe_buf[i]);
         b->ysf_ambe_count = 0;
-        memset(ysf120, 0, sizeof(ysf120));
-        if (modeconv_get_ysf(ysf120) == MODECONV_TAG_DATA) {
-            bridge_el_ysf_send_voice(b, ysf120);
-            b->ysf_voice_frames++;
-        }
     }
 }
 
@@ -1007,6 +1080,7 @@ void bridge_el_on_ysfd(bridge_el_t *b, const uint8_t *pkt, int len)
             bridge_el_end_ysf_call(b);
         if (b->call_active == 2) {
             peer_el_flush_pcm(&b->el);
+            peer_el_set_talker_name(&b->el, NULL);
             LOG_YSF_INFO("YSF->EL call end (%d voice frames in, el_rtp_tx=%u) "
                      "— replaced by new stream\n",
                      b->ysf_voice_frames, b->el.rtp_tx_packets);
@@ -1016,8 +1090,10 @@ void bridge_el_on_ysfd(bridge_el_t *b, const uint8_t *pkt, int len)
         b->call_active = 2;
         b->ysf_voice_frames = 0;
         b->el.rtp_tx_packets = 0;
+        stamp_now(&b->last_dmr_rx); /* reuse: last peer->EL activity */
         modeconv_reset();
         modeconv_put_ysf_header();
+        bridge_el_set_ysf_talker_on_el(b);
         LOG_YSF_INFO("YSF->EL call start (src %.10s)\n", b->net_src);
         return;
     }
@@ -1027,6 +1103,7 @@ void bridge_el_on_ysfd(bridge_el_t *b, const uint8_t *pkt, int len)
             modeconv_put_ysf_eot();
             bridge_el_drain_ysf_to_el_pcm(b);
             peer_el_flush_pcm(&b->el);
+            peer_el_set_talker_name(&b->el, NULL);
             LOG_YSF_INFO("YSF->EL call end (%d voice frames in, el_rtp_tx=%u)\n",
                      b->ysf_voice_frames, b->el.rtp_tx_packets);
             b->call_active = 0;
@@ -1048,12 +1125,14 @@ void bridge_el_on_ysfd(bridge_el_t *b, const uint8_t *pkt, int len)
         b->el.rtp_tx_packets = 0;
         modeconv_reset();
         modeconv_put_ysf_header();
+        bridge_el_set_ysf_talker_on_el(b);
         LOG_YSF_INFO("YSF->EL call start (src %.10s, no HEADER)\n", b->net_src);
     }
     if (dt != YSF_DT_VD_MODE2) {
         LOG_YSF_DEBUG("YSF VOICE dt=%u (expect VD2; using repack+putYSF)\n",
                   (unsigned)dt);
     }
+    stamp_now(&b->last_dmr_rx);
     modeconv_put_ysf_payload(ysf_modeconv_chunk(pkt, scratch));
     b->ysf_voice_frames++;
     bridge_el_drain_ysf_to_el_pcm(b);
@@ -1084,8 +1163,13 @@ void bridge_el_tick(bridge_el_t *b)
             bridge_el_pace_dmr_tx(b);
     }
 
+    /* EL→YSF: one YSFD every 90 ms (identical pacing to DMR→YSF). */
+    if (b->mode == YSF2DMR_MODE_ECHOLINK_YSF && b->call_active == 1
+        && ms_elapsed(&b->last_ysf_tx, YSF_FRAME_MS))
+        (void)bridge_el_emit_ysf_from_conv(b);
+
     /* End EL->DMR/YSF when inbound EL PCM stops (silence still holds while RTP). */
-    if (b->call_active == 1 && !b->dmr_ending
+    if (b->call_active == 1 && !b->dmr_ending && !b->ysf_ending
         && ms_since(&b->last_el_speech) >= EL_HANG_MS) {
         if (b->mode == YSF2DMR_MODE_ECHOLINK_DMR)
             bridge_el_begin_dmr_end(b);
@@ -1094,16 +1178,27 @@ void bridge_el_tick(bridge_el_t *b)
     }
 
     /*
-     * DMR->EL: if the stream dies without VTERM (common after idle / UDP loss),
-     * release the half-duplex lock so EL->DMR can run again.
+     * DMR/YSF->EL: if the stream dies without VTERM/EOT, release the
+     * half-duplex lock so EL TX can run again.
      */
-    if (b->mode == YSF2DMR_MODE_ECHOLINK_DMR && b->call_active == 2
-        && ms_since(&b->last_dmr_rx) >= DMR_RX_HANG_MS) {
-        peer_el_flush_pcm(&b->el);
-        LOG_DMR_INFO("DMR->EL call end (%d voice frames in, el_rtp_tx=%u) — RX hangtime\n",
-                     b->dmr_voice_frames, b->el.rtp_tx_packets);
-        b->call_active = 0;
-        b->dmr_voice_frames = 0;
-        b->dmr_rx_stream_id = 0;
+    if (b->call_active == 2) {
+        if (b->mode == YSF2DMR_MODE_ECHOLINK_DMR
+            && ms_since(&b->last_dmr_rx) >= DMR_RX_HANG_MS) {
+            peer_el_flush_pcm(&b->el);
+            LOG_DMR_INFO("DMR->EL call end (%d voice frames in, el_rtp_tx=%u) — RX hangtime\n",
+                         b->dmr_voice_frames, b->el.rtp_tx_packets);
+            b->call_active = 0;
+            b->dmr_voice_frames = 0;
+            b->dmr_rx_stream_id = 0;
+        } else if (b->mode == YSF2DMR_MODE_ECHOLINK_YSF
+                   && ms_since(&b->last_dmr_rx) >= YSF_RX_HANG_MS) {
+            peer_el_flush_pcm(&b->el);
+            peer_el_set_talker_name(&b->el, NULL);
+            LOG_YSF_INFO("YSF->EL call end (%d voice frames in, el_rtp_tx=%u) — RX hangtime\n",
+                         b->ysf_voice_frames, b->el.rtp_tx_packets);
+            b->call_active = 0;
+            b->ysf_voice_frames = 0;
+            modeconv_reset();
+        }
     }
 }

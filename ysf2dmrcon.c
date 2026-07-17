@@ -214,7 +214,11 @@ static int run_echolink(ysf2dmr_config_t *cfg)
                  cfg->vocoder.host, cfg->vocoder.port);
     }
     if (use_ysf) {
-        if (peer_ysf_open(&bridge_el.ysf, cfg->ysf_host, cfg->ysf_port, cfg->callsign,
+        char ysf_cs[10];
+
+        /* Gateway YSFP callsign: EchoLink base (same role as [dmr] callsign in DMR→YSF). */
+        bridge_el_format_callsign10(ysf_cs, cfg->echolink.callsign);
+        if (peer_ysf_open(&bridge_el.ysf, cfg->ysf_host, cfg->ysf_port, ysf_cs,
                           (uint8_t)cfg->dgid) < 0)
             return 1;
         LOG_INFO("bridge running (EchoLink<->YSF via vocoder %s:%d)\n",
