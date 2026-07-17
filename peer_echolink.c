@@ -730,16 +730,83 @@ static void el_sdes_copy_item(char *dst, size_t dstlen, const uint8_t *data, int
     dst[n] = '\0';
 }
 
+/* Copy first whitespace-delimited token, uppercased. */
+static void el_copy_token(char *dst, size_t dstlen, const char *src)
+{
+    size_t n = 0;
+
+    dst[0] = '\0';
+    if (!src || dstlen == 0)
+        return;
+    while (*src == ' ' || *src == '\t')
+        src++;
+    while (*src && *src != ' ' && *src != '\t' && n + 1 < dstlen) {
+        unsigned char c = (unsigned char)*src++;
+
+        if (c < 32 || c > 126)
+            continue;
+        dst[n++] = (char)toupper(c);
+    }
+    dst[n] = '\0';
+}
+
+/*
+ * Accept real station callsigns / conferences; reject status text such as
+ * "Conference [2/8]" that thelinkbox puts inside NAME parentheses.
+ */
+static int el_looks_like_callsign(const char *s)
+{
+    int i, n = 0, letters = 0, digits = 0;
+
+    if (!s || !s[0])
+        return 0;
+    if (strncasecmp(s, "CONFERENCE", 10) == 0)
+        return 0;
+    if (strcasecmp(s, "CALLSIGN") == 0)
+        return 0;
+    if (strchr(s, '[') || strchr(s, ']'))
+        return 0;
+    for (i = 0; s[i]; i++) {
+        unsigned char c = (unsigned char)s[i];
+
+        if (c == ' ' || c == '\t')
+            break;
+        if (isalpha(c)) {
+            letters++;
+            n++;
+            continue;
+        }
+        if (isdigit(c)) {
+            digits++;
+            n++;
+            continue;
+        }
+        /* -L/-R, *CONF*, /suffix */
+        if (c == '-' || c == '*' || c == '/') {
+            n++;
+            continue;
+        }
+        return 0;
+    }
+    /* Need a letter (or leading * for conferences) and a few chars. */
+    if (n < 3)
+        return 0;
+    if (s[0] == '*')
+        return 1;
+    return letters > 0;
+}
+
 /*
  * Derive remote talker from inbound SDES:
- *   NAME "FOO (TALKER)" / "FOO (TALKER) CONF" → TALKER
+ *   NAME "NODE (CE5ABC) CONF" → CE5ABC (only if paren text looks like callsign)
+ *   NAME "CA5RPY-L (Conference [2/8]) CONF" → CA5RPY-L (paren is status, skip)
  *   NAME "CALLSIGN Name" → first token
- *   else CNAME (if not the dummy "CALLSIGN")
- *   else connected host
+ *   else CNAME / connected host
  */
 static void el_apply_remote_sdes(peer_echolink_t *p, const char *cname, const char *name)
 {
     char talker[sizeof(p->remote_talker)];
+    char cand[sizeof(p->remote_talker)];
     const char *lp, *rp;
     size_t i, n;
 
@@ -749,56 +816,34 @@ static void el_apply_remote_sdes(peer_echolink_t *p, const char *cname, const ch
         rp = strrchr(name, ')');
         if (lp && rp && rp > lp + 1) {
             n = 0;
-            for (i = 1; lp[i] && &lp[i] < rp && n + 1 < sizeof(talker); i++) {
+            for (i = 1; lp[i] && &lp[i] < rp && n + 1 < sizeof(cand); i++) {
                 unsigned char c = (unsigned char)lp[i];
 
                 if (c == ' ' && n == 0)
                     continue;
                 if (c < 32 || c > 126)
                     continue;
-                talker[n++] = (char)toupper(c);
+                cand[n++] = (char)toupper(c);
             }
-            while (n > 0 && talker[n - 1] == ' ')
+            while (n > 0 && cand[n - 1] == ' ')
                 n--;
-            talker[n] = '\0';
+            cand[n] = '\0';
+            if (el_looks_like_callsign(cand))
+                copy_z(talker, sizeof(talker), cand);
         }
         if (!talker[0]) {
-            n = 0;
-            for (i = 0; name[i] && n + 1 < sizeof(talker); i++) {
-                unsigned char c = (unsigned char)name[i];
-
-                if (c == ' ' || c == '\t') {
-                    if (n == 0)
-                        continue;
-                    break;
-                }
-                if (c < 32 || c > 126)
-                    continue;
-                talker[n++] = (char)toupper(c);
-            }
-            talker[n] = '\0';
+            el_copy_token(cand, sizeof(cand), name);
+            if (el_looks_like_callsign(cand))
+                copy_z(talker, sizeof(talker), cand);
         }
     }
-    if (!talker[0] && cname && cname[0]
-        && strcmp(cname, "CALLSIGN") != 0) {
-        n = 0;
-        for (i = 0; cname[i] && n + 1 < sizeof(talker); i++) {
-            unsigned char c = (unsigned char)cname[i];
-
-            if (c == ' ' || c == '\t') {
-                if (n == 0)
-                    continue;
-                break;
-            }
-            talker[n++] = (char)toupper(c);
-        }
-        talker[n] = '\0';
-    }
+    if (!talker[0] && cname && cname[0] && el_looks_like_callsign(cname))
+        el_copy_token(talker, sizeof(talker), cname);
     if (!talker[0] && p->host[0])
         copy_z(talker, sizeof(talker), p->host);
 
-    if (cname && cname[0] && strcmp(cname, "CALLSIGN") != 0)
-        copy_z(p->remote_cname, sizeof(p->remote_cname), cname);
+    if (cname && cname[0] && el_looks_like_callsign(cname))
+        el_copy_token(p->remote_cname, sizeof(p->remote_cname), cname);
     if (!talker[0])
         return;
     if (strcmp(p->remote_talker, talker) == 0)
