@@ -1,46 +1,59 @@
-# EchoLink bridge modes (ysf2dmrcon)
+# EchoLink bridge (ysf2dmrcon)
 
-## Modes
+How to run **`echolink-dmr`** (EchoLink ↔ DMR) and **`echolink-ysf`** (EchoLink ↔ YSF).
 
-Set in INI:
+Build / install: [README.md](../README.md) · [README.es.md](../README.es.md).
+**Español:** [echolink-bridge.es.md](echolink-bridge.es.md).
+YSF ↔ DMR (no EchoLink): [ysf-dmr-bridge.md](ysf-dmr-bridge.md).
+
+## Requirements
+
+1. Validated EchoLink station (`CALL-L`, `CALL-R`, or conference callsign if you host).
+2. Hardware AMBE vocoder reachable over UDP (DV3000 / AMBEServer protocol).
+3. Firewall / NAT: allow **UDP 5198–5199** (and outbound **TCP 5200** to the EchoLink directory).
+
+## Quick start
+
+```bash
+# EchoLink <-> DMR
+cp ysf2dmrcon-echolink-dmr.example.ini ysf2dmrcon-echolink-dmr.ini
+# edit: passwords, bind_addr, DMR master, EchoLink host, vocoder
+./ysf2dmrcon -c ysf2dmrcon-echolink-dmr.ini
+
+# EchoLink <-> YSF
+cp ysf2dmrcon-echolink-ysf.example.ini ysf2dmrcon-echolink-ysf.ini
+# edit: passwords, bind_addr, YSF reflector/DGID, EchoLink host, vocoder
+./ysf2dmrcon -c ysf2dmrcon-echolink-ysf.ini
+```
+
+When the peer is resolved and linked you should see something like
+`linked to … (RTCP SDES)`.
+
+## Mode
 
 ```ini
 [bridge]
-mode = ysf-dmr          ; default — existing YSF <-> DMR
-mode = echolink-dmr     ; EchoLink <-> DMR
-mode = echolink-ysf     ; EchoLink <-> YSF
+mode = echolink-dmr     ; or echolink-ysf
 ```
 
-## EchoLink ports (fixed in code)
+## `[echolink]` — what to set
 
-| Port | Role |
-|------|------|
-| UDP 5198 | RTP audio (GSM) |
-| UDP 5199 | RTCP control / SDES |
-| TCP 5200 | Directory login (to `directory_servers`) |
+| Key | Required | Description |
+|-----|----------|-------------|
+| `callsign` | yes | Your EchoLink station |
+| `password` | yes | Directory password |
+| `bind_addr` | yes | Local IP that owns UDP 5198/5199 |
+| `host` | yes | Node (`CALL-L` / `CALL-R`) or conference (`*NAME*`) to connect to |
+| `qth` / `email` | no | Optional directory metadata |
+| `directory_servers` | no | Defaults to the public `serverN.echolink.org` hosts |
+| `login_interval` | no | Directory presence refresh (default **360** s) |
+| `station_list_interval` | no | How often to refresh the peer IP from the station list (default **600** s) |
+| `gain` | no | Audio scale **EchoLink → DMR/YSF** before AMBE. `1.0` = no change (default); suggested **0.5** for `echolink-ysf` and **1.0** for `echolink-dmr`; accepted range above **0** up to **4**. Does not affect DMR/YSF → EchoLink. |
+| `log_level` | no | Else inherits `[log]` |
 
-Do **not** put these ports in the INI. Configure only:
+Ports **5198 / 5199 / 5200** are fixed in code (not INI keys).
 
-- `bind_addr` — local IP for 5198/5199
-- `callsign` / `password` — EchoLink station credentials
-- `host` — node or conference **callsign** to connect (e.g. `CA5RPY-L`, `*REDCHILE*`); resolved via the EchoLink directory station list. A dotted IPv4 is still accepted as a lab escape hatch.
-- `directory_servers` — comma-separated directory hostnames
-- `login_interval` — tlb `LoginInterval` (default **360** s); directory presence login
-- `station_list_interval` — tlb `StationListInterval` (default **600** s); full station-list refresh and peer IP update
-- `gain` — linear PCM scale for **EchoLink → DMR/YSF** (before AMBE encode), range **above 0 .. 4**:
-  - omit or **`1.0`** — unchanged (unity, default)
-  - **`0.5`** — typical if Fusion/DMR clips (~−6 dB)
-  - **`4.0`** — maximum boost
-  - does not change YSF/DMR → EchoLink level
-
-Directory timing matches thelinkbox `RTCP_Handler`:
-
-1. Startup: `LOGIN_AND_LIST`, next login at +60 s, next list at +`station_list_interval`
-2. When login is due and list is also due → login + station list
-3. When only login is due → login only
-4. When only list is due → station list only (re-resolve `host`, update IP if it changed)
-
-## Vocoder
+## `[vocoder]`
 
 ```ini
 [vocoder]
@@ -48,60 +61,97 @@ host = 127.0.0.1
 port = 2460
 ```
 
-Wire protocol is DV3000 / AMBEServer style (UDP). Lab uses **md380-emu** (`emu-ambe` docker).
+Point `host`/`port` at your hardware vocoder. Without it there is no voice between EchoLink and DMR/YSF.
 
-| Layer | Format |
-|-------|--------|
-| ModeConv / bridge API | 7-byte **raw** (deinterleaved) 49-bit AMBE |
-| UDP to md380-emu @ RATET 34 | same 49 bits **interleaved** (`interleave49`) |
-| Analog_Bridge `useEmulator` | often **AMBE72** (RATET 33 / RATEP 3600x2450, 9-byte FEC) |
+## DMR or YSF side
 
-Log channels (each can be `DEBUG|INFO|WARNING|ERROR`):
+**`echolink-dmr`:** fill `[dmr]` like a Homebrew peer (`callsign`, `dmrid`, `host`, `port`, `tg`, `password`; optional `options` RPTO). TX is always TS2.
 
-- `[log] level=` — default for all channels (also `app`: main/aliases)
-- `[dmr] log_level=`, `[echolink] log_level=`, `[ysf] log_level=`, `[vocoder] log_level=`
-- Or under `[log]`: `dmr=`, `echolink=`, `ysf=`, `vocoder=`
+**`echolink-ysf`:** fill `[ysf]` (`host`, `port`, `dgid`). `[dmr] host` / `password` are unused; keep `callsign` / `dmrid` for YSF identity fields.
 
-Lines look like `2026-07-17 10:44:12,350 DEBUG/dmr: …`. For DMR path noise, prefer `[dmr] log_level=DEBUG` with `[log] level=INFO` and quieter `echolink`/`vocoder`. Look for `vocoder ENC`/`DEC` (`raw=` vs `wire=`, `pcm_rms=`) and `DMR->EL ambe` / `EL->DMR ambe` or `EL->YSF` / `YSF->EL`.
+Subscriber aliases (`[aliases]`) map callsigns ↔ DMR IDs the same way as YSF↔DMR — see [ysf-dmr-bridge.md](ysf-dmr-bridge.md) and the README.
 
-EL→DMR/YSF starts on **any inbound EL PCM** (including key-down silence) so the TG / YSF stream activates immediately. Call end uses **PCM presence hangtime** (~700 ms without new EL PCM). A short post-TX cooldown absorbs residual conference RTP. EL→DMR UDP TX is paced at ~60 ms/frame to avoid burst `RATE DROP` on the master. EL→DMR sends a **single** VHEAD (not three identical ones): adn-server PacketControl treats duplicate VHEAD CRC/`lastData` as loss. Directory login/list runs on a background thread so TCP cannot stall audio.
+## Logs (program output in the terminal)
 
-## EchoLink ↔ YSF path
+Strings like `EL->DMR`, `RTP RX`, or `vocoder ENC` are **not INI keys**.
+They appear in the **log** that `ysf2dmrcon` prints while it runs.
 
-Same EchoLink peer + remote AMBE vocoder as `echolink-dmr`. Voice crosses ModeConv as AMBE7:
-
-| Direction | Flow |
-|-----------|------|
-| EL → YSF | GSM PCM → encode → `put_ambe7_ysf` ×5 → ModeConv (same as DMR→YSF) → paced YSFD @90 ms; CSD/DCH RadioID `*****`, src = **remote** EchoLink talker from inbound RTCP SDES (else connected node) |
-| YSF → EL | YSFD → `put_ysf*` → `get_dmr` → `dmr33_to_ambe` → decode → EL PCM |
-
-Inbound RTCP SDES (UDP 5199) supplies the remote identity: `NAME` may be `NODE (TALKER)` on conferences; otherwise `CNAME` / connected `host`. EL→DMR resolves that callsign the same way as YSF→DMR: strip `-L`/`-R`, look up subscriber alias → DMR RF id (fallback bridge `[dmr] dmrid`). EL→YSF puts the full EchoLink callsign on the wire.
-
-Half-duplex: one active call at a time (`call_active` 1 = EL→YSF, 2 = YSF→EL). EL→YSF uses the same PCM-presence hang + cooldown as EL→DMR. YSF→EL releases the slot after ~1.5 s without YSFD (missing EOT). YSF framing matches the existing YSF↔DMR bridge (sync, FICH, DCH slots, HP3ICC `ysf_modeconv_chunk` repack).
-
-`[dmr] callsign` / `dmrid` are still required for YSF wire identity and CSD/DCH; no DMR UDP peer is opened in this mode (`password` may be a placeholder).
-
-## Lab topology (ADN)
-
-| Role | Callsign | IP |
-|------|----------|-----|
-| thelinkbox | CA5RPY-L | 44.31.61.72 |
-| ysf2dmrcon bridge | CE5RPY-L | 44.31.61.70 |
-| AMBEServer | — | 127.0.0.1:2460 |
-| YSF reflector (lab) | — | see local `ysf2dmrcon-echolink-ysf.ini` |
+1. Open a terminal on the server.
+2. Start the bridge in the foreground (so you see the log immediately):
 
 ```bash
-# EchoLink <-> DMR
-./ysf2dmrcon -c ysf2dmrcon-echolink.ini
-
-# EchoLink <-> YSF
-./ysf2dmrcon -c ysf2dmrcon-echolink-ysf.ini
+./ysf2dmrcon -c ysf2dmrcon-echolink-dmr.ini
 ```
 
-Connectivity: set `host=CA5RPY-L` (or a conference like `*REDCHILE*`). The bridge logs into the directory, looks up that callsign in the station list, then sends RTCP SDES to the resolved IP.
+3. Keep that window open — each event prints a line there.
+4. Under systemd: `journalctl -u your-service-name -f`  
+   Under nohup/redirect: open the file you sent output to (`>> bridge.log 2>&1`).
 
-While bridging **YSF→EchoLink**, SDES **NAME** is set to `Callsign (YSFSRC)` (e.g. `CE5RPY-L (HP3ICC)`) so EchoLink clients/conferences can show the YSF talker; it clears on EOT/hang.
+### Turn on more detail (in the INI, then restart)
 
-## Sources only
+```ini
+[log]
+level = INFO
 
-This project ships source code. AMBE codecs run in an external process reached by UDP.
+[echolink]
+log_level = DEBUG
+
+[vocoder]
+log_level = DEBUG
+
+# echolink-dmr:
+[dmr]
+log_level = DEBUG
+
+# echolink-ysf:
+# [ysf]
+# log_level = DEBUG
+```
+
+A real terminal line looks like:
+
+```text
+2026-07-17 14:33:59,754 INFO/echolink: echolink: linked to *REDCHILE* (RTCP SDES)
+2026-07-17 14:34:10,120 INFO/dmr: EL->DMR call start (TG 730170, src CE5RPY    id 7300391)
+```
+
+- Timestamp + level (`INFO`/`DEBUG`/…) + channel (`echolink`, `dmr`, `ysf`, `vocoder`)
+- After the colon: the message text to search for
+
+### What should appear, in order (EchoLink → DMR or YSF)
+
+| Step | Text to find **in the terminal log** | Meaning |
+|------|----------------------------------------|---------|
+| 1 | `echolink: directory login OK` | Directory login succeeded |
+| 2 | `echolink: connecting to …` | `host` IP resolved |
+| 3 | `echolink: linked to … (RTCP SDES)` | Linked (control only — **not audio yet**) |
+| 4 | `echolink: RTP RX` (DEBUG) or `echolink: EL audio rms=` (INFO) | EchoLink audio (RTP) is arriving |
+| 5 | `EL->DMR call start` or `EL->YSF call start` | Call started toward DMR/YSF |
+| 6 | `vocoder ENC` (DEBUG) or at startup `vocoder ready at` | Hardware vocoder is converting |
+| 7 | `EL->DMR call end` or `EL->YSF call end` | Call finished |
+
+Reverse path: in the same log look for `DMR->EL call start` or `YSF->EL call start`, then `vocoder DEC`.
+
+**Important:** `linked to …` without `RTP RX` / `EL audio rms` / `call start` means linked but silent (nobody transmitting on that node/conference, or your EchoLink app is on another room).
+
+### If there is no audio
+
+| Missing from the log | What to check |
+|----------------------|---------------|
+| `directory login OK` | `callsign`/`password`, TCP 5200, `directory_servers` |
+| IP / `connecting to` / `station list: … not found` | Wrong `host` spelling or not in the directory |
+| `linked to …` | Firewall UDP 5198/5199, NAT, peer not answering |
+| `RTP RX` / `EL audio rms` (while `linked`) | Nobody talking on that conference/node |
+| After `call start`: `vocoder ENC timeout` or `PRODID probe failed` | `[vocoder] host`/`port` and the AMBE hardware |
+| `call start` but silence on DMR master / YSF reflector | `[dmr]` TG/password or `[ysf]` host/DGID |
+
+Filter while it runs:
+
+```bash
+./ysf2dmrcon -c your.ini 2>&1 | grep -E 'linked|RTP|EL audio|EL->|YSF->EL|DMR->EL|vocoder|call start|call end'
+```
+
+## Notes
+
+- One active call direction at a time (half-duplex).
+- This project ships **source only**; AMBE encoding/decoding is done by the hardware vocoder.
