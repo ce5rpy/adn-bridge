@@ -23,13 +23,18 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <zlib.h>
 
 #include "gsm.h"
 
 /* Must stay under tlb ConfMemberTimeout (default 40s) so SDES keepalive survives. */
 #define EL_DIR_LOOKUP_TIMEOUT_SEC 20
+/* tlb MAX_STATION_LIST_SIZE — compressed or plain directory snapshot. */
+#define EL_STATION_LIST_MAX (1024 * 1024)
 
 static void el_send_sdes(peer_echolink_t *p);
+static void el_send_firewall_open(peer_echolink_t *p);
+static void el_send_connect_handshake(peer_echolink_t *p);
 static int el_try_directory_login(peer_echolink_t *p);
 static void el_flush_rtp_tx(peer_echolink_t *p);
 static void el_login_and_list(peer_echolink_t *p);
@@ -50,6 +55,7 @@ static void el_dir_op_end(peer_echolink_t *p);
 #define EL_SDES_NAME          2
 #define EL_SDES_EMAIL         3
 #define EL_SDES_PHONE         4
+#define EL_SDES_LOC           5
 #define EL_SDES_TOOL          6
 #define EL_SDES_END           0
 
@@ -216,20 +222,154 @@ static int el_tcp_bind_connect(peer_echolink_t *p, const char *server, int *out_
     return 0;
 }
 
+/* tlb OurNodeID = crc32(callsign) — used in RTCP RR/SDES SSRC. */
+static uint32_t el_node_id(const peer_echolink_t *p)
+{
+    if (!p || !p->callsign[0])
+        return 0;
+    return (uint32_t)crc32(0L, (const Bytef *)p->callsign,
+                           (uInt)strlen(p->callsign));
+}
+
+/* Finish SDES after END item: tlb-style pad count + RTCP length. */
+static int el_finish_sdes(uint8_t *out, int o, int sdes_start)
+{
+    int pad = (4 - (o & 3)) & 3;
+    int words;
+
+    if (pad > 0) {
+        int i;
+
+        out[sdes_start] |= 0x20; /* padding bit */
+        for (i = 0; i < pad - 1; i++)
+            out[o++] = 0;
+        out[o++] = (uint8_t)pad;
+    } else {
+        out[sdes_start] &= (uint8_t)~0x20;
+    }
+    words = ((o - sdes_start) / 4) - 1;
+    out[sdes_start + 2] = (uint8_t)((words >> 8) & 0xff);
+    out[sdes_start + 3] = (uint8_t)(words & 0xff);
+    return o;
+}
+
+/* memmem for station-list end marker (avoid needing _GNU_SOURCE). */
+static const void *el_memmem(const void *hay, size_t haylen,
+                             const void *needle, size_t nlen)
+{
+    const uint8_t *h = (const uint8_t *)hay;
+    const uint8_t *n = (const uint8_t *)needle;
+    size_t i;
+
+    if (nlen == 0 || haylen < nlen)
+        return NULL;
+    for (i = 0; i + nlen <= haylen; i++) {
+        if (memcmp(h + i, n, nlen) == 0)
+            return h + i;
+    }
+    return NULL;
+}
+
+/*
+ * Resolve IP from a directory row. Modern compressed 'S' lists often carry
+ * plaintext dotted IPs; classic scrambled lists need el_descramble_ip.
+ */
+static int el_dir_ip_aton(const char *raw, int scrambled, struct in_addr *out,
+                          char *ip_out, size_t ip_out_len)
+{
+    char trybuf[96];
+
+    if (!raw || !out)
+        return -1;
+    if (scrambled) {
+        strncpy(trybuf, raw, sizeof(trybuf) - 1);
+        trybuf[sizeof(trybuf) - 1] = '\0';
+        el_descramble_ip(trybuf);
+        if (inet_aton(trybuf, out)) {
+            if (ip_out && ip_out_len)
+                copy_z(ip_out, ip_out_len, trybuf);
+            return 0;
+        }
+    }
+    if (looks_like_ipv4(raw) && inet_aton(raw, out)) {
+        if (ip_out && ip_out_len)
+            copy_z(ip_out, ip_out_len, raw);
+        return 0;
+    }
+    return -1;
+}
+
+/* Parse decompressed/plain station list text for want; 0 = found. */
+static int el_parse_station_list_text(const char *text, const char *want,
+                                      int scrambled, struct in_addr *out,
+                                      const char *server)
+{
+    char line[256];
+    char call[32], ipstr[96], ipshow[96];
+    size_t linelen = 0;
+    int state = 0; /* 0=@@@, 1=count, 2=call, 3=qth, 4=nodeid, 5=ip */
+    const char *p;
+
+    if (!text || !want)
+        return -1;
+    for (p = text; ; p++) {
+        if (*p == '\n' || *p == '\0') {
+            line[linelen] = '\0';
+            trim_cr(line);
+            if (state == 0) {
+                if (strncmp(line, "@@@", 3) == 0)
+                    state = 1;
+            } else if (state == 1) {
+                state = 2;
+            } else if (strcmp(line, "+++") == 0) {
+                return -1;
+            } else if (state == 2) {
+                upper_copy(call, sizeof(call), line);
+                state = 3;
+            } else if (state == 3) {
+                state = 4;
+            } else if (state == 4) {
+                state = 5;
+            } else if (state == 5) {
+                strncpy(ipstr, line, sizeof(ipstr) - 1);
+                ipstr[sizeof(ipstr) - 1] = '\0';
+                if (strcmp(call, want) == 0) {
+                    if (el_dir_ip_aton(ipstr, scrambled, out, ipshow,
+                                       sizeof(ipshow)) == 0) {
+                        LOG_EL_INFO("echolink: %s -> %s via %s\n",
+                                    want, ipshow, server);
+                        return 0;
+                    }
+                    LOG_EL_WARNING("echolink: bad IP for %s (raw=%s)\n",
+                                   want, ipstr);
+                    return -1;
+                }
+                state = 2;
+            }
+            linelen = 0;
+            if (*p == '\0')
+                break;
+        } else if (linelen + 1 < sizeof(line)) {
+            line[linelen++] = *p;
+        }
+    }
+    return -1;
+}
+
 /*
  * Look up EchoLink node/conference callsign in the directory station list.
  * host may be CA5RPY-L or *REDCHILE*. Returns 0 and fills *out on success.
+ * Handles plain @@@ lists and zlib-compressed snapshots (tlb dirclient).
  */
 static int el_directory_lookup_on_server(peer_echolink_t *p, const char *server,
                                          const char *want, int scrambled,
                                          struct in_addr *out)
 {
-    char line[256];
-    char call[32], ipstr[96], iptry[96];
+    uint8_t *raw = NULL;
+    char *text = NULL;
+    size_t raw_len = 0, raw_cap = 0;
     int fd = -1;
-    int n, state, found = 0, k;
-    size_t linelen = 0;
-    uint8_t buf[4096];
+    int n, rc = -1;
     const char *req = scrambled ? "S" : "s";
 
     if (el_tcp_bind_connect(p, server, &fd) != 0)
@@ -239,59 +379,76 @@ static int el_directory_lookup_on_server(peer_echolink_t *p, const char *server,
         return -1;
     }
 
-    state = 0; /* 0=@@@, 1=count, 2=call, 3=qth, 4=nodeid, 5=ip */
-    while (!found) {
-        n = (int)read(fd, buf, sizeof(buf));
+    for (;;) {
+        if (raw_len + 8192 > raw_cap) {
+            size_t ncap = raw_cap ? raw_cap * 2 : 65536;
+            uint8_t *nr;
+
+            if (ncap > EL_STATION_LIST_MAX + 16)
+                ncap = EL_STATION_LIST_MAX + 16;
+            if (raw_len >= ncap)
+                break;
+            nr = (uint8_t *)realloc(raw, ncap);
+            if (!nr)
+                break;
+            raw = nr;
+            raw_cap = ncap;
+        }
+        n = (int)read(fd, raw + raw_len, raw_cap - raw_len);
         if (n <= 0)
             break;
-        for (k = 0; k < n; k++) {
-            if (buf[k] == '\n') {
-                line[linelen] = '\0';
-                trim_cr(line);
-                if (state == 0) {
-                    if (strncmp(line, "@@@", 3) == 0)
-                        state = 1;
-                } else if (state == 1) {
-                    state = 2;
-                } else if (strcmp(line, "+++") == 0) {
-                    close(fd);
-                    return -1;
-                } else if (state == 2) {
-                    upper_copy(call, sizeof(call), line);
-                    state = 3;
-                } else if (state == 3) {
-                    state = 4;
-                } else if (state == 4) {
-                    state = 5;
-                } else if (state == 5) {
-                    strncpy(ipstr, line, sizeof(ipstr) - 1);
-                    ipstr[sizeof(ipstr) - 1] = '\0';
-                    if (strcmp(call, want) == 0) {
-                        strncpy(iptry, ipstr, sizeof(iptry) - 1);
-                        iptry[sizeof(iptry) - 1] = '\0';
-                        if (scrambled)
-                            el_descramble_ip(iptry);
-                        if (inet_aton(iptry, out)) {
-                            LOG_EL_INFO("echolink: %s -> %s via %s\n",
-                                     want, iptry, server);
-                            found = 1;
-                        } else {
-                            LOG_EL_WARNING("echolink: bad IP for %s (raw=%s)\n",
-                                        want, ipstr);
-                        }
-                    }
-                    state = 2;
-                }
-                linelen = 0;
-                if (found)
-                    break;
-            } else if (linelen + 1 < sizeof(line)) {
-                line[linelen++] = (char)buf[k];
-            }
+        raw_len += (size_t)n;
+        if (raw_len >= 4 && raw[0] == '@' && raw[1] == '@' && raw[2] == '@') {
+            if (el_memmem(raw, raw_len, "+++\n", 4)
+                || el_memmem(raw, raw_len, "+++\r\n", 5))
+                break;
         }
+        /* Compressed lists: 4-byte uncompressed size + zlib; read to EOF. */
+        if (raw_len >= EL_STATION_LIST_MAX + 4)
+            break;
     }
     close(fd);
-    return found ? 0 : -1;
+    fd = -1;
+    if (!raw || raw_len < 4)
+        goto out;
+
+    if (raw[0] == '@' && raw[1] == '@' && raw[2] == '@') {
+        text = (char *)malloc(raw_len + 1);
+        if (!text)
+            goto out;
+        memcpy(text, raw, raw_len);
+        text[raw_len] = '\0';
+    } else {
+        uint32_t uncomp_len;
+        uLongf dest_len;
+        int zerr;
+
+        /* Prefix is uncompressed size (tlb); payload is zlib of remaining bytes. */
+        memcpy(&uncomp_len, raw, 4);
+        if (uncomp_len == 0 || uncomp_len > EL_STATION_LIST_MAX || raw_len <= 4)
+            goto out;
+        text = (char *)malloc((size_t)uncomp_len + 1);
+        if (!text)
+            goto out;
+        dest_len = uncomp_len;
+        zerr = uncompress((Bytef *)text, &dest_len, raw + 4,
+                          (uLong)(raw_len - 4));
+        if (zerr != Z_OK) {
+            LOG_EL_WARNING("echolink: station list zlib failed (%d) on %s\n",
+                           zerr, server);
+            free(text);
+            text = NULL;
+            goto out;
+        }
+        text[dest_len] = '\0';
+    }
+
+    rc = el_parse_station_list_text(text, want, scrambled, out, server);
+
+out:
+    free(text);
+    free(raw);
+    return rc;
 }
 
 static int el_directory_lookup_node(peer_echolink_t *p, const char *node, struct in_addr *out)
@@ -373,7 +530,8 @@ static int el_station_list_refresh_peer(peer_echolink_t *p)
     }
     el_set_peer_addr(p, ip);
     pthread_mutex_unlock(&p->dir_mu);
-    el_send_sdes(p);
+    /* Same as tlb CmdConnect: direct SDES + directory-relayed OPEN. */
+    el_send_connect_handshake(p);
     return 0;
 }
 
@@ -597,17 +755,26 @@ static int el_try_directory_login(peer_echolink_t *p)
     return -1;
 }
 
-/* Build minimal RTCP RR + SDES (EchoLink version 3). */
+/*
+ * Build RTCP RR + SDES (EchoLink / tlb GenSDES).
+ * Wire identity (tlb CallSignString): CNAME and EMAIL are the literal
+ * "CALLSIGN"; the real station callsign lives in NAME. Conferences
+ * (thebridge / EchoLink soft) expect this; -L/-R nodes are often lenient.
+ * Firewall OPEN keeps the real callsign in CNAME (SendFirewallOpenRequest).
+ */
 static int el_build_sdes(peer_echolink_t *p, uint8_t *out, int outlen)
 {
+    static const char callsign_lit[] = "CALLSIGN";
     time_t now = time(NULL);
     struct tm tm_buf;
     struct tm *tm = localtime_r(&now, &tm_buf);
     char phone[16];
     char tool[] = "ysf2dmrcon";
+    const char *name_txt;
+    uint32_t nid;
     int o = 0;
     int name_len, cname_len, email_len, phone_len, tool_len;
-    int sdes_start, sdes_len_words;
+    int sdes_start;
     int need;
 
     if (outlen < 128)
@@ -616,10 +783,11 @@ static int el_build_sdes(peer_echolink_t *p, uint8_t *out, int outlen)
     snprintf(phone, sizeof(phone), "%02d:%02d",
              tm ? tm->tm_hour : 0, tm ? tm->tm_min : 0);
 
-    cname_len = (int)strlen(p->callsign);
-    /* NAME carries remote talker when set (EchoLink UI / conference display). */
-    name_len = p->talker_name[0] ? (int)strlen(p->talker_name) : cname_len;
-    email_len = p->email[0] ? (int)strlen(p->email) : cname_len;
+    cname_len = (int)strlen(callsign_lit);
+    email_len = cname_len;
+    /* NAME = our callsign, or bridged talker for conference display. */
+    name_txt = p->talker_name[0] ? p->talker_name : p->callsign;
+    name_len = (int)strlen(name_txt);
     phone_len = (int)strlen(phone);
     tool_len = (int)strlen(tool);
     /* RR(8) + SDES hdr(8) + items + END + pad(<=3) */
@@ -628,40 +796,37 @@ static int el_build_sdes(peer_echolink_t *p, uint8_t *out, int outlen)
     if (need > outlen)
         return -1;
 
+    nid = el_node_id(p);
+
     /* RR */
     out[o++] = (uint8_t)((EL_RTP_VERSION << 6)); /* v=3, p=0, count=0 */
     out[o++] = EL_RTCP_RR;
     out[o++] = 0;
     out[o++] = 1; /* length = 1 word after common header */
-    out[o++] = 0;
-    out[o++] = 0;
-    out[o++] = 0;
-    out[o++] = 0; /* ssrc */
+    memcpy(out + o, &nid, 4);
+    o += 4;
 
     sdes_start = o;
-    out[o++] = (uint8_t)((EL_RTP_VERSION << 6) | 0x20 | 1); /* v=3,p=1,count=1 */
+    out[o++] = (uint8_t)((EL_RTP_VERSION << 6) | 1); /* v=3, p filled later */
     out[o++] = EL_RTCP_SDES;
     out[o++] = 0;
     out[o++] = 0; /* length filled later */
-    out[o++] = 0;
-    out[o++] = 0;
-    out[o++] = 0;
-    out[o++] = 0; /* ssrc */
+    memcpy(out + o, &nid, 4);
+    o += 4;
 
     out[o++] = EL_SDES_CNAME;
     out[o++] = (uint8_t)cname_len;
-    memcpy(out + o, p->callsign, (size_t)cname_len);
+    memcpy(out + o, callsign_lit, (size_t)cname_len);
     o += cname_len;
 
     out[o++] = EL_SDES_NAME;
     out[o++] = (uint8_t)name_len;
-    memcpy(out + o, p->talker_name[0] ? p->talker_name : p->callsign,
-           (size_t)name_len);
+    memcpy(out + o, name_txt, (size_t)name_len);
     o += name_len;
 
     out[o++] = EL_SDES_EMAIL;
     out[o++] = (uint8_t)email_len;
-    memcpy(out + o, p->email[0] ? p->email : p->callsign, (size_t)email_len);
+    memcpy(out + o, callsign_lit, (size_t)email_len);
     o += email_len;
 
     out[o++] = EL_SDES_PHONE;
@@ -675,13 +840,7 @@ static int el_build_sdes(peer_echolink_t *p, uint8_t *out, int outlen)
     o += tool_len;
 
     out[o++] = EL_SDES_END;
-    while ((o & 3) != 0)
-        out[o++] = 0;
-
-    sdes_len_words = ((o - sdes_start) / 4) - 1;
-    out[sdes_start + 2] = (uint8_t)((sdes_len_words >> 8) & 0xff);
-    out[sdes_start + 3] = (uint8_t)(sdes_len_words & 0xff);
-    return o;
+    return el_finish_sdes(out, o, sdes_start);
 }
 
 static void el_send_sdes(peer_echolink_t *p)
@@ -705,6 +864,125 @@ static void el_send_sdes(peer_echolink_t *p)
     if (n <= 0)
         return;
     sendto(sock, buf, (size_t)n, 0, (struct sockaddr *)&dest, sizeof(dest));
+}
+
+/*
+ * K1RFD / tlb SendFirewallOpenRequest: RTCP SDES to a directory server so it
+ * can relay OPEN to the peer (needed for many conferences and NAT paths).
+ *   CNAME = our callsign
+ *   LOC   = "OPEN"
+ *   EMAIL = peer dotted IP
+ */
+static int el_build_firewall_open(peer_echolink_t *p, const char *dest_ip,
+                                  uint8_t *out, int outlen)
+{
+    const char open_loc[] = "OPEN";
+    uint32_t nid;
+    int o = 0;
+    int cname_len, loc_len, email_len;
+    int sdes_start;
+    int need;
+
+    if (!p || !dest_ip || !dest_ip[0] || outlen < 128)
+        return -1;
+    cname_len = (int)strlen(p->callsign);
+    loc_len = (int)strlen(open_loc);
+    email_len = (int)strlen(dest_ip);
+    if (cname_len <= 0 || email_len <= 0)
+        return -1;
+    need = 8 + 8 + (2 + cname_len) + (2 + loc_len) + (2 + email_len) + 1 + 3;
+    if (need > outlen)
+        return -1;
+
+    nid = el_node_id(p);
+
+    /* RR */
+    out[o++] = (uint8_t)(EL_RTP_VERSION << 6);
+    out[o++] = EL_RTCP_RR;
+    out[o++] = 0;
+    out[o++] = 1;
+    memcpy(out + o, &nid, 4);
+    o += 4;
+
+    sdes_start = o;
+    out[o++] = (uint8_t)((EL_RTP_VERSION << 6) | 1); /* p filled by el_finish_sdes */
+    out[o++] = EL_RTCP_SDES;
+    out[o++] = 0;
+    out[o++] = 0;
+    memcpy(out + o, &nid, 4);
+    o += 4;
+
+    out[o++] = EL_SDES_CNAME;
+    out[o++] = (uint8_t)cname_len;
+    memcpy(out + o, p->callsign, (size_t)cname_len);
+    o += cname_len;
+
+    out[o++] = EL_SDES_LOC;
+    out[o++] = (uint8_t)loc_len;
+    memcpy(out + o, open_loc, (size_t)loc_len);
+    o += loc_len;
+
+    out[o++] = EL_SDES_EMAIL;
+    out[o++] = (uint8_t)email_len;
+    memcpy(out + o, dest_ip, (size_t)email_len);
+    o += email_len;
+
+    out[o++] = EL_SDES_END;
+    return el_finish_sdes(out, o, sdes_start);
+}
+
+static void el_send_firewall_open(peer_echolink_t *p)
+{
+    uint8_t buf[256];
+    struct sockaddr_in dest;
+    struct in_addr peer_ip;
+    char peer_ip_str[INET_ADDRSTRLEN];
+    int n, i, sock, sent = 0;
+
+    pthread_mutex_lock(&p->dir_mu);
+    if (!p->peer_resolved || p->rtcp_sock < 0 || p->directory_server_count <= 0) {
+        pthread_mutex_unlock(&p->dir_mu);
+        return;
+    }
+    /* Literal IP lab peers: no directory relay (tlb only for EchoLink nodes). */
+    if (looks_like_ipv4(p->host)) {
+        pthread_mutex_unlock(&p->dir_mu);
+        return;
+    }
+    sock = p->rtcp_sock;
+    peer_ip = p->peer_rtp.sin_addr;
+    pthread_mutex_unlock(&p->dir_mu);
+
+    if (!inet_ntop(AF_INET, &peer_ip, peer_ip_str, sizeof(peer_ip_str)))
+        return;
+    n = el_build_firewall_open(p, peer_ip_str, buf, (int)sizeof(buf));
+    if (n <= 0)
+        return;
+
+    memset(&dest, 0, sizeof(dest));
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(EL_RTCP_PORT);
+    for (i = 0; i < p->directory_server_count; i++) {
+        if (resolve_dns(p->directory_servers[i], &dest.sin_addr) != 0)
+            continue;
+        if (sendto(sock, buf, (size_t)n, 0, (struct sockaddr *)&dest,
+                   sizeof(dest)) == n) {
+            LOG_EL_DEBUG("echolink: firewall OPEN for %s (%s) via %s\n",
+                         p->host, peer_ip_str, p->directory_servers[i]);
+            sent = 1;
+            break; /* tlb uses one addressing server; first OK is enough */
+        }
+    }
+    if (!sent)
+        LOG_EL_WARNING("echolink: firewall OPEN for %s failed (no directory)\n",
+                       p->host);
+}
+
+/* Direct SDES to peer + directory OPEN (tlb connect path). */
+static void el_send_connect_handshake(peer_echolink_t *p)
+{
+    el_send_sdes(p);
+    el_send_firewall_open(p);
 }
 
 /* Copy SDES item text into dst (printable ASCII, trimmed). */
@@ -895,17 +1173,21 @@ static void el_apply_remote_sdes(peer_echolink_t *p, const char *cname, const ch
                 (name && name[0]) ? name : "-");
 }
 
-static void el_parse_sdes_packet(peer_echolink_t *p, const uint8_t *pkt, int plen)
+/* Returns 1 if this is a K1RFD firewall OPEN (directory-relayed), else 0. */
+static int el_parse_sdes_packet(peer_echolink_t *p, const uint8_t *pkt, int plen)
 {
     char cname[64];
     char name[64];
+    char loc[32];
     int o;
     int count;
+    int is_open = 0;
 
     if (plen < 8)
-        return;
+        return 0;
     cname[0] = '\0';
     name[0] = '\0';
+    loc[0] = '\0';
     count = pkt[0] & 0x1f;
     o = 4; /* after RTCP common header */
     while (count-- > 0 && o + 4 <= plen) {
@@ -921,15 +1203,26 @@ static void el_parse_sdes_packet(peer_echolink_t *p, const uint8_t *pkt, int ple
                 break;
             }
             if (o + 2 + ilen > plen)
-                return;
+                return 0;
             if (type == EL_SDES_CNAME)
                 el_sdes_copy_item(cname, sizeof(cname), pkt + o + 2, ilen);
             else if (type == EL_SDES_NAME)
                 el_sdes_copy_item(name, sizeof(name), pkt + o + 2, ilen);
+            else if (type == EL_SDES_LOC)
+                el_sdes_copy_item(loc, sizeof(loc), pkt + o + 2, ilen);
             o += 2 + ilen;
         }
     }
+    if (loc[0] && strcasecmp(loc, "OPEN") == 0)
+        is_open = 1;
+    if (is_open) {
+        /* Directory-relayed punch request — not a peer link / talker update. */
+        LOG_EL_DEBUG("echolink: got firewall OPEN from %s\n",
+                     cname[0] ? cname : "?");
+        return 1;
+    }
     el_apply_remote_sdes(p, cname, name);
+    return 0;
 }
 
 static void el_handle_rtcp(peer_echolink_t *p, const uint8_t *data, int len,
@@ -947,20 +1240,28 @@ static void el_handle_rtcp(peer_echolink_t *p, const uint8_t *data, int len,
             break;
         if (pt == EL_RTCP_SDES) {
             int just_linked = 0;
+            int is_open;
 
-            el_parse_sdes_packet(p, data + o, plen);
-            pthread_mutex_lock(&p->dir_mu);
-            p->last_peer_rtcp = time(NULL);
-            if (!p->linked) {
-                p->linked = 1;
-                p->status = PEER_EL_CONNECTED;
-                just_linked = 1;
+            is_open = el_parse_sdes_packet(p, data + o, plen);
+            if (is_open) {
+                /*
+                 * Reply with normal SDES toward our configured peer so any
+                 * NAT mapping stays warm; do not mark linked on OPEN itself.
+                 */
+                el_send_sdes(p);
+            } else {
+                pthread_mutex_lock(&p->dir_mu);
+                p->last_peer_rtcp = time(NULL);
+                if (!p->linked) {
+                    p->linked = 1;
+                    p->status = PEER_EL_CONNECTED;
+                    just_linked = 1;
+                }
+                pthread_mutex_unlock(&p->dir_mu);
+                if (just_linked)
+                    LOG_EL_INFO("echolink: linked to %s (RTCP SDES)\n", p->host);
+                el_send_sdes(p);
             }
-            pthread_mutex_unlock(&p->dir_mu);
-            if (just_linked)
-                LOG_EL_INFO("echolink: linked to %s (RTCP SDES)\n", p->host);
-            /* Reply SDES */
-            el_send_sdes(p);
         }
         o += plen;
     }
@@ -1205,8 +1506,13 @@ void peer_el_tick(peer_echolink_t *p)
     }
 
     if (p->peer_resolved
-        && (p->last_sdes == 0 || now - p->last_sdes >= EL_SDES_INTERVAL))
-        el_send_sdes(p);
+        && (p->last_sdes == 0 || now - p->last_sdes >= EL_SDES_INTERVAL)) {
+        /* While unlinked, keep OPEN+SDES (conferences often need the OPEN). */
+        if (!p->linked)
+            el_send_connect_handshake(p);
+        else
+            el_send_sdes(p);
+    }
 
     /* Conference dropped us (ConfMemberTimeout ~40s) or path died — recover. */
     if (p->linked && p->last_peer_rtcp > 0
@@ -1220,7 +1526,7 @@ void peer_el_tick(peer_echolink_t *p)
         if (p->host[0])
             copy_z(p->remote_talker, sizeof(p->remote_talker), p->host);
         pthread_mutex_unlock(&p->dir_mu);
-        el_send_sdes(p);
+        el_send_connect_handshake(p);
     }
 }
 

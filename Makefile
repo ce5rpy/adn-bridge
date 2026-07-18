@@ -10,7 +10,7 @@ CXXFLAGS ?= -Wall -Wextra -O2 -std=c++11 -Immdvm
 # -MMD -MP: rebuild when headers change (avoids stale offsetof bugs across .o files)
 CFLAGS += -MMD -MP
 CXXFLAGS += -MMD -MP
-LDFLAGS ?= -lcrypto -lm -lpthread /usr/lib/x86_64-linux-gnu/libgsm.so.1
+LDFLAGS ?= -lcrypto -lm -lpthread -lz -lgsm
 
 BUILD = build
 

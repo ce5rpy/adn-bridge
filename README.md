@@ -7,12 +7,15 @@ Standalone voice bridge with three modes:
 | Mode | Role |
 |------|------|
 | `ysf-dmr` (default) | YSF reflector ↔ DMR server (Homebrew peer + YSFP/DGID) |
-| `echolink-dmr` | EchoLink ↔ DMR (GSM/RTP + remote AMBE vocoder) |
-| `echolink-ysf` | EchoLink ↔ YSF (same EchoLink + vocoder path) |
+| `echolink-dmr` | EchoLink ↔ DMR (GSM/RTP + hardware AMBE vocoder) |
+| `echolink-ysf` | EchoLink ↔ YSF (same EchoLink + hardware vocoder) |
 
 Self-contained build — vendored code under `hbp/`, `mmdvm/`, and `vendor/`.
 Upstream reference: [MMDVM_CM](https://github.com/juribeparada/MMDVM_CM).
-EchoLink details: [docs/echolink-bridge.md](docs/echolink-bridge.md).
+YSF↔DMR details: [docs/ysf-dmr-bridge.md](docs/ysf-dmr-bridge.md)
+([ES](docs/ysf-dmr-bridge.es.md)).
+EchoLink details: [docs/echolink-bridge.md](docs/echolink-bridge.md)
+([ES](docs/echolink-bridge.es.md)).
 
 **Documentación en español:** [README.es.md](README.es.md)
 
@@ -22,15 +25,16 @@ EchoLink details: [docs/echolink-bridge.md](docs/echolink-bridge.md).
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential libssl-dev curl libgsm1
+sudo apt-get install -y build-essential libssl-dev zlib1g-dev libgsm1-dev curl
 ```
 
 | Package | Why |
 |---------|-----|
 | `build-essential` | `gcc`, `g++`, `make` |
 | `libssl-dev` | OpenSSL (`-lcrypto`) for blake2b alias checksums |
+| `zlib1g-dev` | zlib (`-lz`) for EchoLink station-list decompress |
+| `libgsm1-dev` | EchoLink GSM (`-lgsm`); runtime `libgsm1` pulled in; headers also under `vendor/gsm/` |
 | `curl` | Runtime download of subscriber / checksum JSON |
-| `libgsm1` | EchoLink GSM audio (`libgsm.so.1`); headers under `vendor/gsm/` |
 
 yyjson and MMDVM ModeConv sources are vendored; no extra apt packages for those.
 
@@ -72,8 +76,8 @@ make install PREFIX=/usr/local
 
 ### EchoLink modes
 
-Requires a remote AMBE vocoder (DV3000 / AMBEServer UDP, e.g. md380-emu on
-`127.0.0.1:2460`). Use a validated EchoLink `-L` / `-R` / conference callsign.
+Requires a hardware AMBE vocoder (UDP DV3000 / AMBEServer protocol). Use a
+validated EchoLink `-L` / `-R` / conference callsign.
 
 ```bash
 # EchoLink <-> DMR
@@ -88,7 +92,8 @@ cp ysf2dmrcon-echolink-ysf.example.ini ysf2dmrcon-echolink-ysf.ini
 ```
 
 Local `*.ini` files (with passwords) are gitignored; only `*.example.ini` is
-committed. See [docs/echolink-bridge.md](docs/echolink-bridge.md).
+committed. See [docs/echolink-bridge.md](docs/echolink-bridge.md)
+([ES](docs/echolink-bridge.es.md)).
 
 ## Multiple instances
 
@@ -117,78 +122,29 @@ mode = echolink-ysf     ; EchoLink <-> YSF
 Templates: `ysf2dmrcon.example.ini` / `ysf2dmrcon-ysf-dmr.example.ini` (YSF↔DMR),
 `ysf2dmrcon-echolink-dmr.example.ini`, `ysf2dmrcon-echolink-ysf.example.ini`.
 
-### `[ysf]` — YSF reflector
+### `[ysf]` / `[dmr]` — YSF ↔ DMR
 
-| Key | Description |
-|-----|-------------|
-| `host` | YSF reflector hostname or IP |
-| `port` | YSF UDP port (commonly `42000`) |
-| `dgid` | DGID room to join on connect/reconnect |
+Minimal keys: YSF `host`/`port`/`dgid`; DMR `callsign`/`dmrid`/`host`/`port`/
+`tg`/`password` (optional `options` RPTO). TX always TS2.
 
-**DMR→YSF RadioID** in CSD/DCH is hardcoded to `*****` (DMR2YSF/YSF2DMR
-default). It is not configurable.
+Setup guide:
 
-**YSF→DMR (incoming):** many handhelds append a suffix after `-` or `/` in the
-wire source field (e.g. `HP3ICC-FT3`, `CE5RPY/FT3`). The bridge strips that
-suffix and uses only the base callsign for JSON lookup.
-
-### `[dmr]` — Homebrew peer identity
-
-| Key | Description |
-|-----|-------------|
-| `callsign` | Bridge callsign (monitor “Bridges”, RPTC identity) |
-| `dmrid` | Bridge DMR ID — must be unique per instance |
-| `location` | Shown on monitor Linked Systems (max 20 chars) |
-| `description` | Short bridge label (max 19 chars) |
-| `host` / `port` | ADN DMR server |
-| `tg` | Mandatory voice talkgroup (DMRD + 1s connect PTT); TX always TS2 |
-| `options` | Optional RPTO string — omit/empty = no RPTO; if set, sent as-is |
-| `password` | Homebrew peer password |
-
-**Monitor note:** RX/TX frequency zero in RPTC → monitor shows N/A frequencies
-(correct for a software bridge, not a hotspot).
-
-`default_ysf_dmrid` is accepted for backward compatibility but **not used**;
-unknown YSF talkers fall back to this section’s `callsign` + `dmrid`.
+→ **[docs/ysf-dmr-bridge.md](docs/ysf-dmr-bridge.md)**
+([ES](docs/ysf-dmr-bridge.es.md))
 
 In **`echolink-ysf`** mode no DMR peer is opened: `host`/`port`/`password` are
 unused (password may be a placeholder). `callsign` / `dmrid` still feed YSF
-CSD/DCH RadioID. The YSF talker/gateway callsign on the wire is the **full**
-`[echolink] callsign` (e.g. `CE5RPY-L`), using the same CSD/DCH layout as
-DMR→YSF.
+CSD/DCH RadioID — see [docs/echolink-bridge.md](docs/echolink-bridge.md).
 
-### `[echolink]` — EchoLink station (echolink-* modes)
+### `[echolink]` / `[vocoder]` — EchoLink modes
 
-Ports are **fixed in code** (do not put them in the INI): UDP **5198** RTP,
-UDP **5199** RTCP, TCP **5200** directory.
+Minimal keys: `callsign`, `password`, `bind_addr`, `host` (node or `*CONF*`),
+and `[vocoder] host`/`port`. Ports **5198/5199/5200** are fixed in code.
 
-| Key | Description |
-|-----|-------------|
-| `callsign` | Validated EchoLink station (`N0CALL-L`, `-R`, or `*CONF*`) |
-| `password` | EchoLink directory password |
-| `bind_addr` | Local IP to bind 5198/5199 |
-| `host` | Node or conference **callsign** to connect (resolved via directory); dotted IPv4 still accepted for lab |
-| `qth` / `email` | Optional directory metadata |
-| `directory_servers` | Comma-separated directory hosts (defaults to the four `serverN.echolink.org`) |
-| `login_interval` | Directory presence login period (default **360** s, tlb-compatible) |
-| `station_list_interval` | Station-list refresh / peer IP update (default **600** s) |
-| `gain` | Linear PCM scale **EchoLink → DMR/YSF** (before AMBE). Range **above 0 .. 4**: **1.0** = unchanged (default), `0.5` ≈ −6 dB, `4.0` = max. Does not affect DMR/YSF → EchoLink. |
-| `log_level` | Optional channel level (`DEBUG`…`ERROR`); else inherits `[log]` |
+Setup guide (ports, vocoder, INI, how to check audio):
 
-Directory login/list runs on a **background thread** so TCP cannot stall audio.
-EL→DMR/YSF starts on any inbound PCM (including key-down silence); hangtime
-follows PCM presence (~700 ms). Full timing notes:
-[docs/echolink-bridge.md](docs/echolink-bridge.md).
-
-### `[vocoder]` — Remote AMBE (echolink-* modes)
-
-| Key | Description |
-|-----|-------------|
-| `host` / `port` | DV3000 / AMBEServer UDP endpoint (lab: md380-emu `127.0.0.1:2460`) |
-| `log_level` | Optional; prefer `WARNING` unless debugging encode/decode |
-
-Uses RATET **34** (49-bit) with md380-emu `interleave49` on the wire; ModeConv
-sees raw deinterleaved 49-bit frames.
+→ **[docs/echolink-bridge.md](docs/echolink-bridge.md)**
+([ES](docs/echolink-bridge.es.md))
 
 ### `[aliases]` — Subscriber database
 
@@ -218,30 +174,13 @@ stanza, or as `dmr=` / `echolink=` / `ysf=` / `vocoder=` under `[log]`):
 
 ## Talker identity
 
-
 Voice always crosses; only the displayed/transmitted identity changes.
 
-### DMR → YSF
-
-- Source: **DMR radio ID → callsign** from `subscriber_ids.json` only.
-- DMRA (talker alias) is decoded and logged at DEBUG only — **never** used for YSF source (users may set arbitrary text).
-- If the ID is missing from the JSON, the numeric ID is sent (many YSF radios do not display it as a callsign).
-
-### YSF → DMR
-
-1. Strip suffix after the first `-` or `/` (`HP3ICC-FT3` → `HP3ICC`).
-2. If the base callsign exists in JSON → use that callsign and the **first**
-   DMR ID listed for that callsign in the file. In-memory index is two
-   contiguous open-addressing tables (`id→callsign` and `callsign→primary id`);
-   every ID is kept so DMR→YSF resolves e.g. both `7300391` and `7300392` to
-   `CE5RPY`.
-3. If unknown → use bridge identity from `[dmr]` (`callsign` + `dmrid`).
-
-### EchoLink → DMR / YSF
-
-- Talker identity is the **local EchoLink** station base callsign
-  (`[echolink] callsign`, strip after `-` / `/`), not the remote `host`.
-- EL→YSF CSD/DCH framing matches DMR→YSF (DMR2YSF-compatible).
+- **YSF ↔ DMR:** [docs/ysf-dmr-bridge.md](docs/ysf-dmr-bridge.md)
+  ([ES](docs/ysf-dmr-bridge.es.md))
+- **EchoLink → DMR / YSF:** inbound RTCP SDES; see
+  [docs/echolink-bridge.md](docs/echolink-bridge.md)
+  ([ES](docs/echolink-bridge.es.md))
 
 ## Project layout
 
@@ -259,7 +198,8 @@ Voice always crosses; only the displayed/transmitted identity changes.
 | `hbp/dmr_hbp.c` | DMR HBP auth + LC/embedded codec |
 | `mmdvm/` | ModeConv + Golay24128 (MMDVM_CM YSF2DMR) |
 | `vendor/yyjson/` | JSON parser (MIT) |
-| `docs/echolink-bridge.md` | EchoLink modes, ports, vocoder notes |
+| `docs/ysf-dmr-bridge.md` / `.es.md` | YSF↔DMR setup guide |
+| `docs/echolink-bridge.md` / `.es.md` | EchoLink setup guide |
 
 ## License
 
