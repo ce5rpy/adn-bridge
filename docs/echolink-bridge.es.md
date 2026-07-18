@@ -91,7 +91,14 @@ Apunta `host`/`port` a tu vocoder por hardware. Sin él no hay voz entre EchoLin
 
 **`echolink-dmr`:** completa `[dmr]` como peer Homebrew (`callsign`, `dmrid`, `host`, `port`, `tg`, `password`; `options` RPTO opcional). TX siempre en TS2.
 
-**`echolink-ysf`:** completa `[ysf]` (`host`, `port`, `dgid`). `[dmr] host` / `password` no se usan; deja `callsign` / `dmrid` para la identidad YSF.
+```ini
+[dmr]
+tg = 730170
+; opcional: quita TGs dinámicos del peer antes del PTT de conexión
+clear_dynamic_tg = 1
+```
+
+**`echolink-ysf`:** completa `[ysf]` (`host`, `port`, `dgid`). `[dmr] host` / `password` no se usan; deja `callsign` / `dmrid` para la identidad YSF. `clear_dynamic_tg` no aplica (sin peer DMR).
 
 Los alias de suscriptores (`[aliases]`) mapean indicativo ↔ ID DMR igual que en YSF↔DMR — ver [ysf-dmr-bridge.es.md](ysf-dmr-bridge.es.md) y el README.
 

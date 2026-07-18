@@ -76,6 +76,8 @@ typedef struct {
     char dmr_options[128]; /* optional RPTO; empty = no RPTO, else sent as-is */
     char dmr_password[64];
     int dmr_tg;            /* mandatory [dmr] tg= — voice + connect PTT */
+    /* 1 = on DMR login, silence-PTT TG 4000 then configured tg (drop dynamics) */
+    int dmr_clear_dynamic_tg;
     int default_ysf_dmrid; /* legacy INI key; bridge [dmr] dmrid is used instead */
     log_level_t log_level; /* [log] level= — default for all channels */
     int dmr_log_level;     /* [dmr] log_level=; -1 = inherit */

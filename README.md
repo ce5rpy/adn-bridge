@@ -126,6 +126,8 @@ Templates: `ysf2dmrcon.example.ini` / `ysf2dmrcon-ysf-dmr.example.ini` (YSF↔DM
 
 Minimal keys: YSF `host`/`port`/`dgid`; DMR `callsign`/`dmrid`/`host`/`port`/
 `tg`/`password` (optional `options` RPTO). TX always TS2.
+Optional `clear_dynamic_tg = 1`: on DMR login, silence-PTT **TG 4000** first
+(drop dynamic TGs), then the connect PTT to `tg`.
 
 Setup guide:
 
