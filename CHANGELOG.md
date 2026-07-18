@@ -4,6 +4,63 @@ All notable changes to **ysf2dmrcon** are documented here.
 
 <!-- version list -->
 
+## v0.3.0 (2026-07-18)
+
+### Bug Fixes
+
+- Add EchoLink PCM gain for EL to DMR/YSF ([#10](https://github.com/ce5rpy/ysf2dmrcon/pull/10),
+  [`eddf134`](https://github.com/ce5rpy/ysf2dmrcon/commit/eddf1341f1a36c9f55e212394d0ea0f2394beba9))
+
+- Align EchoLink-YSF callsign path with DMR-YSF ([#7](https://github.com/ce5rpy/ysf2dmrcon/pull/7),
+  [`a32c44b`](https://github.com/ce5rpy/ysf2dmrcon/commit/a32c44bcf4289bdf187ac77a9df908ef1578d90a))
+
+- Clear sticky EchoLink talker and re-HEADER on late SDES
+  ([#9](https://github.com/ce5rpy/ysf2dmrcon/pull/9),
+  [`7b97f3c`](https://github.com/ce5rpy/ysf2dmrcon/commit/7b97f3cb8090b07a1e02e60aaa0e7fa8995bb0e0))
+
+- Keep full EchoLink callsign on YSF wire ([#7](https://github.com/ce5rpy/ysf2dmrcon/pull/7),
+  [`a32c44b`](https://github.com/ce5rpy/ysf2dmrcon/commit/a32c44bcf4289bdf187ac77a9df908ef1578d90a))
+
+- Link EchoLink conferences and document setup guides
+  ([#11](https://github.com/ce5rpy/ysf2dmrcon/pull/11),
+  [`15f67d1`](https://github.com/ce5rpy/ysf2dmrcon/commit/15f67d1ab792323e794691d8c084ec07513495e0))
+
+- Parse EchoLink SDES talker only when it looks like a callsign
+  ([#9](https://github.com/ce5rpy/ysf2dmrcon/pull/9),
+  [`7b97f3c`](https://github.com/ce5rpy/ysf2dmrcon/commit/7b97f3cb8090b07a1e02e60aaa0e7fa8995bb0e0))
+
+- Resolve EchoLink talker to DMR id like YSF-DMR ([#9](https://github.com/ce5rpy/ysf2dmrcon/pull/9),
+  [`7b97f3c`](https://github.com/ce5rpy/ysf2dmrcon/commit/7b97f3cb8090b07a1e02e60aaa0e7fa8995bb0e0))
+
+- Stabilize EchoLink-DMR bridge audio and directory path
+  ([#7](https://github.com/ce5rpy/ysf2dmrcon/pull/7),
+  [`a32c44b`](https://github.com/ce5rpy/ysf2dmrcon/commit/a32c44bcf4289bdf187ac77a9df908ef1578d90a))
+
+- Use inbound EchoLink SDES talker on DMR/YSF ([#9](https://github.com/ce5rpy/ysf2dmrcon/pull/9),
+  [`7b97f3c`](https://github.com/ce5rpy/ysf2dmrcon/commit/7b97f3cb8090b07a1e02e60aaa0e7fa8995bb0e0))
+
+- Use only callsign token from EchoLink SDES NAME
+  ([#9](https://github.com/ce5rpy/ysf2dmrcon/pull/9),
+  [`7b97f3c`](https://github.com/ce5rpy/ysf2dmrcon/commit/7b97f3cb8090b07a1e02e60aaa0e7fa8995bb0e0))
+
+### Documentation
+
+- Add YSF-DMR example INI and refresh default template
+  ([`bd7f4fc`](https://github.com/ce5rpy/ysf2dmrcon/commit/bd7f4fc35070a88f2b5631e5d04ac2837e3352ac))
+
+### Features
+
+- Add EchoLink bridge support (DMR and YSF) ([#7](https://github.com/ce5rpy/ysf2dmrcon/pull/7),
+  [`a32c44b`](https://github.com/ce5rpy/ysf2dmrcon/commit/a32c44bcf4289bdf187ac77a9df908ef1578d90a))
+
+- Add optional EchoLink Proxy for NAT clients ([#12](https://github.com/ce5rpy/ysf2dmrcon/pull/12),
+  [`81bff62`](https://github.com/ce5rpy/ysf2dmrcon/commit/81bff62aa17a5dc01adaf62415e5095da894903b))
+
+- EchoLink <-> DMR bridge with remote AMBE vocoder
+  ([#7](https://github.com/ce5rpy/ysf2dmrcon/pull/7),
+  [`a32c44b`](https://github.com/ce5rpy/ysf2dmrcon/commit/a32c44bcf4289bdf187ac77a9df908ef1578d90a))
+
+
 ## v0.2.1 (2026-07-17)
 
 ### Bug Fixes

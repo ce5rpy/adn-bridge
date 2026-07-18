@@ -35,7 +35,7 @@
 #include "talker_alias.h"
 #include "vocoder.h"
 
-#define YSF2DMR_VERSION "0.2.1"
+#define YSF2DMR_VERSION "0.3.0"
 
 static ysf2dmr_bridge_t bridge;
 static bridge_el_t bridge_el;
