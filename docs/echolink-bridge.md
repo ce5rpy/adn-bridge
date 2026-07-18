@@ -91,7 +91,14 @@ Point `host`/`port` at your hardware vocoder. Without it there is no voice betwe
 
 **`echolink-dmr`:** fill `[dmr]` like a Homebrew peer (`callsign`, `dmrid`, `host`, `port`, `tg`, `password`; optional `options` RPTO). TX is always TS2.
 
-**`echolink-ysf`:** fill `[ysf]` (`host`, `port`, `dgid`). `[dmr] host` / `password` are unused; keep `callsign` / `dmrid` for YSF identity fields.
+```ini
+[dmr]
+tg = 730170
+; optional: drop leftover dynamic TGs for this peer before connect PTT
+clear_dynamic_tg = 1
+```
+
+**`echolink-ysf`:** fill `[ysf]` (`host`, `port`, `dgid`). `[dmr] host` / `password` are unused; keep `callsign` / `dmrid` for YSF identity fields. `clear_dynamic_tg` does not apply (no DMR peer).
 
 Subscriber aliases (`[aliases]`) map callsigns ↔ DMR IDs the same way as YSF↔DMR — see [ysf-dmr-bridge.md](ysf-dmr-bridge.md) and the README.
 

@@ -25,7 +25,15 @@
 
 #define DMR_FRAME_MS   60
 #define YSF_FRAME_MS   90 /* same pace as DMR→YSF (bridge.c / DMR2YSF) */
-#define CONNECT_PTT_MS 1000
+#define CONNECT_PTT_MS 500
+#define DMR_CLEAR_DYNAMIC_TG 4000
+
+static int bridge_el_tx_tg(const bridge_el_t *b)
+{
+    if (b->connect_ptt_active && b->connect_ptt_tg > 0)
+        return b->connect_ptt_tg;
+    return b->dmr.tg;
+}
 /* End EL->DMR/YSF after this much without inbound EL PCM (key-down silence
  * must still hold / activate the TG; hang follows PCM presence, not RMS). */
 #define EL_HANG_MS     700
@@ -336,9 +344,14 @@ static void bridge_el_send_dmrd(bridge_el_t *b, uint8_t frame_type, const uint8_
     pkt[5] = rf[0];
     pkt[6] = rf[1];
     pkt[7] = rf[2];
-    pkt[8] = (b->dmr.tg >> 16) & 0xff;
-    pkt[9] = (b->dmr.tg >> 8) & 0xff;
-    pkt[10] = (b->dmr.tg >> 0) & 0xff;
+    {
+        int tx_tg = bridge_el_tx_tg(b);
+
+        pkt[8] = (tx_tg >> 16) & 0xff;
+        pkt[9] = (tx_tg >> 8) & 0xff;
+        pkt[10] = (tx_tg >> 0) & 0xff;
+        tx_tgid = tx_tg;
+    }
     pkt[11] = (b->dmr.dmrid >> 24) & 0xff;
     pkt[12] = (b->dmr.dmrid >> 16) & 0xff;
     pkt[13] = (b->dmr.dmrid >> 8) & 0xff;
@@ -348,7 +361,6 @@ static void bridge_el_send_dmrd(bridge_el_t *b, uint8_t frame_type, const uint8_
 
     memcpy(buf, pkt, 55);
     rx_srcid = src_id;
-    tx_tgid = b->dmr.tg;
 
     if (((frame_type >> 4) & 0x03U) == DMRD_FT_DATA_SYNC) {
         generate_header();
@@ -384,7 +396,8 @@ static void bridge_el_send_dmrd(bridge_el_t *b, uint8_t frame_type, const uint8_
                 && (dtype == DMRD_DTYPE_VHEAD || dtype == DMRD_DTYPE_VTERM))) {
             LOG_DMR_DEBUG("DMR TX %s b15=0x%02x rf=%d gw=%d tg=%d seq=%u stream=0x%08x\n",
                       dmrd_class_label(pkt, 55), frame_type, src_id, b->dmr.dmrid,
-                      b->dmr.tg, (unsigned)pkt[4], (unsigned)b->dmr_stream_id);
+                      bridge_el_tx_tg(b), (unsigned)pkt[4],
+                      (unsigned)b->dmr_stream_id);
         }
     }
 }
@@ -487,13 +500,14 @@ static void bridge_el_end_dmr_call(bridge_el_t *b)
 
 void bridge_el_init(bridge_el_t *b, int mode, const char *dmr_options,
                     ysf2dmr_aliases_t *aliases, int bridge_dmrid,
-                    float el_pcm_gain)
+                    float el_pcm_gain, int clear_dynamic_tg)
 {
     memset(b, 0, sizeof(*b));
     b->mode = mode;
     b->aliases = aliases;
     b->bridge_dmrid = bridge_dmrid;
     b->el_pcm_gain = (el_pcm_gain > 0.0f && el_pcm_gain <= 4.0f) ? el_pcm_gain : 1.0f;
+    b->clear_dynamic_tg = clear_dynamic_tg ? 1 : 0;
     b->dmr_slot_bit = 0x80;
     memcpy(b->net_dst, YSF_WIRE_DST_ALL, 10);
     (void)dmr_options;
@@ -695,9 +709,28 @@ void bridge_el_on_dmrd(bridge_el_t *b, const uint8_t *pkt, int len)
 }
 
 /* Same connect-PTT flow as bridge.c (YSF<->DMR). */
+static void bridge_el_connect_ptt_begin_stream(bridge_el_t *b, int tg, int clearing)
+{
+    b->connect_ptt_active = 1;
+    b->connect_ptt_phase = 0;
+    b->connect_ptt_voice_frames = 0;
+    b->connect_ptt_tg = tg;
+    b->connect_ptt_clearing = clearing ? 1 : 0;
+    b->dmr_stream_id = new_stream_id();
+    b->dmr_seq = 0;
+    stamp_now(&b->connect_ptt_start);
+    stamp_now(&b->last_dmr_tx);
+    b->last_dmr_tx.tv_sec = 0; /* force first emit immediately */
+    LOG_DMR_INFO("DMR connect PTT start (TG %d, %d ms)%s\n",
+                 tg, CONNECT_PTT_MS,
+                 clearing ? " [clear dynamic]" : "");
+}
+
 static void bridge_el_connect_ptt_finish(bridge_el_t *b)
 {
     uint8_t slot_bit = b->dmr_slot_bit;
+    int ended_tg = b->connect_ptt_tg > 0 ? b->connect_ptt_tg : b->dmr.tg;
+    int was_clearing = b->connect_ptt_clearing;
 
     while ((b->connect_ptt_voice_frames % 6) != 0) {
         uint8_t n = (uint8_t)(b->connect_ptt_voice_frames % 6);
@@ -707,10 +740,19 @@ static void bridge_el_connect_ptt_finish(bridge_el_t *b)
     bridge_el_send_dmrd(b, (uint8_t)(slot_bit | (DMRD_FT_DATA_SYNC << 4) | DMRD_DTYPE_VTERM),
                         DMR_SILENCE_DATA);
     LOG_DMR_INFO("DMR connect PTT end (TG %d, %d voice frames)\n",
-             b->dmr.tg, b->connect_ptt_voice_frames);
+                 ended_tg, b->connect_ptt_voice_frames);
+
+    if (was_clearing && b->dmr.tg > 0) {
+        /* Next: activate configured talkgroup. */
+        bridge_el_connect_ptt_begin_stream(b, b->dmr.tg, 0);
+        return;
+    }
+
     b->connect_ptt_active = 0;
     b->connect_ptt_phase = 0;
     b->connect_ptt_voice_frames = 0;
+    b->connect_ptt_tg = 0;
+    b->connect_ptt_clearing = 0;
 }
 
 static void bridge_el_start_connect_ptt(bridge_el_t *b)
@@ -720,15 +762,10 @@ static void bridge_el_start_connect_ptt(bridge_el_t *b)
     if (b->dmr.tg <= 0)
         return;
 
-    b->connect_ptt_active = 1;
-    b->connect_ptt_phase = 0;
-    b->connect_ptt_voice_frames = 0;
-    b->dmr_stream_id = new_stream_id();
-    b->dmr_seq = 0;
-    stamp_now(&b->connect_ptt_start);
-    stamp_now(&b->last_dmr_tx);
-    b->last_dmr_tx.tv_sec = 0; /* force first emit immediately */
-    LOG_DMR_INFO("DMR connect PTT start (TG %d, %d ms)\n", b->dmr.tg, CONNECT_PTT_MS);
+    if (b->clear_dynamic_tg)
+        bridge_el_connect_ptt_begin_stream(b, DMR_CLEAR_DYNAMIC_TG, 1);
+    else
+        bridge_el_connect_ptt_begin_stream(b, b->dmr.tg, 0);
 }
 
 static void bridge_el_emit_connect_ptt(bridge_el_t *b)
@@ -770,6 +807,8 @@ static void bridge_el_poll_connect_ptt(bridge_el_t *b)
         b->connect_ptt_active = 0;
         b->connect_ptt_phase = 0;
         b->connect_ptt_voice_frames = 0;
+        b->connect_ptt_tg = 0;
+        b->connect_ptt_clearing = 0;
     }
     b->dmr_was_connected = connected;
 

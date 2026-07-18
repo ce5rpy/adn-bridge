@@ -55,15 +55,18 @@ typedef struct {
     int dmr_ending; /* paced superframe pad + VTERM in progress */
     int ysf_ending; /* ModeConv EOT queued; paced YSFD drain in progress */
     int dmr_was_connected;
+    int clear_dynamic_tg; /* [dmr] clear_dynamic_tg — PTT 4000 before connect tg */
     int connect_ptt_active;
     int connect_ptt_phase;
     int connect_ptt_voice_frames;
+    int connect_ptt_tg; /* DMRD dst while connect PTT active */
+    int connect_ptt_clearing; /* 1 = current stage is TG 4000 */
     struct timespec connect_ptt_start;
 } bridge_el_t;
 
 void bridge_el_init(bridge_el_t *b, int mode, const char *dmr_options,
                     ysf2dmr_aliases_t *aliases, int bridge_dmrid,
-                    float el_pcm_gain);
+                    float el_pcm_gain, int clear_dynamic_tg);
 void bridge_el_on_dmrd(bridge_el_t *b, const uint8_t *pkt, int len);
 void bridge_el_on_ysfd(bridge_el_t *b, const uint8_t *pkt, int len);
 void bridge_el_tick(bridge_el_t *b);

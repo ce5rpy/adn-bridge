@@ -46,6 +46,7 @@ mode = ysf-dmr
 | `dmrid` | yes | Bridge DMR ID — unique per process |
 | `host` / `port` | yes | DMR master |
 | `tg` | yes | Voice talkgroup (TX always **TS2**) |
+| `clear_dynamic_tg` | no | `1` = on DMR login, silence-PTT **TG 4000** first (drop leftover dynamic TGs for this peer), then connect PTT to `tg` (default off) |
 | `password` | yes | Homebrew peer password |
 | `options` | no | RPTO string (e.g. `TS2=1234;SINGLE=0;TIMER=60;`); omit/empty = no RPTO |
 | `location` / `description` | no | Monitor display text |
