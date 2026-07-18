@@ -35,6 +35,7 @@ void ysf2dmr_config_init(ysf2dmr_config_t *cfg)
     cfg->dmr_log_level = -1;
     cfg->ysf_log_level = -1;
     cfg->default_ysf_dmrid = 0;
+    cfg->dmr_clear_dynamic_tg = 0;
     ysf2dmr_aliases_cfg_init(&cfg->aliases);
     strncpy(cfg->vocoder.host, "127.0.0.1", sizeof(cfg->vocoder.host) - 1);
     cfg->vocoder.port = 2460;
@@ -104,6 +105,28 @@ static void set_int(int *dst, const char *val)
     if (!val || !*val)
         return;
     *dst = atoi(val);
+}
+
+/* 0/1, true/false, yes/no (case-insensitive). */
+static void set_bool01(int *dst, const char *val)
+{
+    char buf[16];
+    size_t i, n;
+
+    if (!val || !*val || !dst)
+        return;
+    n = 0;
+    for (i = 0; val[i] && n + 1 < sizeof(buf); i++) {
+        if (!isspace((unsigned char)val[i]))
+            buf[n++] = (char)tolower((unsigned char)val[i]);
+    }
+    buf[n] = '\0';
+    if (strcmp(buf, "1") == 0 || strcmp(buf, "true") == 0 || strcmp(buf, "yes") == 0
+        || strcmp(buf, "on") == 0)
+        *dst = 1;
+    else if (strcmp(buf, "0") == 0 || strcmp(buf, "false") == 0 || strcmp(buf, "no") == 0
+             || strcmp(buf, "off") == 0)
+        *dst = 0;
 }
 
 static void set_float(float *dst, const char *val)
@@ -195,6 +218,8 @@ static void apply_key(ysf2dmr_config_t *cfg, const char *section, const char *ke
             set_str(cfg->dmr_options, sizeof(cfg->dmr_options), val);
         else if (strcmp(key, "tg") == 0)
             set_int(&cfg->dmr_tg, val);
+        else if (strcmp(key, "clear_dynamic_tg") == 0)
+            set_bool01(&cfg->dmr_clear_dynamic_tg, val);
         else if (strcmp(key, "password") == 0 || strcmp(key, "passphrase") == 0)
             set_str(cfg->dmr_password, sizeof(cfg->dmr_password), val);
         else if (strcmp(key, "default_ysf_dmrid") == 0)

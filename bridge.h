@@ -52,16 +52,20 @@ typedef struct {
     } dmra;
     struct timespec last_dmr_tx;
     struct timespec last_ysf_tx;
-    /* Rising-edge PTT on DMR login: 1s silence to [dmr] tg */
+    /* Rising-edge PTT on DMR login: 500 ms silence to [dmr] tg (optional 4000 first) */
     int dmr_was_connected;
+    int clear_dynamic_tg;
     int connect_ptt_active;
     int connect_ptt_phase; /* 0=need VHEAD, 1=voice, 2=need VTERM */
     int connect_ptt_voice_frames;
+    int connect_ptt_tg;
+    int connect_ptt_clearing;
     struct timespec connect_ptt_start;
 } ysf2dmr_bridge_t;
 
 void bridge_init(ysf2dmr_bridge_t *b, const char *dmr_options,
-                 ysf2dmr_aliases_t *aliases, int default_ysf_dmrid);
+                 ysf2dmr_aliases_t *aliases, int default_ysf_dmrid,
+                 int clear_dynamic_tg);
 void bridge_on_dmrd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len);
 void bridge_on_dmra(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len);
 void bridge_on_ysfd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len);

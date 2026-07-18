@@ -126,6 +126,8 @@ Plantillas: `ysf2dmrcon.example.ini` / `ysf2dmrcon-ysf-dmr.example.ini` (YSF↔D
 
 Claves mínimas: YSF `host`/`port`/`dgid`; DMR `callsign`/`dmrid`/`host`/`port`/
 `tg`/`password` (`options` RPTO opcional). TX siempre TS2.
+Opcional `clear_dynamic_tg = 1`: al login DMR, PTT silencio a **TG 4000**
+primero (quita TGs dinámicos), luego el PTT de conexión a `tg`.
 
 Guía de puesta en marcha:
 

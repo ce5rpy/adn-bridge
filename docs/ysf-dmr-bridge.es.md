@@ -46,6 +46,7 @@ mode = ysf-dmr
 | `dmrid` | sí | ID DMR del puente — único por proceso |
 | `host` / `port` | sí | Master DMR |
 | `tg` | sí | Talkgroup de voz (TX siempre **TS2**) |
+| `clear_dynamic_tg` | no | `1` = al login DMR, PTT silencio a **TG 4000** primero (quita TGs dinámicos del peer), luego PTT de conexión a `tg` (por defecto off) |
 | `password` | sí | Contraseña del peer Homebrew |
 | `options` | no | Cadena RPTO (p. ej. `TS2=1234;SINGLE=0;TIMER=60;`); omitir/vacío = sin RPTO |
 | `location` / `description` | no | Texto en el monitor |

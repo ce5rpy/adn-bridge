@@ -141,7 +141,8 @@ static int run_ysf_dmr(ysf2dmr_config_t *cfg)
 {
     time_t last_alias_poll = time(NULL);
 
-    bridge_init(&bridge, cfg->dmr_options, g_aliases, cfg->default_ysf_dmrid);
+    bridge_init(&bridge, cfg->dmr_options, g_aliases, cfg->default_ysf_dmrid,
+                cfg->dmr_clear_dynamic_tg);
 
     if (peer_ysf_open(&bridge.ysf, cfg->ysf_host, cfg->ysf_port, cfg->callsign, (uint8_t)cfg->dgid) < 0)
         return 1;
@@ -198,7 +199,7 @@ static int run_echolink(ysf2dmr_config_t *cfg)
     int use_ysf = (cfg->mode == YSF2DMR_MODE_ECHOLINK_YSF);
 
     bridge_el_init(&bridge_el, cfg->mode, cfg->dmr_options, g_aliases, cfg->dmrid,
-                   cfg->echolink.gain);
+                   cfg->echolink.gain, cfg->dmr_clear_dynamic_tg);
 
     if (vocoder_open(&bridge_el.voc, cfg->vocoder.host, cfg->vocoder.port) < 0)
         return 1;
