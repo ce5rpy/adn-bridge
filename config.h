@@ -48,6 +48,10 @@ typedef struct {
      * 1.0 = unity, 4.0 = max. Range (0, 4].
      */
     float gain;
+    /* Optional EchoLink Proxy. Empty proxy_server = direct UDP/TCP. */
+    char proxy_server[128];
+    int proxy_port; /* default 8100 when proxy_server set */
+    char proxy_password[64]; /* default PUBLIC when proxy_server set and empty */
     /* -1 = inherit [log] level=; else DEBUG|INFO|WARNING|ERROR */
     int log_level;
 } ysf2dmr_echolink_cfg_t;

@@ -41,6 +41,139 @@ static void el_login_and_list(peer_echolink_t *p);
 static void el_station_list_only(peer_echolink_t *p);
 static void el_dir_op_begin(peer_echolink_t *p);
 static void el_dir_op_end(peer_echolink_t *p);
+static void el_handle_rtp(peer_echolink_t *p, const uint8_t *data, int len);
+static void el_handle_rtcp(peer_echolink_t *p, const uint8_t *data, int len,
+                           const struct sockaddr_in *from);
+static int el_tcp_bind_connect(peer_echolink_t *p, const char *server, int *out_fd);
+static int resolve_dns(const char *host, struct in_addr *out);
+
+/* --- transport: direct UDP/TCP or EchoLink Proxy --- */
+
+static int el_rtcp_ok(const peer_echolink_t *p)
+{
+    return p && p->peer_resolved && (p->use_proxy || p->rtcp_sock >= 0);
+}
+
+static int el_rtp_ok(const peer_echolink_t *p)
+{
+    return p && p->peer_resolved && (p->use_proxy || p->rtp_sock >= 0);
+}
+
+static int el_send_udp_rtcp(peer_echolink_t *p, struct in_addr to,
+                            const void *data, int len)
+{
+    struct sockaddr_in dest;
+
+    if (!p || !data || len <= 0)
+        return -1;
+    if (p->use_proxy)
+        return el_proxy_udp_ctrl(&p->proxy, to, data, len);
+    if (p->rtcp_sock < 0)
+        return -1;
+    memset(&dest, 0, sizeof(dest));
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(EL_RTCP_PORT);
+    dest.sin_addr = to;
+    return sendto(p->rtcp_sock, data, (size_t)len, 0,
+                  (struct sockaddr *)&dest, sizeof(dest)) == len
+               ? 0
+               : -1;
+}
+
+static int el_send_udp_rtp(peer_echolink_t *p, struct in_addr to,
+                           const void *data, int len)
+{
+    struct sockaddr_in dest;
+
+    if (!p || !data || len <= 0)
+        return -1;
+    if (p->use_proxy)
+        return el_proxy_udp_data(&p->proxy, to, data, len);
+    if (p->rtp_sock < 0)
+        return -1;
+    memset(&dest, 0, sizeof(dest));
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(EL_RTP_PORT);
+    dest.sin_addr = to;
+    return sendto(p->rtp_sock, data, (size_t)len, 0,
+                  (struct sockaddr *)&dest, sizeof(dest)) == len
+               ? 0
+               : -1;
+}
+
+static void el_proxy_udp_cb(void *user, struct in_addr from, int is_ctrl,
+                            const uint8_t *data, int len)
+{
+    peer_echolink_t *p = (peer_echolink_t *)user;
+    struct sockaddr_in sa;
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_addr = from;
+    sa.sin_port = htons(is_ctrl ? EL_RTCP_PORT : EL_RTP_PORT);
+    if (is_ctrl)
+        el_handle_rtcp(p, data, len, &sa);
+    else if (data[0] != 0x6f)
+        el_handle_rtp(p, data, len);
+}
+
+typedef struct {
+    int fd; /* >=0 direct TCP; -1 = open on proxy */
+} el_dir_conn_t;
+
+static int el_dir_connect(peer_echolink_t *p, const char *server, el_dir_conn_t *c)
+{
+    struct in_addr ip;
+
+    if (!p || !c)
+        return -1;
+    c->fd = -1;
+    if (p->use_proxy) {
+        if (el_proxy_ensure(&p->proxy) != 0)
+            return -1;
+        if (resolve_dns(server, &ip) != 0)
+            return -1;
+        return el_proxy_tcp_open(&p->proxy, ip, EL_DIR_LOOKUP_TIMEOUT_SEC * 1000);
+    }
+    return el_tcp_bind_connect(p, server, &c->fd);
+}
+
+static int el_dir_write(peer_echolink_t *p, el_dir_conn_t *c, const void *buf, int len)
+{
+    if (!p || !c || !buf || len <= 0)
+        return -1;
+    if (p->use_proxy)
+        return el_proxy_tcp_write(&p->proxy, buf, len);
+    if (c->fd < 0)
+        return -1;
+    return write(c->fd, buf, (size_t)len) == len ? 0 : -1;
+}
+
+static int el_dir_read(peer_echolink_t *p, el_dir_conn_t *c, void *buf, int len)
+{
+    if (!p || !c || !buf || len <= 0)
+        return -1;
+    if (p->use_proxy)
+        return el_proxy_tcp_read(&p->proxy, buf, len,
+                                 EL_DIR_LOOKUP_TIMEOUT_SEC * 1000);
+    if (c->fd < 0)
+        return -1;
+    return (int)read(c->fd, buf, (size_t)len);
+}
+
+static void el_dir_close(peer_echolink_t *p, el_dir_conn_t *c)
+{
+    if (!p || !c)
+        return;
+    if (p->use_proxy) {
+        el_proxy_tcp_close(&p->proxy);
+        return;
+    }
+    if (c->fd >= 0) {
+        close(c->fd);
+        c->fd = -1;
+    }
+}
 
 #define EL_SDES_INTERVAL      5
 /* Peer silent longer than tlb ConfMemberTimeout → treat as unlinked. */
@@ -205,7 +338,8 @@ static int el_tcp_bind_connect(peer_echolink_t *p, const char *server, int *out_
     memset(&local, 0, sizeof(local));
     local.sin_family = AF_INET;
     local.sin_port = 0;
-    if (inet_aton(p->bind_addr, &local.sin_addr) == 0
+    /* Direct mode binds to bind_addr; with proxy we never reach here. */
+    if (!p->bind_addr[0] || inet_aton(p->bind_addr, &local.sin_addr) == 0
         || bind(fd, (struct sockaddr *)&local, sizeof(local)) < 0) {
         close(fd);
         return -1;
@@ -368,14 +502,14 @@ static int el_directory_lookup_on_server(peer_echolink_t *p, const char *server,
     uint8_t *raw = NULL;
     char *text = NULL;
     size_t raw_len = 0, raw_cap = 0;
-    int fd = -1;
+    el_dir_conn_t conn;
     int n, rc = -1;
     const char *req = scrambled ? "S" : "s";
 
-    if (el_tcp_bind_connect(p, server, &fd) != 0)
+    if (el_dir_connect(p, server, &conn) != 0)
         return -1;
-    if (write(fd, req, 1) != 1) {
-        close(fd);
+    if (el_dir_write(p, &conn, req, 1) != 0) {
+        el_dir_close(p, &conn);
         return -1;
     }
 
@@ -394,7 +528,7 @@ static int el_directory_lookup_on_server(peer_echolink_t *p, const char *server,
             raw = nr;
             raw_cap = ncap;
         }
-        n = (int)read(fd, raw + raw_len, raw_cap - raw_len);
+        n = el_dir_read(p, &conn, raw + raw_len, (int)(raw_cap - raw_len));
         if (n <= 0)
             break;
         raw_len += (size_t)n;
@@ -407,8 +541,7 @@ static int el_directory_lookup_on_server(peer_echolink_t *p, const char *server,
         if (raw_len >= EL_STATION_LIST_MAX + 4)
             break;
     }
-    close(fd);
-    fd = -1;
+    el_dir_close(p, &conn);
     if (!raw || raw_len < 4)
         goto out;
 
@@ -659,9 +792,7 @@ static void el_dir_thread_stop(peer_echolink_t *p)
 /* Directory TCP login — returns 0 on OK. */
 static int el_directory_login(peer_echolink_t *p, const char *server)
 {
-    int fd = -1;
-    struct sockaddr_in sa, local;
-    struct in_addr ip;
+    el_dir_conn_t conn;
     char body[512];
     char ack[8];
     time_t now = time(NULL);
@@ -669,36 +800,9 @@ static int el_directory_login(peer_echolink_t *p, const char *server)
     struct tm *tm;
     int n, body_len;
     uint8_t l = 'l';
-    int i;
 
-    if (resolve_dns(server, &ip) != 0) {
-        LOG_EL_WARNING("echolink: cannot resolve directory %s\n", server);
-        return -1;
-    }
-
-    fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0)
-        return -1;
-
-    memset(&local, 0, sizeof(local));
-    local.sin_family = AF_INET;
-    local.sin_port = 0;
-    if (inet_aton(p->bind_addr, &local.sin_addr) == 0
-        || bind(fd, (struct sockaddr *)&local, sizeof(local)) < 0) {
-        LOG_EL_WARNING("echolink: directory bind %s failed: %s\n",
-                    p->bind_addr, strerror(errno));
-        close(fd);
-        return -1;
-    }
-
-    memset(&sa, 0, sizeof(sa));
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons(EL_DIR_PORT);
-    sa.sin_addr = ip;
-
-    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
-        LOG_EL_WARNING("echolink: directory connect %s: %s\n", server, strerror(errno));
-        close(fd);
+    if (el_dir_connect(p, server, &conn) != 0) {
+        LOG_EL_WARNING("echolink: cannot connect directory %s\n", server);
         return -1;
     }
 
@@ -712,18 +816,18 @@ static int el_directory_login(peer_echolink_t *p, const char *server)
                         p->qth[0] ? p->qth : "ADN",
                         p->email[0] ? p->email : "");
     if (body_len < 0 || body_len >= (int)sizeof(body)) {
-        close(fd);
+        el_dir_close(p, &conn);
         return -1;
     }
 
-    if (write(fd, &l, 1) != 1
-        || write(fd, body, (size_t)body_len) != body_len) {
-        close(fd);
+    if (el_dir_write(p, &conn, &l, 1) != 0
+        || el_dir_write(p, &conn, body, body_len) != 0) {
+        el_dir_close(p, &conn);
         return -1;
     }
 
-    n = (int)read(fd, ack, sizeof(ack) - 1);
-    close(fd);
+    n = el_dir_read(p, &conn, ack, (int)sizeof(ack) - 1);
+    el_dir_close(p, &conn);
     if (n < 2) {
         LOG_EL_WARNING("echolink: directory %s short reply\n", server);
         return -1;
@@ -740,7 +844,6 @@ static int el_directory_login(peer_echolink_t *p, const char *server)
         return 0;
     }
     LOG_EL_WARNING("echolink: directory login rejected by %s: %.16s\n", server, ack);
-    (void)i;
     return -1;
 }
 
@@ -846,24 +949,22 @@ static int el_build_sdes(peer_echolink_t *p, uint8_t *out, int outlen)
 static void el_send_sdes(peer_echolink_t *p)
 {
     uint8_t buf[256];
-    struct sockaddr_in dest;
+    struct in_addr to;
     int n;
-    int sock;
 
     pthread_mutex_lock(&p->dir_mu);
-    if (!p->peer_resolved || p->rtcp_sock < 0) {
+    if (!el_rtcp_ok(p)) {
         pthread_mutex_unlock(&p->dir_mu);
         return;
     }
-    sock = p->rtcp_sock;
-    dest = p->peer_rtcp;
+    to = p->peer_rtcp.sin_addr;
     n = el_build_sdes(p, buf, (int)sizeof(buf));
     if (n > 0)
         p->last_sdes = time(NULL);
     pthread_mutex_unlock(&p->dir_mu);
     if (n <= 0)
         return;
-    sendto(sock, buf, (size_t)n, 0, (struct sockaddr *)&dest, sizeof(dest));
+    el_send_udp_rtcp(p, to, buf, n);
 }
 
 /*
@@ -934,13 +1035,18 @@ static int el_build_firewall_open(peer_echolink_t *p, const char *dest_ip,
 static void el_send_firewall_open(peer_echolink_t *p)
 {
     uint8_t buf[256];
-    struct sockaddr_in dest;
     struct in_addr peer_ip;
+    struct in_addr dir_ip;
     char peer_ip_str[INET_ADDRSTRLEN];
-    int n, i, sock, sent = 0;
+    int n, i, sent = 0;
 
+    /*
+     * Directory-relayed OPEN (still needed for many conferences). With a
+     * proxy this goes out as UDP_CONTROL to the directory host — not a
+     * local bind punch (proxy already owns public 5198/5199).
+     */
     pthread_mutex_lock(&p->dir_mu);
-    if (!p->peer_resolved || p->rtcp_sock < 0 || p->directory_server_count <= 0) {
+    if (!el_rtcp_ok(p) || p->directory_server_count <= 0) {
         pthread_mutex_unlock(&p->dir_mu);
         return;
     }
@@ -949,7 +1055,6 @@ static void el_send_firewall_open(peer_echolink_t *p)
         pthread_mutex_unlock(&p->dir_mu);
         return;
     }
-    sock = p->rtcp_sock;
     peer_ip = p->peer_rtp.sin_addr;
     pthread_mutex_unlock(&p->dir_mu);
 
@@ -959,16 +1064,13 @@ static void el_send_firewall_open(peer_echolink_t *p)
     if (n <= 0)
         return;
 
-    memset(&dest, 0, sizeof(dest));
-    dest.sin_family = AF_INET;
-    dest.sin_port = htons(EL_RTCP_PORT);
     for (i = 0; i < p->directory_server_count; i++) {
-        if (resolve_dns(p->directory_servers[i], &dest.sin_addr) != 0)
+        if (resolve_dns(p->directory_servers[i], &dir_ip) != 0)
             continue;
-        if (sendto(sock, buf, (size_t)n, 0, (struct sockaddr *)&dest,
-                   sizeof(dest)) == n) {
-            LOG_EL_DEBUG("echolink: firewall OPEN for %s (%s) via %s\n",
-                         p->host, peer_ip_str, p->directory_servers[i]);
+        if (el_send_udp_rtcp(p, dir_ip, buf, n) == 0) {
+            LOG_EL_DEBUG("echolink: firewall OPEN for %s (%s) via %s%s\n",
+                         p->host, peer_ip_str, p->directory_servers[i],
+                         p->use_proxy ? " (proxy)" : "");
             sent = 1;
             break; /* tlb uses one addressing server; first OK is enough */
         }
@@ -978,7 +1080,7 @@ static void el_send_firewall_open(peer_echolink_t *p)
                        p->host);
 }
 
-/* Direct SDES to peer + directory OPEN (tlb connect path). */
+/* Direct SDES to peer + directory OPEN (tlb connect path; OPEN skipped with proxy). */
 static void el_send_connect_handshake(peer_echolink_t *p)
 {
     el_send_sdes(p);
@@ -1248,7 +1350,10 @@ static void el_handle_rtcp(peer_echolink_t *p, const uint8_t *data, int len,
                  * Reply with normal SDES toward our configured peer so any
                  * NAT mapping stays warm; do not mark linked on OPEN itself.
                  */
-                el_send_sdes(p);
+                if (p->use_proxy)
+                    p->sdes_reply_pending = 1;
+                else
+                    el_send_sdes(p);
             } else {
                 pthread_mutex_lock(&p->dir_mu);
                 p->last_peer_rtcp = time(NULL);
@@ -1260,7 +1365,14 @@ static void el_handle_rtcp(peer_echolink_t *p, const uint8_t *data, int len,
                 pthread_mutex_unlock(&p->dir_mu);
                 if (just_linked)
                     LOG_EL_INFO("echolink: linked to %s (RTCP SDES)\n", p->host);
-                el_send_sdes(p);
+                /*
+                 * Under proxy, demux holds proxy.mu — must not send here
+                 * (el_proxy_udp_ctrl would deadlock and freeze RTP).
+                 */
+                if (p->use_proxy)
+                    p->sdes_reply_pending = 1;
+                else
+                    el_send_sdes(p);
             }
         }
         o += plen;
@@ -1318,18 +1430,16 @@ static void el_handle_rtp(peer_echolink_t *p, const uint8_t *data, int len)
 static void el_flush_rtp_tx(peer_echolink_t *p)
 {
     uint8_t pkt[EL_RTP_FRAME_LEN];
-    struct sockaddr_in dest;
+    struct in_addr to;
     gsm g = (gsm)p->gsm_enc;
     int i;
-    int sock;
 
     pthread_mutex_lock(&p->dir_mu);
-    if (!g || p->pcm_out_count <= 0 || !p->peer_resolved || p->rtp_sock < 0) {
+    if (!g || p->pcm_out_count <= 0 || !el_rtp_ok(p)) {
         pthread_mutex_unlock(&p->dir_mu);
         return;
     }
-    sock = p->rtp_sock;
-    dest = p->peer_rtp;
+    to = p->peer_rtp.sin_addr;
     pthread_mutex_unlock(&p->dir_mu);
 
     /* Pad short final packet with silence so VTERM audio is not dropped. */
@@ -1352,8 +1462,7 @@ static void el_flush_rtp_tx(peer_echolink_t *p)
         gsm_encode(g, (gsm_signal *)(p->pcm_out + i * EL_GSM_SAMPLES),
                    (gsm_byte *)(pkt + 12 + i * EL_GSM_FRAME));
     }
-    sendto(sock, pkt, EL_RTP_FRAME_LEN, 0,
-           (struct sockaddr *)&dest, sizeof(dest));
+    el_send_udp_rtp(p, to, pkt, EL_RTP_FRAME_LEN);
     p->pcm_out_count = 0;
     p->rtp_tx_packets++;
 }
@@ -1365,11 +1474,20 @@ int peer_el_open(peer_echolink_t *p, const ysf2dmr_echolink_cfg_t *cfg)
     memset(p, 0, sizeof(*p));
     p->rtp_sock = -1;
     p->rtcp_sock = -1;
+    el_proxy_init(&p->proxy);
     pthread_mutex_init(&p->dir_mu, NULL);
     pthread_cond_init(&p->dir_cv, NULL);
-    if (!cfg || !cfg->callsign[0] || !cfg->bind_addr[0]) {
+    if (!cfg || !cfg->callsign[0]) {
         pthread_cond_destroy(&p->dir_cv);
         pthread_mutex_destroy(&p->dir_mu);
+        el_proxy_clear(&p->proxy);
+        return -1;
+    }
+    p->use_proxy = cfg->proxy_server[0] ? 1 : 0;
+    if (!p->use_proxy && !cfg->bind_addr[0]) {
+        pthread_cond_destroy(&p->dir_cv);
+        pthread_mutex_destroy(&p->dir_mu);
+        el_proxy_clear(&p->proxy);
         return -1;
     }
 
@@ -1397,22 +1515,37 @@ int peer_el_open(peer_echolink_t *p, const ysf2dmr_echolink_cfg_t *cfg)
         return -1;
     }
 
-    p->rtp_sock = udp_bind(p->bind_addr, EL_RTP_PORT, &p->bind_rtp);
-    if (p->rtp_sock < 0) {
-        LOG_EL_ERROR("echolink: cannot bind %s:%d: %s\n",
-                  p->bind_addr, EL_RTP_PORT, strerror(errno));
-        peer_el_close(p);
-        return -1;
+    if (p->use_proxy) {
+        if (el_proxy_open(&p->proxy, cfg->proxy_server, cfg->proxy_port,
+                          p->callsign, cfg->proxy_password) != 0) {
+            LOG_EL_ERROR("echolink: proxy open failed (%s:%d)\n",
+                         cfg->proxy_server, cfg->proxy_port > 0
+                             ? cfg->proxy_port : EL_PROXY_DEFAULT_PORT);
+            peer_el_close(p);
+            return -1;
+        }
+        LOG_EL_INFO("echolink: using proxy %s:%d as %s (no local UDP bind)\n",
+                    cfg->proxy_server,
+                    cfg->proxy_port > 0 ? cfg->proxy_port : EL_PROXY_DEFAULT_PORT,
+                    p->callsign);
+    } else {
+        p->rtp_sock = udp_bind(p->bind_addr, EL_RTP_PORT, &p->bind_rtp);
+        if (p->rtp_sock < 0) {
+            LOG_EL_ERROR("echolink: cannot bind %s:%d: %s\n",
+                      p->bind_addr, EL_RTP_PORT, strerror(errno));
+            peer_el_close(p);
+            return -1;
+        }
+        p->rtcp_sock = udp_bind(p->bind_addr, EL_RTCP_PORT, &p->bind_rtcp);
+        if (p->rtcp_sock < 0) {
+            LOG_EL_ERROR("echolink: cannot bind %s:%d: %s\n",
+                      p->bind_addr, EL_RTCP_PORT, strerror(errno));
+            peer_el_close(p);
+            return -1;
+        }
+        LOG_EL_INFO("echolink: bound %s:%d/%d as %s\n",
+                 p->bind_addr, EL_RTP_PORT, EL_RTCP_PORT, p->callsign);
     }
-    p->rtcp_sock = udp_bind(p->bind_addr, EL_RTCP_PORT, &p->bind_rtcp);
-    if (p->rtcp_sock < 0) {
-        LOG_EL_ERROR("echolink: cannot bind %s:%d: %s\n",
-                  p->bind_addr, EL_RTCP_PORT, strerror(errno));
-        peer_el_close(p);
-        return -1;
-    }
-    LOG_EL_INFO("echolink: bound %s:%d/%d as %s\n",
-             p->bind_addr, EL_RTP_PORT, EL_RTCP_PORT, p->callsign);
 
     /*
      * tlb startup (conference.c): LOGIN_AND_LIST when StationListInterval > 0,
@@ -1448,6 +1581,8 @@ int peer_el_open(peer_echolink_t *p, const ysf2dmr_echolink_cfg_t *cfg)
 void peer_el_close(peer_echolink_t *p)
 {
     el_dir_thread_stop(p);
+    if (p->use_proxy)
+        el_proxy_close(&p->proxy);
     if (p->rtp_sock >= 0)
         close(p->rtp_sock);
     if (p->rtcp_sock >= 0)
@@ -1463,10 +1598,14 @@ void peer_el_close(peer_echolink_t *p)
     p->status = PEER_EL_DISCONNECTED;
     pthread_cond_destroy(&p->dir_cv);
     pthread_mutex_destroy(&p->dir_mu);
+    el_proxy_clear(&p->proxy);
+    p->use_proxy = 0;
 }
 
 void peer_el_tick(peer_echolink_t *p)
 {
+    if (p->use_proxy)
+        el_proxy_ensure(&p->proxy);
     time_t now = time(NULL);
 
     /* tlb RTCP_Handler directory refresh — schedule worker (non-blocking). */
@@ -1540,6 +1679,28 @@ int peer_el_poll(peer_echolink_t *p, int timeout_ms)
     struct pollfd pf[2];
     int n;
     int drained = 0;
+
+    if (p->use_proxy) {
+        struct pollfd ppf;
+
+        el_proxy_ensure(&p->proxy);
+        if (!el_proxy_ready(&p->proxy)) {
+            if (timeout_ms > 0)
+                usleep((useconds_t)timeout_ms * 1000U);
+            return p->pcm_in_count;
+        }
+        ppf.fd = p->proxy.fd;
+        ppf.events = POLLIN;
+        if (timeout_ms >= 0)
+            poll(&ppf, 1, timeout_ms);
+        el_proxy_poll(&p->proxy, el_proxy_udp_cb, p);
+        /* SDES replies deferred from RTCP handler (avoids proxy.mu deadlock). */
+        if (p->sdes_reply_pending) {
+            p->sdes_reply_pending = 0;
+            el_send_sdes(p);
+        }
+        return p->pcm_in_count;
+    }
 
     if (p->rtp_sock < 0)
         return 0;

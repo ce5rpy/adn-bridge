@@ -82,12 +82,12 @@ validated EchoLink `-L` / `-R` / conference callsign.
 ```bash
 # EchoLink <-> DMR
 cp ysf2dmrcon-echolink-dmr.example.ini ysf2dmrcon-echolink-dmr.ini
-# edit passwords, bind_addr, DMR master, EchoLink host (node or *CONF*)
+# edit passwords, bind_addr (or proxy_*), DMR master, EchoLink host (node or *CONF*)
 ./ysf2dmrcon -c ysf2dmrcon-echolink-dmr.ini
 
 # EchoLink <-> YSF
 cp ysf2dmrcon-echolink-ysf.example.ini ysf2dmrcon-echolink-ysf.ini
-# edit passwords, bind_addr, YSF reflector/DGID, EchoLink host
+# edit passwords, bind_addr (or proxy_*), YSF reflector/DGID, EchoLink host
 ./ysf2dmrcon -c ysf2dmrcon-echolink-ysf.ini
 ```
 
@@ -139,9 +139,11 @@ CSD/DCH RadioID — see [docs/echolink-bridge.md](docs/echolink-bridge.md).
 ### `[echolink]` / `[vocoder]` — EchoLink modes
 
 Minimal keys: `callsign`, `password`, `bind_addr`, `host` (node or `*CONF*`),
-and `[vocoder] host`/`port`. Ports **5198/5199/5200** are fixed in code.
+and `[vocoder] host`/`port`. Ports **5198/5199/5200** are fixed in direct mode.
+Optional EchoLink Proxy: `proxy_server` / `proxy_port` / `proxy_password`
+(default `PUBLIC`) — then `bind_addr` is not required.
 
-Setup guide (ports, vocoder, INI, how to check audio):
+Setup guide (ports, proxy, vocoder, INI, how to check audio):
 
 → **[docs/echolink-bridge.md](docs/echolink-bridge.md)**
 ([ES](docs/echolink-bridge.es.md))
@@ -188,7 +190,7 @@ Voice always crosses; only the displayed/transmitted identity changes.
 |------|------|
 | `ysf2dmrcon.c` | Main loop, signals, config |
 | `peer_dmr.c` / `peer_ysf.c` | UDP peers, reconnect, DGID/RPTO |
-| `peer_echolink.c` | EchoLink directory, RTP/GSM, RTCP |
+| `peer_echolink.c` / `el_proxy.c` | EchoLink directory, RTP/GSM, RTCP, optional proxy |
 | `bridge.c` | YSF↔DMR voice bridge, identity, ModeConv pacing |
 | `bridge_el.c` | EchoLink↔DMR / EchoLink↔YSF |
 | `vocoder_remote.c` | DV3000 / AMBEServer UDP client |

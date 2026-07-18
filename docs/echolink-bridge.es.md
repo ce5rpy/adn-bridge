@@ -10,21 +10,25 @@ YSF ↔ DMR (sin EchoLink): [ysf-dmr-bridge.es.md](ysf-dmr-bridge.es.md).
 
 1. Estación EchoLink validada (`CALL-L`, `CALL-R`, o indicativo de conferencia si hospedas).
 2. Vocoder AMBE por hardware accesible por UDP (protocolo DV3000 / AMBEServer).
-3. Firewall / NAT: permitir **UDP 5198–5199** (y salida **TCP 5200** al directorio EchoLink).
+3. Red (elige una):
+   - **Directo:** permitir **UDP 5198–5199** entrante (y salida **TCP 5200** al directorio), o
+   - **EchoLink Proxy:** solo salida **TCP** al proxy (puerto por defecto **8100**) — sin abrir UDP local.
 
 ## Arranque rápido
 
 ```bash
 # EchoLink <-> DMR
 cp ysf2dmrcon-echolink-dmr.example.ini ysf2dmrcon-echolink-dmr.ini
-# editar: contraseñas, bind_addr, master DMR, host EchoLink, vocoder
+# editar: contraseñas, bind_addr (o proxy_*), master DMR, host EchoLink, vocoder
 ./ysf2dmrcon -c ysf2dmrcon-echolink-dmr.ini
 
 # EchoLink <-> YSF
 cp ysf2dmrcon-echolink-ysf.example.ini ysf2dmrcon-echolink-ysf.ini
-# editar: contraseñas, bind_addr, reflector YSF/DGID, host EchoLink, vocoder
+# editar: contraseñas, bind_addr (o proxy_*), reflector YSF/DGID, host EchoLink, vocoder
 ./ysf2dmrcon -c ysf2dmrcon-echolink-ysf.ini
 ```
+
+Detrás de NAT: pon `proxy_server` (y opcionalmente `proxy_port` / `proxy_password`) en lugar de abrir UDP 5198/5199 — ver la sección **EchoLink Proxy** más abajo.
 
 Cuando el peer se resuelve y enlaza deberías ver algo como
 `linked to … (RTCP SDES)`.
@@ -42,16 +46,36 @@ mode = echolink-dmr     ; o echolink-ysf
 |-------|-------------|-------------|
 | `callsign` | sí | Tu estación EchoLink |
 | `password` | sí | Contraseña del directorio |
-| `bind_addr` | sí | IP local de UDP 5198/5199 |
+| `bind_addr` | sí* | IP local de UDP 5198/5199 (*no hace falta si pones `proxy_server`) |
 | `host` | sí | Nodo (`CALL-L` / `CALL-R`) o conferencia (`*NOMBRE*`) a la que conectar |
 | `qth` / `email` | no | Metadatos opcionales del directorio |
 | `directory_servers` | no | Por defecto los `serverN.echolink.org` públicos |
 | `login_interval` | no | Refresco de presencia (por defecto **360** s) |
 | `station_list_interval` | no | Cada cuánto refrescar la IP del peer desde la lista (por defecto **600** s) |
 | `gain` | no | Escala de audio **EchoLink → DMR/YSF** antes del AMBE. `1.0` = sin cambios (defecto); sugerido **0.5** en `echolink-ysf` y **1.0** en `echolink-dmr`; rango aceptado mayor que **0** y hasta **4**. No afecta DMR/YSF → EchoLink. |
+| `proxy_server` | no | Host del EchoLink Proxy. Si se pone, todo el tráfico EL va por el proxy |
+| `proxy_port` | no | Puerto TCP del proxy (por defecto **8100** si hay `proxy_server`) |
+| `proxy_password` | no | Contraseña del proxy (por defecto **PUBLIC** en proxies públicos) |
 | `log_level` | no | Si no, hereda `[log]` |
 
-Los puertos **5198 / 5199 / 5200** están fijos en el código (no son claves del INI).
+Los puertos **5198 / 5199 / 5200** están fijos en el código en modo directo. Con proxy solo los usa el host del proxy.
+
+## EchoLink Proxy (detrás de NAT)
+
+```ini
+[echolink]
+callsign = N0CALL-L
+password = tu-password-directorio
+host = *ALGUNACONF*
+; sin bind_addr si usas proxy
+proxy_server = tu.proxy.ejemplo
+proxy_port = 8100
+proxy_password = PUBLIC
+```
+
+- Sin las tres claves `proxy_*` → modo **directo** (igual que antes).
+- Con proxy: en el log busca `echolink: connected to proxy …` / `using proxy …`.
+- Fallos: `proxy bad password`, `proxy access denied`, `proxy connect …`.
 
 ## `[vocoder]`
 
@@ -122,6 +146,7 @@ Así se ve una línea real en la terminal:
 
 | Orden | Texto a buscar **en el log de la terminal** | Significado |
 |------|-----------------------------------------------|-------------|
+| 0 | `echolink: connected to proxy …` / `using proxy …` | Solo modo proxy — TCP al proxy OK |
 | 1 | `echolink: directory login OK` | Login al directorio bien |
 | 2 | `echolink: connecting to …` | Ya tiene la IP del `host` |
 | 3 | `echolink: linked to … (RTCP SDES)` | Enlazado (solo control; **aún no es audio**) |
@@ -138,9 +163,10 @@ Camino inverso: en el mismo log busca `DMR->EL call start` o `YSF->EL call start
 
 | Lo que **no** aparece en el log | Qué revisar |
 |---------------------------------|-------------|
-| `directory login OK` | `callsign`/`password`, red TCP 5200, `directory_servers` |
+| `connected to proxy` / `using proxy` | `proxy_server` / puerto / password, salida TCP 8100 |
+| `directory login OK` | `callsign`/`password`, TCP 5200 o camino proxy, `directory_servers` |
 | IP / `connecting to` / `station list: … not found` | `host` mal escrito o no está en el directorio |
-| `linked to …` | Firewall UDP 5198/5199, NAT, peer sin respuesta |
+| `linked to …` | Directo: UDP 5198/5199 / NAT. Proxy: proxy arriba / SDES del peer |
 | `RTP RX` / `EL audio rms` (estando `linked`) | Nadie habla en esa conferencia/nodo |
 | Tras `call start`: `vocoder ENC timeout` o `PRODID probe failed` | `[vocoder] host`/`port` y el hardware AMBE |
 | `call start` pero silencio en master DMR / reflector YSF | `[dmr]` TG/password o `[ysf]` host/DGID |
