@@ -1,6 +1,6 @@
 # ysf2dmrcon
 
-**Versión 0.3.0**
+**Versión 0.3.1**
 
 Puente de voz con tres modos:
 

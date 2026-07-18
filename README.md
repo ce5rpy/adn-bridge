@@ -1,6 +1,6 @@
 # ysf2dmrcon
 
-**Version 0.3.0**
+**Version 0.3.1**
 
 Standalone voice bridge with three modes:
 

@@ -4,6 +4,14 @@ All notable changes to **ysf2dmrcon** are documented here.
 
 <!-- version list -->
 
+## v0.3.1 (2026-07-18)
+
+### Bug Fixes
+
+- Clear leftover dynamic TGs on DMR connect
+  ([`1c833e6`](https://github.com/ce5rpy/ysf2dmrcon/commit/1c833e6cd569eece521afefa17f39e9b0b1a557f))
+
+
 ## v0.3.0 (2026-07-18)
 
 ### Bug Fixes
