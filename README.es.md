@@ -83,12 +83,12 @@ y un indicativo EchoLink validado (`-L` / `-R` / conferencia).
 ```bash
 # EchoLink <-> DMR
 cp ysf2dmrcon-echolink-dmr.example.ini ysf2dmrcon-echolink-dmr.ini
-# editar contraseñas, bind_addr, master DMR, host EchoLink (nodo o *CONF*)
+# editar contraseñas, bind_addr (o proxy_*), master DMR, host EchoLink (nodo o *CONF*)
 ./ysf2dmrcon -c ysf2dmrcon-echolink-dmr.ini
 
 # EchoLink <-> YSF
 cp ysf2dmrcon-echolink-ysf.example.ini ysf2dmrcon-echolink-ysf.ini
-# editar contraseñas, bind_addr, reflector YSF/DGID, host EchoLink
+# editar contraseñas, bind_addr (o proxy_*), reflector YSF/DGID, host EchoLink
 ./ysf2dmrcon -c ysf2dmrcon-echolink-ysf.ini
 ```
 
@@ -138,9 +138,11 @@ se usan — ver [docs/echolink-bridge.es.md](docs/echolink-bridge.es.md).
 ### `[echolink]` / `[vocoder]` — Modos EchoLink
 
 Claves mínimas: `callsign`, `password`, `bind_addr`, `host` (nodo o `*CONF*`)
-y `[vocoder] host`/`port`. Puertos **5198/5199/5200** fijos en código.
+y `[vocoder] host`/`port`. Puertos **5198/5199/5200** en modo directo.
+Proxy EchoLink opcional: `proxy_server` / `proxy_port` / `proxy_password`
+(por defecto `PUBLIC`) — entonces no hace falta `bind_addr`.
 
-Guía de puesta en marcha (puertos, vocoder, INI, comprobar audio):
+Guía de puesta en marcha (puertos, proxy, vocoder, INI, comprobar audio):
 
 → **[docs/echolink-bridge.es.md](docs/echolink-bridge.es.md)**
 ([English](docs/echolink-bridge.md))
@@ -187,7 +189,7 @@ La voz siempre cruza; solo cambia la identidad mostrada/transmitida.
 |------|---------|
 | `ysf2dmrcon.c` | Bucle principal, señales, configuración |
 | `peer_dmr.c` / `peer_ysf.c` | Peers UDP, reconexión, DGID/RPTO |
-| `peer_echolink.c` | Directorio EchoLink, RTP/GSM, RTCP |
+| `peer_echolink.c` / `el_proxy.c` | Directorio EchoLink, RTP/GSM, RTCP, proxy opcional |
 | `bridge.c` | Puente YSF↔DMR, identidad, ritmo ModeConv |
 | `bridge_el.c` | EchoLink↔DMR / EchoLink↔YSF |
 | `vocoder_remote.c` | Cliente UDP DV3000 / AMBEServer |

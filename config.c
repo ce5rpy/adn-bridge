@@ -43,6 +43,7 @@ void ysf2dmr_config_init(ysf2dmr_config_t *cfg)
     cfg->echolink.login_interval = 360;
     cfg->echolink.station_list_interval = 600;
     cfg->echolink.gain = 1.0f;
+    cfg->echolink.proxy_port = 0; /* set to 8100 when proxy_server is used */
     cfg->echolink.log_level = -1;
 }
 
@@ -225,6 +226,17 @@ static void apply_key(ysf2dmr_config_t *cfg, const char *section, const char *ke
             set_int(&cfg->echolink.station_list_interval, val);
         else if (strcmp(key, "gain") == 0)
             set_float(&cfg->echolink.gain, val);
+        else if (strcmp(key, "proxy_server") == 0
+                 || strcmp(key, "PROXY_SERVER") == 0)
+            set_str(cfg->echolink.proxy_server, sizeof(cfg->echolink.proxy_server),
+                    val);
+        else if (strcmp(key, "proxy_port") == 0
+                 || strcmp(key, "PROXY_PORT") == 0)
+            set_int(&cfg->echolink.proxy_port, val);
+        else if (strcmp(key, "proxy_password") == 0
+                 || strcmp(key, "PROXY_PASSWORD") == 0)
+            set_str(cfg->echolink.proxy_password,
+                    sizeof(cfg->echolink.proxy_password), val);
         else if (strcmp(key, "log_level") == 0 || strcmp(key, "log") == 0)
             cfg->echolink.log_level = (int)log_level_from_string(val);
         return;
@@ -365,6 +377,15 @@ int ysf2dmr_config_load(const char *path, ysf2dmr_config_t *cfg, char *err, size
         cfg->echolink.directory_server_count = 4;
     }
 
+    /* EchoLink Proxy defaults */
+    if (cfg->echolink.proxy_server[0]) {
+        if (cfg->echolink.proxy_port <= 0)
+            cfg->echolink.proxy_port = 8100;
+        if (!cfg->echolink.proxy_password[0])
+            set_str(cfg->echolink.proxy_password,
+                    sizeof(cfg->echolink.proxy_password), "PUBLIC");
+    }
+
     return 0;
 }
 
@@ -417,7 +438,13 @@ int ysf2dmr_config_valid(const ysf2dmr_config_t *cfg, char *err, size_t errlen)
             snprintf(err, errlen, "missing [echolink] password");
             return -1;
         }
-        if (!cfg->echolink.bind_addr[0]) {
+        if (cfg->echolink.proxy_server[0]) {
+            /* Proxy mode: bind_addr not required (defaults applied in load). */
+            if (cfg->echolink.proxy_port <= 0) {
+                snprintf(err, errlen, "invalid [echolink] proxy_port");
+                return -1;
+            }
+        } else if (!cfg->echolink.bind_addr[0]) {
             snprintf(err, errlen, "missing [echolink] bind_addr");
             return -1;
         }

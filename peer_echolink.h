@@ -17,6 +17,7 @@
 #include <netinet/in.h>
 
 #include "config.h"
+#include "el_proxy.h"
 
 /* Background directory worker jobs (peer_el_tick schedules; never blocks audio). */
 #define EL_DIR_JOB_NONE       0
@@ -45,6 +46,8 @@ typedef struct {
     struct sockaddr_in bind_rtcp;
     struct sockaddr_in peer_rtp;
     struct sockaddr_in peer_rtcp;
+    int use_proxy; /* 1 = EchoLink Proxy; no local UDP 5198/5199 */
+    el_proxy_t proxy;
     char callsign[16];
     char password[64];
     char bind_addr[64];
@@ -94,6 +97,11 @@ typedef struct {
     int dir_stop;
     int dir_busy;
     int dir_job; /* EL_DIR_JOB_* */
+    /*
+     * Proxy demux holds proxy.mu while calling RTCP/RTP handlers. Defer SDES
+     * TX until after poll unlocks — otherwise el_send_sdes deadlocks on mu.
+     */
+    int sdes_reply_pending;
 } peer_echolink_t;
 
 int peer_el_open(peer_echolink_t *p, const ysf2dmr_echolink_cfg_t *cfg);

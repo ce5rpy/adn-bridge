@@ -243,7 +243,12 @@ int vocoder_open(vocoder_t *v, const char *host, int port)
         memcpy(&v->peer.sin_addr, he->h_addr, (size_t)he->h_length);
     }
 
-    n = voc_exchange(v, DV3K_PRODID_REQ, (int)sizeof(DV3K_PRODID_REQ), rsp, (int)sizeof(rsp));
+    /*
+     * Open probe uses a longer timeout than the voice hot path: under
+     * qemu-arm the first UDP round-trip can exceed 400 ms after a busy start.
+     */
+    n = voc_exchange_once(v, DV3K_PRODID_REQ, (int)sizeof(DV3K_PRODID_REQ),
+                          rsp, (int)sizeof(rsp), 2000);
     if (n <= 0) {
         LOG_VOC_ERROR("vocoder: PRODID probe failed (%s:%d)%s\n", host, port,
                   n == 0 ? " timeout" : "");
@@ -251,6 +256,7 @@ int vocoder_open(vocoder_t *v, const char *host, int port)
         v->sock = -1;
         return -1;
     }
+    g_consec_fail = 0;
     prod[0] = '\0';
     if (n > 5 && rsp[3] == DV3K_TYPE_CTRL && rsp[4] == 0x30) {
         int plen = n - 5;
@@ -263,13 +269,15 @@ int vocoder_open(vocoder_t *v, const char *host, int port)
         prod[plen] = '\0';
     }
 
-    n = voc_exchange(v, DV3K_RATET_DMR, (int)sizeof(DV3K_RATET_DMR), rsp, (int)sizeof(rsp));
+    n = voc_exchange_once(v, DV3K_RATET_DMR, (int)sizeof(DV3K_RATET_DMR),
+                          rsp, (int)sizeof(rsp), 2000);
     if (n <= 0) {
         LOG_VOC_ERROR("vocoder: DMR rate set failed%s\n", n == 0 ? " timeout" : "");
         close(v->sock);
         v->sock = -1;
         return -1;
     }
+    g_consec_fail = 0;
     v->ready = 1;
     LOG_VOC_INFO("vocoder ready at %s:%d (RATET 34 / 49-bit FEC=0, wire=interleave49, api=raw)\n",
              host, port);
