@@ -21,6 +21,7 @@
  */
 
 #include "ysf_fich.h"
+#include "log.h"
 
 #include <arpa/inet.h>
 #include <stdbool.h>
@@ -759,7 +760,7 @@ static void generate_voice_payload(unsigned char *payload, int frame_num)
 void ysf_send_activation_burst(int udp_sock, const struct sockaddr_in *host,
                                const char callsign[10], uint8_t forced_dgid)
 {
-    fprintf(stderr, "YSF: activation burst (DGID %02u)...\n", forced_dgid);
+    LOG_YSF_INFO("activation burst (DGID %02u)...\n", forced_dgid);
     uint8_t frame[155];
     uint8_t fn = 0;
     struct timespec ts;
@@ -846,7 +847,7 @@ void ysf_send_activation_burst(int udp_sock, const struct sockaddr_in *host,
             nanosleep(&ts, NULL);
         }
     }
-    fprintf(stderr, "YSF: activation complete (DGID %02u)\n", forced_dgid);
+    LOG_YSF_INFO("activation complete (DGID %02u)\n", forced_dgid);
 }
 
 void ysf_fich_rewrite_dgid(uint8_t *frame155, uint8_t dgid)

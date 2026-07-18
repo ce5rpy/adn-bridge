@@ -41,9 +41,16 @@ public:
 	unsigned int getYSF(unsigned char* bytes);
 	unsigned int getDMR(unsigned char* bytes);
 
+	/* Raw 49-bit AMBE (7 bytes) <-> DMR/YSF ModeConv path for PCM/vocoder bridges */
+	void putAMBE7(const unsigned char* ambe7);
+	void putAMBE7YSF(const unsigned char* ambe7);
+	void dmr33ToAMBE(const unsigned char* dmr33, unsigned char ambe[3][7]);
+
 private:
 	void putAMBE2YSF(unsigned int a, unsigned int b, unsigned int dat_c);
 	void putAMBE2DMR(unsigned int dat_a, unsigned int dat_b, unsigned int dat_c);
+	static void ambe7ToABC(const unsigned char* ambe7, unsigned int* a, unsigned int* b, unsigned int* c);
+	static void abcToAMBE7(unsigned int a, unsigned int b, unsigned int c, unsigned char* ambe7);
 	unsigned int m_ysfN;
 	unsigned int m_dmrN;
 	CRingBuffer<unsigned char> m_YSF;

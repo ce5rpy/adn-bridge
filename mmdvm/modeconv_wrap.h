@@ -46,6 +46,13 @@ unsigned int modeconv_get_dmr(uint8_t *voice33);
 /* ysf120 is the 120-byte YSF payload (sync..); returns tag. */
 unsigned int modeconv_get_ysf(uint8_t *ysf120);
 
+/* Queue one 7-byte AMBE frame into ModeConv (3 needed for one DMR 33-byte frame). */
+void modeconv_put_ambe7(const uint8_t ambe7[7]);
+/* Queue one 7-byte AMBE into YSF ModeConv path (5 needed for one YSF payload). */
+void modeconv_put_ambe7_ysf(const uint8_t ambe7[7]);
+/* Extract three 7-byte AMBE frames from a 33-byte DMR voice burst. */
+void modeconv_dmr33_to_ambe(const uint8_t dmr33[33], uint8_t ambe[3][7]);
+
 #ifdef __cplusplus
 }
 #endif

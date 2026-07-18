@@ -18,6 +18,7 @@
 
 #include "peer_ysf.h"
 #include "ysf_fich.h"
+#include "log.h"
 
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -54,14 +55,14 @@ int peer_ysf_open(peer_ysf_t *p, const char *host, int port, const char *cs, uin
     p->peer.sin_port = htons((uint16_t)port);
     hp = gethostbyname(host);
     if (!hp) {
-        fprintf(stderr, "peer_ysf: cannot resolve %s\n", host);
+        LOG_YSF_ERROR("cannot resolve %s\n", host);
         return -1;
     }
     memcpy(&p->peer.sin_addr, hp->h_addr_list[0], hp->h_length);
 
     p->last_rx = time(NULL);
     p->reconnect_pending = 1;
-    fprintf(stderr, "YSF peer: %s:%d DGID %u\n", host, port, (unsigned)dgid);
+    LOG_YSF_INFO("peer %s:%d DGID %u\n", host, port, (unsigned)dgid);
     return 0;
 }
 
@@ -88,14 +89,14 @@ static void peer_ysf_send_poll(peer_ysf_t *p)
 
 static void peer_ysf_reconnect(peer_ysf_t *p)
 {
-    fprintf(stderr, "YSF: reconnecting (YSFP + DGID activation)...\n");
+    LOG_YSF_INFO("reconnecting (YSFP + DGID activation)...\n");
     p->linked = 0;
     peer_ysf_send_poll(p);
     sleep(1);
     if (p->dgid >= 1U)
         ysf_send_activation_burst(p->sock, &p->peer, p->callsign, p->dgid);
     p->last_rx = time(NULL);
-    fprintf(stderr, "YSF: link setup sent (waiting for reflector)\n");
+    LOG_YSF_INFO("link setup sent (waiting for reflector)\n");
 }
 
 void peer_ysf_tick(peer_ysf_t *p)
@@ -110,8 +111,8 @@ void peer_ysf_tick(peer_ysf_t *p)
 
     if ((now - p->last_rx) > LOST_TIMEOUT) {
         if (p->linked) {
-            fprintf(stderr, "YSF: %ld s without response, reflector down — reconnecting\n",
-                    (long)(now - p->last_rx));
+            LOG_YSF_WARNING("%ld s without response, reflector down — reconnecting\n",
+                            (long)(now - p->last_rx));
             p->linked = 0;
         }
         p->reconnect_pending = 1;
@@ -144,7 +145,7 @@ int peer_ysf_poll(peer_ysf_t *p, int timeout_ms, int *from_peer)
         p->last_rx = time(NULL);
         if (!p->linked) {
             p->linked = 1;
-            fprintf(stderr, "YSF: linked (RX %d bytes)\n", rxlen);
+            LOG_YSF_INFO("linked (RX %d bytes)\n", rxlen);
         }
     }
     return rxlen;
