@@ -1,5 +1,5 @@
 /*
- * INI configuration loader for ysf2dmrcon.
+ * INI configuration loader for adn-bridge.
  *
  * Copyright (C) 2026  Rodrigo Pérez, CE5RPY <ce5rpy@qmd.cl>
  * This program is free software; you can redistribute it and/or modify
@@ -27,16 +27,16 @@
 #include <limits.h>
 #include <libgen.h>
 
-void ysf2dmr_config_init(ysf2dmr_config_t *cfg)
+void adn_bridge_config_init(adn_bridge_config_t *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
-    cfg->mode = YSF2DMR_MODE_YSF_DMR;
+    cfg->mode = ADN_BRIDGE_MODE_YSF_DMR;
     cfg->log_level = LOG_LEVEL_INFO;
     cfg->dmr_log_level = -1;
     cfg->ysf_log_level = -1;
     cfg->default_ysf_dmrid = 0;
     cfg->dmr_clear_dynamic_tg = 0;
-    ysf2dmr_aliases_cfg_init(&cfg->aliases);
+    adn_bridge_aliases_cfg_init(&cfg->aliases);
     strncpy(cfg->vocoder.host, "127.0.0.1", sizeof(cfg->vocoder.host) - 1);
     cfg->vocoder.port = 2460;
     cfg->vocoder.log_level = -1;
@@ -48,21 +48,21 @@ void ysf2dmr_config_init(ysf2dmr_config_t *cfg)
     cfg->echolink.log_level = -1;
 }
 
-const char *ysf2dmr_mode_name(int mode)
+const char *adn_bridge_mode_name(int mode)
 {
     switch (mode) {
-    case YSF2DMR_MODE_ECHOLINK_DMR: return "echolink-dmr";
-    case YSF2DMR_MODE_ECHOLINK_YSF: return "echolink-ysf";
+    case ADN_BRIDGE_MODE_ECHOLINK_DMR: return "echolink-dmr";
+    case ADN_BRIDGE_MODE_ECHOLINK_YSF: return "echolink-ysf";
     default:                        return "ysf-dmr";
     }
 }
 
-int ysf2dmr_config_default_path(const char *argv0, char *path, size_t pathlen)
+int adn_bridge_config_default_path(const char *argv0, char *path, size_t pathlen)
 {
     char exebuf[PATH_MAX];
 
-    if (access("ysf2dmrcon.ini", R_OK) == 0) {
-        strncpy(path, "ysf2dmrcon.ini", pathlen);
+    if (access("adn-bridge.ini", R_OK) == 0) {
+        strncpy(path, "adn-bridge.ini", pathlen);
         path[pathlen - 1] = '\0';
         return 0;
     }
@@ -70,12 +70,12 @@ int ysf2dmr_config_default_path(const char *argv0, char *path, size_t pathlen)
     if (argv0 && argv0[0]) {
         strncpy(exebuf, argv0, sizeof(exebuf) - 1);
         exebuf[sizeof(exebuf) - 1] = '\0';
-        snprintf(path, pathlen, "%s/ysf2dmrcon.ini", dirname(exebuf));
+        snprintf(path, pathlen, "%s/adn-bridge.ini", dirname(exebuf));
         if (access(path, R_OK) == 0)
             return 0;
     }
 
-    strncpy(path, "ysf2dmrcon.ini", pathlen);
+    strncpy(path, "adn-bridge.ini", pathlen);
     path[pathlen - 1] = '\0';
     return -1;
 }
@@ -142,7 +142,7 @@ static void set_float(float *dst, const char *val)
     *dst = v;
 }
 
-static void apply_identity_key(ysf2dmr_config_t *cfg, const char *key, const char *val)
+static void apply_identity_key(adn_bridge_config_t *cfg, const char *key, const char *val)
 {
     if (strcmp(key, "callsign") == 0)
         set_str(cfg->callsign, sizeof(cfg->callsign), val);
@@ -154,7 +154,7 @@ static void apply_identity_key(ysf2dmr_config_t *cfg, const char *key, const cha
         set_str(cfg->location, sizeof(cfg->location), val);
 }
 
-static void parse_directory_servers(ysf2dmr_echolink_cfg_t *el, const char *val)
+static void parse_directory_servers(adn_bridge_echolink_cfg_t *el, const char *val)
 {
     char buf[512];
     char *tok, *save = NULL;
@@ -164,7 +164,7 @@ static void parse_directory_servers(ysf2dmr_echolink_cfg_t *el, const char *val)
         return;
     strncpy(buf, val, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
-    for (tok = strtok_r(buf, ", \t", &save); tok && n < YSF2DMR_EL_DIR_MAX;
+    for (tok = strtok_r(buf, ", \t", &save); tok && n < ADN_BRIDGE_EL_DIR_MAX;
          tok = strtok_r(NULL, ", \t", &save)) {
         set_str(el->directory_servers[n], sizeof(el->directory_servers[n]), tok);
         n++;
@@ -175,15 +175,15 @@ static void parse_directory_servers(ysf2dmr_echolink_cfg_t *el, const char *val)
 static int parse_mode(const char *val)
 {
     if (!val || !*val)
-        return YSF2DMR_MODE_YSF_DMR;
+        return ADN_BRIDGE_MODE_YSF_DMR;
     if (strcmp(val, "echolink-dmr") == 0 || strcmp(val, "el-dmr") == 0)
-        return YSF2DMR_MODE_ECHOLINK_DMR;
+        return ADN_BRIDGE_MODE_ECHOLINK_DMR;
     if (strcmp(val, "echolink-ysf") == 0 || strcmp(val, "el-ysf") == 0)
-        return YSF2DMR_MODE_ECHOLINK_YSF;
-    return YSF2DMR_MODE_YSF_DMR;
+        return ADN_BRIDGE_MODE_ECHOLINK_YSF;
+    return ADN_BRIDGE_MODE_YSF_DMR;
 }
 
-static void apply_key(ysf2dmr_config_t *cfg, const char *section, const char *key, const char *val)
+static void apply_key(adn_bridge_config_t *cfg, const char *section, const char *key, const char *val)
 {
     if (!section || !key)
         return;
@@ -317,7 +317,7 @@ static void apply_key(ysf2dmr_config_t *cfg, const char *section, const char *ke
 }
 
 /* Apply [log] level + per-stanza overrides to runtime channels. */
-void ysf2dmr_config_apply_log_levels(const ysf2dmr_config_t *cfg)
+void adn_bridge_config_apply_log_levels(const adn_bridge_config_t *cfg)
 {
     log_level_t def = cfg->log_level;
 
@@ -336,14 +336,14 @@ void ysf2dmr_config_apply_log_levels(const ysf2dmr_config_t *cfg)
                               ? (log_level_t)cfg->vocoder.log_level : def);
 }
 
-int ysf2dmr_config_load(const char *path, ysf2dmr_config_t *cfg, char *err, size_t errlen)
+int adn_bridge_config_load(const char *path, adn_bridge_config_t *cfg, char *err, size_t errlen)
 {
     FILE *fp;
     char line[512];
     char section[32] = "";
     int lineno = 0;
 
-    ysf2dmr_config_init(cfg);
+    adn_bridge_config_init(cfg);
 
     fp = fopen(path, "r");
     if (!fp) {
@@ -389,7 +389,7 @@ int ysf2dmr_config_load(const char *path, ysf2dmr_config_t *cfg, char *err, size
         cfg->dmr_options[0] = '\0';
 
     /* Default directory servers if EL mode and none configured */
-    if ((cfg->mode == YSF2DMR_MODE_ECHOLINK_DMR || cfg->mode == YSF2DMR_MODE_ECHOLINK_YSF)
+    if ((cfg->mode == ADN_BRIDGE_MODE_ECHOLINK_DMR || cfg->mode == ADN_BRIDGE_MODE_ECHOLINK_YSF)
         && cfg->echolink.directory_server_count == 0) {
         static const char *defs[] = {
             "server1.echolink.org", "server2.echolink.org",
@@ -414,42 +414,44 @@ int ysf2dmr_config_load(const char *path, ysf2dmr_config_t *cfg, char *err, size
     return 0;
 }
 
-int ysf2dmr_config_valid(const ysf2dmr_config_t *cfg, char *err, size_t errlen)
+int adn_bridge_config_valid(const adn_bridge_config_t *cfg, char *err, size_t errlen)
 {
-    int el = (cfg->mode == YSF2DMR_MODE_ECHOLINK_DMR
-              || cfg->mode == YSF2DMR_MODE_ECHOLINK_YSF);
+    int el = (cfg->mode == ADN_BRIDGE_MODE_ECHOLINK_DMR
+              || cfg->mode == ADN_BRIDGE_MODE_ECHOLINK_YSF);
+    int need_dmr = (cfg->mode == ADN_BRIDGE_MODE_YSF_DMR
+                    || cfg->mode == ADN_BRIDGE_MODE_ECHOLINK_DMR);
 
-    if (!cfg->callsign[0]) {
-        snprintf(err, errlen, "missing [dmr] callsign");
-        return -1;
-    }
-    if (cfg->dmrid <= 0) {
-        snprintf(err, errlen, "missing [dmr] dmrid");
-        return -1;
-    }
-    if (!cfg->dmr_password[0]) {
-        snprintf(err, errlen, "missing [dmr] password (or passphrase)");
-        return -1;
-    }
-
-    if (cfg->mode == YSF2DMR_MODE_YSF_DMR || cfg->mode == YSF2DMR_MODE_ECHOLINK_YSF) {
-        if (!cfg->ysf_host[0] || cfg->ysf_port <= 0) {
-            snprintf(err, errlen, "missing [ysf] host/port");
+    /* echolink-ysf: no DMR peer — [dmr] stanza is optional (omit entirely). */
+    if (need_dmr) {
+        if (!cfg->callsign[0]) {
+            snprintf(err, errlen, "missing [dmr] callsign");
             return -1;
         }
-        if (cfg->dgid < 0 || cfg->dgid > 99) {
-            snprintf(err, errlen, "invalid [ysf] dgid (0-99)");
+        if (cfg->dmrid <= 0) {
+            snprintf(err, errlen, "missing [dmr] dmrid");
             return -1;
         }
-    }
-
-    if (cfg->mode == YSF2DMR_MODE_YSF_DMR || cfg->mode == YSF2DMR_MODE_ECHOLINK_DMR) {
+        if (!cfg->dmr_password[0]) {
+            snprintf(err, errlen, "missing [dmr] password (or passphrase)");
+            return -1;
+        }
         if (!cfg->dmr_host[0] || cfg->dmr_port <= 0) {
             snprintf(err, errlen, "missing [dmr] host/port");
             return -1;
         }
         if (cfg->dmr_tg <= 0) {
             snprintf(err, errlen, "missing [dmr] tg");
+            return -1;
+        }
+    }
+
+    if (cfg->mode == ADN_BRIDGE_MODE_YSF_DMR || cfg->mode == ADN_BRIDGE_MODE_ECHOLINK_YSF) {
+        if (!cfg->ysf_host[0] || cfg->ysf_port <= 0) {
+            snprintf(err, errlen, "missing [ysf] host/port");
+            return -1;
+        }
+        if (cfg->dgid < 0 || cfg->dgid > 99) {
+            snprintf(err, errlen, "invalid [ysf] dgid (0-99)");
             return -1;
         }
     }

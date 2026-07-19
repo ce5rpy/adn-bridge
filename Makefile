@@ -1,7 +1,13 @@
-# ysf2dmrcon — YSF/EchoLink <-> DMR voice bridge
+# adn-bridge — YSF/EchoLink <-> DMR voice bridge
 # Copyright (C) 2026  Rodrigo Pérez, CE5RPY <ce5rpy@qmd.cl>
 # SPDX-License-Identifier: GPL-3.0-or-later
 # See LICENSE for the full GNU General Public License v3 text.
+#
+# Default install layout (self-contained under /opt):
+#   /opt/adn-bridge/adn-bridge
+#   /opt/adn-bridge/config/*.example.ini
+#   /opt/adn-bridge/data/          (aliases cache)
+# Systemd units stay in examples/ — copy manually when needed.
 
 CC ?= gcc
 CXX ?= g++
@@ -14,7 +20,7 @@ LDFLAGS ?= -lcrypto -lm -lpthread -lz -lgsm
 
 BUILD = build
 
-C_SRCS = ysf2dmrcon.c config.c log.c aliases.c talker_alias.c peer_dmr.c peer_ysf.c \
+C_SRCS = adn_bridge.c config.c log.c aliases.c talker_alias.c peer_dmr.c peer_ysf.c \
          peer_echolink.c el_proxy.c bridge.c bridge_el.c vocoder_remote.c ysf_fich.c \
          hbp/dmr_hbp.c vendor/yyjson/yyjson.c
 CXX_SRCS = mmdvm/ModeConv.cpp mmdvm/Golay24128.cpp mmdvm/modeconv_wrap.cpp \
@@ -26,12 +32,12 @@ CXX_OBJS = $(patsubst %.cpp,$(BUILD)/%.o,$(CXX_SRCS))
 OBJS = $(C_OBJS) $(CXX_OBJS)
 DEPS = $(OBJS:.o=.d)
 
-PREFIX ?= /usr/local
-BINDIR ?= $(PREFIX)/bin
+PREFIX ?= /opt/adn-bridge
+CONFDIR ?= $(PREFIX)/config
 
-all: ysf2dmrcon
+all: adn-bridge
 
-ysf2dmrcon: $(OBJS)
+adn-bridge: $(OBJS)
 	$(CXX) -o $@ $(OBJS) $(LDFLAGS)
 
 $(BUILD)/%.o: %.c
@@ -42,13 +48,18 @@ $(BUILD)/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
-install: ysf2dmrcon
-	install -d $(DESTDIR)$(BINDIR)
-	install -m 755 ysf2dmrcon $(DESTDIR)$(BINDIR)/
-	install -m 644 ysf2dmrcon.example.ini $(DESTDIR)$(BINDIR)/ysf2dmrcon.example.ini
+install: adn-bridge
+	install -d $(DESTDIR)$(PREFIX)
+	install -d $(DESTDIR)$(CONFDIR)
+	install -d $(DESTDIR)$(PREFIX)/data
+	install -m 755 adn-bridge $(DESTDIR)$(PREFIX)/
+	install -m 644 examples/adn-bridge.example.ini $(DESTDIR)$(CONFDIR)/
+	install -m 644 examples/adn-bridge-ysf-dmr.example.ini $(DESTDIR)$(CONFDIR)/
+	install -m 644 examples/adn-bridge-echolink-dmr.example.ini $(DESTDIR)$(CONFDIR)/
+	install -m 644 examples/adn-bridge-echolink-ysf.example.ini $(DESTDIR)$(CONFDIR)/
 
 clean:
-	rm -rf $(BUILD) ysf2dmrcon
+	rm -rf $(BUILD) adn-bridge
 
 -include $(DEPS)
 

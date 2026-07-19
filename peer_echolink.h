@@ -61,7 +61,7 @@ typedef struct {
     char remote_talker[32];
     /* 1 = talker came from NAME parentheses (real user); keep across Conference status. */
     int remote_talker_explicit;
-    char directory_servers[YSF2DMR_EL_DIR_MAX][128];
+    char directory_servers[ADN_BRIDGE_EL_DIR_MAX][128];
     int directory_server_count;
     int status; /* PEER_EL_* */
     int linked; /* RTCP SDES seen from peer */
@@ -104,7 +104,7 @@ typedef struct {
     int sdes_reply_pending;
 } peer_echolink_t;
 
-int peer_el_open(peer_echolink_t *p, const ysf2dmr_echolink_cfg_t *cfg);
+int peer_el_open(peer_echolink_t *p, const adn_bridge_echolink_cfg_t *cfg);
 void peer_el_close(peer_echolink_t *p);
 void peer_el_tick(peer_echolink_t *p);
 int peer_el_linked(const peer_echolink_t *p);

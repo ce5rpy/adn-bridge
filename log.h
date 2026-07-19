@@ -1,5 +1,5 @@
 /*
- * Logging helpers for ysf2dmrcon.
+ * Logging helpers for adn-bridge.
  *
  * Copyright (C) 2026  Rodrigo Pérez, CE5RPY <ce5rpy@qmd.cl>
  * This program is free software; you can redistribute it and/or modify
@@ -16,8 +16,8 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#ifndef YSF2DMR_LOG_H
-#define YSF2DMR_LOG_H
+#ifndef ADN_BRIDGE_LOG_H
+#define ADN_BRIDGE_LOG_H
 
 typedef enum {
     LOG_LEVEL_DEBUG = 0,

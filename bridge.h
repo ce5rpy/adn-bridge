@@ -16,8 +16,8 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#ifndef YSF2DMR_BRIDGE_H
-#define YSF2DMR_BRIDGE_H
+#ifndef ADN_BRIDGE_BRIDGE_H
+#define ADN_BRIDGE_BRIDGE_H
 
 #include <stdint.h>
 #include <time.h>
@@ -28,7 +28,7 @@
 typedef struct {
     peer_dmr_t dmr;
     peer_ysf_t ysf;
-    ysf2dmr_aliases_t *aliases;
+    adn_bridge_aliases_t *aliases;
     int default_ysf_dmrid;
     uint32_t dmr_stream_id;
     uint8_t dmr_seq;
@@ -61,16 +61,16 @@ typedef struct {
     int connect_ptt_tg;
     int connect_ptt_clearing;
     struct timespec connect_ptt_start;
-} ysf2dmr_bridge_t;
+} adn_bridge_t;
 
-void bridge_init(ysf2dmr_bridge_t *b, const char *dmr_options,
-                 ysf2dmr_aliases_t *aliases, int default_ysf_dmrid,
+void bridge_init(adn_bridge_t *b, const char *dmr_options,
+                 adn_bridge_aliases_t *aliases, int default_ysf_dmrid,
                  int clear_dynamic_tg);
-void bridge_on_dmrd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len);
-void bridge_on_dmra(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len);
-void bridge_on_ysfd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len);
-void bridge_tick(ysf2dmr_bridge_t *b);
+void bridge_on_dmrd(adn_bridge_t *b, const uint8_t *pkt, int len);
+void bridge_on_dmra(adn_bridge_t *b, const uint8_t *pkt, int len);
+void bridge_on_ysfd(adn_bridge_t *b, const uint8_t *pkt, int len);
+void bridge_tick(adn_bridge_t *b);
 /* Abort connect-PTT early (e.g. real YSF call starts). */
-void bridge_abort_connect_ptt(ysf2dmr_bridge_t *b);
+void bridge_abort_connect_ptt(adn_bridge_t *b);
 
 #endif

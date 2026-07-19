@@ -8,8 +8,8 @@
  * (at your option) any later version.
  */
 
-#ifndef YSF2DMR_VOCODER_H
-#define YSF2DMR_VOCODER_H
+#ifndef ADN_BRIDGE_VOCODER_H
+#define ADN_BRIDGE_VOCODER_H
 
 #include <stdint.h>
 #include <netinet/in.h>

@@ -1,4 +1,4 @@
-# YSF ↔ DMR bridge (ysf2dmrcon)
+# YSF ↔ DMR bridge (adn-bridge)
 
 How to run the default mode **`ysf-dmr`** (YSF reflector ↔ DMR Homebrew peer).
 
@@ -16,11 +16,13 @@ EchoLink modes: [echolink-bridge.md](echolink-bridge.md).
 ## Quick start
 
 ```bash
-cp ysf2dmrcon.example.ini ysf2dmrcon.ini
-# or: cp ysf2dmrcon-ysf-dmr.example.ini ysf2dmrcon-ysf-dmr.ini
+mkdir -p config
+cp examples/adn-bridge-ysf-dmr.example.ini config/adn-bridge.ini
+# or master (all modes): cp examples/adn-bridge.example.ini config/adn-bridge.ini
+
 # edit YSF reflector/DGID, DMR host/password/tg, callsign/dmrid
-./ysf2dmrcon
-# or: ./ysf2dmrcon -c /path/to/your.ini
+./adn-bridge -c config/adn-bridge.ini
+# installed: /opt/adn-bridge/adn-bridge -c /opt/adn-bridge/config/adn-bridge.ini
 ```
 
 ## Mode
@@ -71,8 +73,8 @@ Optional but recommended so talkers show the right callsign / DMR ID.
 One process per bridge (different DGID, TG, and `dmrid`), each with its own INI:
 
 ```bash
-./ysf2dmrcon -c ysf2dmrcon-tg71442.ini
-./ysf2dmrcon -c ysf2dmrcon-tg71481.ini
+./adn-bridge -c adn-bridge-tg71442.ini
+./adn-bridge -c adn-bridge-tg71481.ini
 ```
 
 ## Logging

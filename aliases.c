@@ -67,7 +67,7 @@ typedef struct {
     int id;
 } alias_cs_slot_t;
 
-struct ysf2dmr_aliases {
+struct adn_bridge_aliases {
     alias_id_slot_t *id_tab;
     alias_cs_slot_t *cs_tab;
     size_t cap;   /* power of two; shared by both tables */
@@ -93,7 +93,7 @@ static unsigned hash_id(int id)
     return (unsigned)id * 2654435761U;
 }
 
-void ysf2dmr_aliases_cfg_init(ysf2dmr_aliases_cfg_t *cfg)
+void adn_bridge_aliases_cfg_init(adn_bridge_aliases_cfg_t *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
     cfg->stale_minutes = 24 * 60;
@@ -145,7 +145,7 @@ static time_t file_mtime(const char *path)
     return st.st_mtime;
 }
 
-static void aliases_record_mtimes(ysf2dmr_aliases_t *a, const ysf2dmr_aliases_cfg_t *cfg)
+static void aliases_record_mtimes(adn_bridge_aliases_t *a, const adn_bridge_aliases_cfg_t *cfg)
 {
     char path[512];
 
@@ -164,7 +164,7 @@ static void aliases_record_mtimes(ysf2dmr_aliases_t *a, const ysf2dmr_aliases_cf
 
 /* 1 if on-disk subscriber/local JSON is newer than the last in-memory build.
  * If newer_name is non-NULL, copies the basename of the first newer file. */
-static int aliases_disk_newer(const ysf2dmr_aliases_cfg_t *cfg, const ysf2dmr_aliases_t *a,
+static int aliases_disk_newer(const adn_bridge_aliases_cfg_t *cfg, const adn_bridge_aliases_t *a,
                               char *newer_name, size_t newer_name_len)
 {
     char path[512];
@@ -465,7 +465,7 @@ static int blake2b_matches(const char *path, const char *expected_hex)
 }
 
 /* Load expected blake2b for subscriber_ids from checksum JSON. Empty if absent. */
-static void load_subscriber_checksum(const ysf2dmr_aliases_cfg_t *cfg,
+static void load_subscriber_checksum(const adn_bridge_aliases_cfg_t *cfg,
                                      char out_hex[BLAKE2B_HEX_LEN + 1])
 {
     char path[512];
@@ -749,7 +749,7 @@ static size_t next_pow2(size_t n)
 }
 
 /* Rehash into new power-of-two capacity. Returns 0 on success. */
-static int alias_rehash(ysf2dmr_aliases_t *a, size_t new_cap)
+static int alias_rehash(adn_bridge_aliases_t *a, size_t new_cap)
 {
     alias_id_slot_t *nid;
     alias_cs_slot_t *ncs;
@@ -801,7 +801,7 @@ static int alias_rehash(ysf2dmr_aliases_t *a, size_t new_cap)
     return 0;
 }
 
-static int alias_ensure_cap(ysf2dmr_aliases_t *a)
+static int alias_ensure_cap(adn_bridge_aliases_t *a)
 {
     size_t need;
 
@@ -814,7 +814,7 @@ static int alias_ensure_cap(ysf2dmr_aliases_t *a)
     return alias_rehash(a, next_pow2(a->cap + 1));
 }
 
-static int alias_put_id(ysf2dmr_aliases_t *a, int id, const char *key)
+static int alias_put_id(adn_bridge_aliases_t *a, int id, const char *key)
 {
     unsigned h, mask;
 
@@ -839,7 +839,7 @@ static int alias_put_id(ysf2dmr_aliases_t *a, int id, const char *key)
     }
 }
 
-static void alias_put_cs(ysf2dmr_aliases_t *a, int id, const char *key, int prefer)
+static void alias_put_cs(adn_bridge_aliases_t *a, int id, const char *key, int prefer)
 {
     unsigned h, mask;
 
@@ -863,7 +863,7 @@ static void alias_put_cs(ysf2dmr_aliases_t *a, int id, const char *key, int pref
     }
 }
 
-static void insert_alias(ysf2dmr_aliases_t *a, int id, const char *callsign)
+static void insert_alias(adn_bridge_aliases_t *a, int id, const char *callsign)
 {
     char key[16];
 
@@ -877,7 +877,7 @@ static void insert_alias(ysf2dmr_aliases_t *a, int id, const char *callsign)
     alias_put_cs(a, id, key, 0);
 }
 
-static void upsert_alias(ysf2dmr_aliases_t *a, int id, const char *callsign)
+static void upsert_alias(adn_bridge_aliases_t *a, int id, const char *callsign)
 {
     char key[16];
 
@@ -891,7 +891,7 @@ static void upsert_alias(ysf2dmr_aliases_t *a, int id, const char *callsign)
     alias_put_cs(a, id, key, 1);
 }
 
-static int parse_subscriber_json(ysf2dmr_aliases_t *a, const char *path, int local_override)
+static int parse_subscriber_json(adn_bridge_aliases_t *a, const char *path, int local_override)
 {
     char *data;
     size_t len;
@@ -952,7 +952,7 @@ static int parse_subscriber_json(ysf2dmr_aliases_t *a, const char *path, int loc
     return loaded > 0 ? 0 : -1;
 }
 
-static int load_file(ysf2dmr_aliases_t *a, const char *dir, const char *file,
+static int load_file(adn_bridge_aliases_t *a, const char *dir, const char *file,
                      int local_override, const char *expected_blake2b)
 {
     char path[512];
@@ -981,7 +981,7 @@ static int load_file(ysf2dmr_aliases_t *a, const char *dir, const char *file,
 
 /* Returns 1 if subscriber_ids was freshly downloaded, 0 otherwise.
  * force_subscriber: treat subscriber as stale (e.g. missing file on reload). */
-static int aliases_download(const ysf2dmr_aliases_cfg_t *cfg, int force_subscriber)
+static int aliases_download(const adn_bridge_aliases_cfg_t *cfg, int force_subscriber)
 {
     char csum_path[512];
     char expect[BLAKE2B_HEX_LEN + 1];
@@ -1015,14 +1015,14 @@ static int aliases_download(const ysf2dmr_aliases_cfg_t *cfg, int force_subscrib
     return fetched;
 }
 
-static int aliases_build(const ysf2dmr_aliases_cfg_t *cfg, ysf2dmr_aliases_t **out)
+static int aliases_build(const adn_bridge_aliases_cfg_t *cfg, adn_bridge_aliases_t **out)
 {
-    ysf2dmr_aliases_t *a;
+    adn_bridge_aliases_t *a;
     char expect[BLAKE2B_HEX_LEN + 1];
     char path[512];
     int sub_rc;
 
-    a = (ysf2dmr_aliases_t *)calloc(1, sizeof(*a));
+    a = (adn_bridge_aliases_t *)calloc(1, sizeof(*a));
     if (!a)
         return -1;
 
@@ -1039,7 +1039,7 @@ static int aliases_build(const ysf2dmr_aliases_cfg_t *cfg, ysf2dmr_aliases_t **o
             if (sub_rc < 0) {
                 LOG_WARNING("aliases: subscriber file ignored (corrupt or checksum failed); "
                             "aborting in-memory rebuild\n");
-                ysf2dmr_aliases_free(a);
+                adn_bridge_aliases_free(a);
                 return -1;
             }
         }
@@ -1062,7 +1062,7 @@ static int aliases_build(const ysf2dmr_aliases_cfg_t *cfg, ysf2dmr_aliases_t **o
     return 0;
 }
 
-int ysf2dmr_aliases_load(const ysf2dmr_aliases_cfg_t *cfg, ysf2dmr_aliases_t **out)
+int adn_bridge_aliases_load(const adn_bridge_aliases_cfg_t *cfg, adn_bridge_aliases_t **out)
 {
     int fetched;
     char path[512];
@@ -1097,8 +1097,8 @@ int ysf2dmr_aliases_load(const ysf2dmr_aliases_cfg_t *cfg, ysf2dmr_aliases_t **o
     return 0;
 }
 
-static int aliases_needs_download(const ysf2dmr_aliases_cfg_t *cfg,
-                                  const ysf2dmr_aliases_t *a)
+static int aliases_needs_download(const adn_bridge_aliases_cfg_t *cfg,
+                                  const adn_bridge_aliases_t *a)
 {
     char path[512];
     char expect[BLAKE2B_HEX_LEN + 1];
@@ -1124,12 +1124,12 @@ static int aliases_needs_download(const ysf2dmr_aliases_cfg_t *cfg,
     return 0;
 }
 
-int ysf2dmr_aliases_maybe_refresh(const ysf2dmr_aliases_cfg_t *cfg,
-                                  ysf2dmr_aliases_t **aliases)
+int adn_bridge_aliases_maybe_refresh(const adn_bridge_aliases_cfg_t *cfg,
+                                  adn_bridge_aliases_t **aliases)
 {
-    ysf2dmr_aliases_t *a;
-    ysf2dmr_aliases_t *neu = NULL;
-    ysf2dmr_aliases_t *old;
+    adn_bridge_aliases_t *a;
+    adn_bridge_aliases_t *neu = NULL;
+    adn_bridge_aliases_t *old;
     size_t prev_count;
     time_t now;
     int did_download = 0;
@@ -1195,7 +1195,7 @@ int ysf2dmr_aliases_maybe_refresh(const ysf2dmr_aliases_cfg_t *cfg,
         LOG_WARNING("aliases: in-memory table NOT updated "
                     "(rebuild produced 0 entries); keeping previous table (%zu entries)\n",
                     prev_count);
-        ysf2dmr_aliases_free(neu);
+        adn_bridge_aliases_free(neu);
         return -1;
     }
 
@@ -1212,14 +1212,14 @@ int ysf2dmr_aliases_maybe_refresh(const ysf2dmr_aliases_cfg_t *cfg,
 
     old = *aliases;
     *aliases = neu;
-    ysf2dmr_aliases_free(old);
+    adn_bridge_aliases_free(old);
     LOG_INFO("aliases: in-memory table UPDATED (%zu -> %zu entries)%s\n",
              prev_count, neu->count,
              did_download ? " after download" : " from newer on-disk file");
     return 1;
 }
 
-void ysf2dmr_aliases_free(ysf2dmr_aliases_t *a)
+void adn_bridge_aliases_free(adn_bridge_aliases_t *a)
 {
     if (!a)
         return;
@@ -1228,7 +1228,7 @@ void ysf2dmr_aliases_free(ysf2dmr_aliases_t *a)
     free(a);
 }
 
-int ysf2dmr_alias_lookup_id(const ysf2dmr_aliases_t *aliases, const char *callsign)
+int adn_bridge_alias_lookup_id(const adn_bridge_aliases_t *aliases, const char *callsign)
 {
     char key[16];
     unsigned h, mask;
@@ -1251,7 +1251,7 @@ int ysf2dmr_alias_lookup_id(const ysf2dmr_aliases_t *aliases, const char *callsi
     return 0;
 }
 
-int ysf2dmr_alias_lookup_callsign(const ysf2dmr_aliases_t *aliases, int dmrid, char out[10])
+int adn_bridge_alias_lookup_callsign(const adn_bridge_aliases_t *aliases, int dmrid, char out[10])
 {
     unsigned h, mask;
     size_t probes;

@@ -36,7 +36,7 @@
 #define CONNECT_PTT_MS 500
 #define DMR_CLEAR_DYNAMIC_TG 4000
 
-static int bridge_tx_tg(const ysf2dmr_bridge_t *b)
+static int bridge_tx_tg(const adn_bridge_t *b)
 {
     if (b->connect_ptt_active && b->connect_ptt_tg > 0)
         return b->connect_ptt_tg;
@@ -138,7 +138,7 @@ static long ms_since(const struct timespec *since)
          + (now.tv_nsec - since->tv_nsec) / 1000000L;
 }
 
-static void bridge_send_dmrd(ysf2dmr_bridge_t *b, uint8_t frame_type, const uint8_t *voice33);
+static void bridge_send_dmrd(adn_bridge_t *b, uint8_t frame_type, const uint8_t *voice33);
 static uint32_t new_stream_id(void);
 
 static void stamp_now(struct timespec *ts)
@@ -319,18 +319,18 @@ static void format_ysf_callsign10(char out[10], const char *src)
     }
 }
 
-static int bridge_find_ysf_dmrid(ysf2dmr_bridge_t *b, const char base_cs[16])
+static int bridge_find_ysf_dmrid(adn_bridge_t *b, const char base_cs[16])
 {
     int id;
 
-    id = ysf2dmr_alias_lookup_id(b->aliases, base_cs);
+    id = adn_bridge_alias_lookup_id(b->aliases, base_cs);
     if (id > 0) {
         return id;
     }
     return 0;
 }
 
-static int bridge_assign_ysf_talker(ysf2dmr_bridge_t *b, const char *src)
+static int bridge_assign_ysf_talker(adn_bridge_t *b, const char *src)
 {
     char base[16];
     char talker[10];
@@ -370,7 +370,7 @@ static void radio_id_to_dch5(uint8_t out[5])
     memset(out, '*', 5);
 }
 
-static int bridge_wire_src_fallback(ysf2dmr_bridge_t *b, const uint8_t *pkt)
+static int bridge_wire_src_fallback(adn_bridge_t *b, const uint8_t *pkt)
 {
     char wire[11];
 
@@ -378,7 +378,7 @@ static int bridge_wire_src_fallback(ysf2dmr_bridge_t *b, const uint8_t *pkt)
     return bridge_assign_ysf_talker(b, wire);
 }
 
-static int bridge_resolve_ysf_header(ysf2dmr_bridge_t *b, const uint8_t *pkt)
+static int bridge_resolve_ysf_header(adn_bridge_t *b, const uint8_t *pkt)
 {
     uint8_t rf[120];
     uint8_t scratch[120];
@@ -412,32 +412,32 @@ static int bridge_resolve_ysf_header(ysf2dmr_bridge_t *b, const uint8_t *pkt)
     return 0;
 }
 
-static int bridge_ysf_talker_ready(const ysf2dmr_bridge_t *b)
+static int bridge_ysf_talker_ready(const adn_bridge_t *b)
 {
     return b->ysf_rf_id > 0 || b->dmr.dmrid > 0;
 }
 
-static int bridge_lookup_dmr_callsign(ysf2dmr_bridge_t *b, int rf, char out[10])
+static int bridge_lookup_dmr_callsign(adn_bridge_t *b, int rf, char out[10])
 {
     int i;
 
     if (!b->aliases || rf <= 0)
         return 0;
-    if (ysf2dmr_alias_lookup_callsign(b->aliases, rf, out))
+    if (adn_bridge_alias_lookup_callsign(b->aliases, rf, out))
         return 1;
-    if (rf > 9999999 && ysf2dmr_alias_lookup_callsign(b->aliases, rf / 100, out))
+    if (rf > 9999999 && adn_bridge_alias_lookup_callsign(b->aliases, rf / 100, out))
         return 1;
     /* 24-bit DMRD may carry id/100 (rf24); try to recover 7-digit subscriber ids. */
     if (rf >= 10000 && rf <= 99999) {
         for (i = 0; i < 100; i++) {
-            if (ysf2dmr_alias_lookup_callsign(b->aliases, rf * 100 + i, out))
+            if (adn_bridge_alias_lookup_callsign(b->aliases, rf * 100 + i, out))
                 return 1;
         }
     }
     return 0;
 }
 
-static void bridge_resolve_dmr_to_ysf_identity(ysf2dmr_bridge_t *b, int rf, int dst)
+static void bridge_resolve_dmr_to_ysf_identity(adn_bridge_t *b, int rf, int dst)
 {
     char prev[10];
 
@@ -464,7 +464,7 @@ static void bridge_resolve_dmr_to_ysf_identity(ysf2dmr_bridge_t *b, int rf, int 
     }
 }
 
-static void bridge_set_dmr_rx_identity(ysf2dmr_bridge_t *b, const uint8_t *pkt)
+static void bridge_set_dmr_rx_identity(adn_bridge_t *b, const uint8_t *pkt)
 {
     int rf = (pkt[5] << 16) | (pkt[6] << 8) | pkt[7];
     int dst = (pkt[8] << 16) | (pkt[9] << 8) | pkt[10];
@@ -472,7 +472,7 @@ static void bridge_set_dmr_rx_identity(ysf2dmr_bridge_t *b, const uint8_t *pkt)
     bridge_resolve_dmr_to_ysf_identity(b, rf, dst);
 }
 
-void bridge_on_dmra(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
+void bridge_on_dmra(adn_bridge_t *b, const uint8_t *pkt, int len)
 {
     int rf, block_id;
     uint8_t payload7[7];
@@ -496,7 +496,7 @@ void bridge_on_dmra(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
     }
 }
 
-static void bridge_reset_call(ysf2dmr_bridge_t *b)
+static void bridge_reset_call(adn_bridge_t *b)
 {
     b->call_active = 0;
     b->dmr_voice_frames = 0;
@@ -512,8 +512,8 @@ static void bridge_reset_call(ysf2dmr_bridge_t *b)
     modeconv_reset();
 }
 
-void bridge_init(ysf2dmr_bridge_t *b, const char *dmr_options,
-                 ysf2dmr_aliases_t *aliases, int default_ysf_dmrid,
+void bridge_init(adn_bridge_t *b, const char *dmr_options,
+                 adn_bridge_aliases_t *aliases, int default_ysf_dmrid,
                  int clear_dynamic_tg)
 {
     memset(b, 0, sizeof(*b));
@@ -529,7 +529,7 @@ void bridge_init(ysf2dmr_bridge_t *b, const char *dmr_options,
     stamp_now(&b->last_ysf_tx);
 }
 
-static void bridge_connect_ptt_begin_stream(ysf2dmr_bridge_t *b, int tg, int clearing)
+static void bridge_connect_ptt_begin_stream(adn_bridge_t *b, int tg, int clearing)
 {
     b->connect_ptt_active = 1;
     b->connect_ptt_phase = 0;
@@ -546,7 +546,7 @@ static void bridge_connect_ptt_begin_stream(ysf2dmr_bridge_t *b, int tg, int cle
                  clearing ? " [clear dynamic]" : "");
 }
 
-static void bridge_connect_ptt_finish(ysf2dmr_bridge_t *b)
+static void bridge_connect_ptt_finish(adn_bridge_t *b)
 {
     uint8_t slot_bit = b->dmr_slot_bit;
     int ended_tg = b->connect_ptt_tg > 0 ? b->connect_ptt_tg : b->dmr.tg;
@@ -575,7 +575,7 @@ static void bridge_connect_ptt_finish(ysf2dmr_bridge_t *b)
     b->connect_ptt_clearing = 0;
 }
 
-void bridge_abort_connect_ptt(ysf2dmr_bridge_t *b)
+void bridge_abort_connect_ptt(adn_bridge_t *b)
 {
     if (!b->connect_ptt_active)
         return;
@@ -592,7 +592,7 @@ void bridge_abort_connect_ptt(ysf2dmr_bridge_t *b)
     }
 }
 
-static void bridge_start_connect_ptt(ysf2dmr_bridge_t *b)
+static void bridge_start_connect_ptt(adn_bridge_t *b)
 {
     if (b->call_active || b->connect_ptt_active)
         return;
@@ -605,7 +605,7 @@ static void bridge_start_connect_ptt(ysf2dmr_bridge_t *b)
         bridge_connect_ptt_begin_stream(b, b->dmr.tg, 0);
 }
 
-static void bridge_emit_connect_ptt(ysf2dmr_bridge_t *b)
+static void bridge_emit_connect_ptt(adn_bridge_t *b)
 {
     uint8_t slot_bit = b->dmr_slot_bit;
     int i;
@@ -636,7 +636,7 @@ static void bridge_emit_connect_ptt(ysf2dmr_bridge_t *b)
     }
 }
 
-static void bridge_poll_connect_ptt(ysf2dmr_bridge_t *b)
+static void bridge_poll_connect_ptt(adn_bridge_t *b)
 {
     int connected = peer_dmr_connected(&b->dmr);
 
@@ -697,7 +697,7 @@ static uint8_t dmrd_b15_dtype(const uint8_t *pkt)
     return dtype;
 }
 
-static void bridge_begin_dmr_to_ysf(ysf2dmr_bridge_t *b, const uint8_t *pkt)
+static void bridge_begin_dmr_to_ysf(adn_bridge_t *b, const uint8_t *pkt)
 {
     b->call_active = 1;
     b->dmr_stream_id = *(const uint32_t *)(pkt + 16);
@@ -724,7 +724,7 @@ static const char *dmrd_class_label(const uint8_t *pkt, int len)
     return "OTHER";
 }
 
-static void bridge_send_dmrd(ysf2dmr_bridge_t *b, uint8_t frame_type, const uint8_t *voice33)
+static void bridge_send_dmrd(adn_bridge_t *b, uint8_t frame_type, const uint8_t *voice33)
 {
     uint8_t pkt[55];
     uint8_t rf[3];
@@ -810,7 +810,7 @@ static void bridge_send_dmrd(ysf2dmr_bridge_t *b, uint8_t frame_type, const uint
     }
 }
 
-static void bridge_emit_dmr_from_conv(ysf2dmr_bridge_t *b)
+static void bridge_emit_dmr_from_conv(adn_bridge_t *b)
 {
     uint8_t voice[33];
     unsigned int tag = modeconv_get_dmr(voice);
@@ -853,7 +853,7 @@ static void bridge_emit_dmr_from_conv(ysf2dmr_bridge_t *b)
     }
 }
 
-static void bridge_fill_ysf_csd(ysf2dmr_bridge_t *b, uint8_t csd1[20], uint8_t csd2[20])
+static void bridge_fill_ysf_csd(adn_bridge_t *b, uint8_t csd1[20], uint8_t csd2[20])
 {
     uint8_t rid[5];
 
@@ -864,7 +864,7 @@ static void bridge_fill_ysf_csd(ysf2dmr_bridge_t *b, uint8_t csd1[20], uint8_t c
     memcpy(csd1 + 10, b->net_src, 10);
 }
 
-static void bridge_apply_ysf_dch_slot(uint8_t *payload, uint8_t fn, ysf2dmr_bridge_t *b)
+static void bridge_apply_ysf_dch_slot(uint8_t *payload, uint8_t fn, adn_bridge_t *b)
 {
     uint8_t dch[10];
     uint8_t rid[5];
@@ -905,7 +905,7 @@ static void bridge_apply_ysf_dch_slot(uint8_t *payload, uint8_t fn, ysf2dmr_brid
 }
 
 static void bridge_fill_ysfd_headers(uint8_t *frame, const peer_ysf_t *ysf,
-                                     const ysf2dmr_bridge_t *b)
+                                     const adn_bridge_t *b)
 {
     memcpy(frame, "YSFD", 4);
     memcpy(frame + 4, ysf->callsign, 10);
@@ -914,7 +914,7 @@ static void bridge_fill_ysfd_headers(uint8_t *frame, const peer_ysf_t *ysf,
     frame[34] = 0;
 }
 
-static int bridge_send_ysfd(ysf2dmr_bridge_t *b, uint8_t fi, uint8_t ft, uint8_t cm,
+static int bridge_send_ysfd(adn_bridge_t *b, uint8_t fi, uint8_t ft, uint8_t cm,
                              uint8_t fich_fn, uint8_t net_cnt, const uint8_t *payload120,
                              const uint8_t csd1[20], const uint8_t csd2[20])
 {
@@ -959,7 +959,7 @@ static int bridge_send_ysfd(ysf2dmr_bridge_t *b, uint8_t fi, uint8_t ft, uint8_t
     return 1;
 }
 
-static int bridge_emit_ysf_from_conv(ysf2dmr_bridge_t *b)
+static int bridge_emit_ysf_from_conv(adn_bridge_t *b)
 {
     uint8_t payload[120];
     unsigned int tag;
@@ -1009,7 +1009,7 @@ static int bridge_emit_ysf_from_conv(ysf2dmr_bridge_t *b)
     return 0;
 }
 
-void bridge_on_dmrd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
+void bridge_on_dmrd(adn_bridge_t *b, const uint8_t *pkt, int len)
 {
     static int rx_log;
     int rf, dst;
@@ -1081,7 +1081,7 @@ void bridge_on_dmrd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
     }
 }
 
-void bridge_on_ysfd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
+void bridge_on_ysfd(adn_bridge_t *b, const uint8_t *pkt, int len)
 {
     uint8_t fi, fn, ft, cm, dt;
     char rpt[11], src[11];
@@ -1180,7 +1180,7 @@ void bridge_on_ysfd(ysf2dmr_bridge_t *b, const uint8_t *pkt, int len)
                 (unsigned)fi, (unsigned)ft, (unsigned)cm, (unsigned)dt);
 }
 
-void bridge_tick(ysf2dmr_bridge_t *b)
+void bridge_tick(adn_bridge_t *b)
 {
     static time_t last_stall;
 

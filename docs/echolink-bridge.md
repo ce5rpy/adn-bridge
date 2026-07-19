@@ -1,4 +1,4 @@
-# EchoLink bridge (ysf2dmrcon)
+# EchoLink bridge (adn-bridge)
 
 How to run **`echolink-dmr`** (EchoLink ↔ DMR) and **`echolink-ysf`** (EchoLink ↔ YSF).
 
@@ -17,15 +17,16 @@ YSF ↔ DMR (no EchoLink): [ysf-dmr-bridge.md](ysf-dmr-bridge.md).
 ## Quick start
 
 ```bash
+mkdir -p config
 # EchoLink <-> DMR
-cp ysf2dmrcon-echolink-dmr.example.ini ysf2dmrcon-echolink-dmr.ini
+cp examples/adn-bridge-echolink-dmr.example.ini config/adn-bridge-echolink-dmr.ini
 # edit: passwords, bind_addr (or proxy_*), DMR master, EchoLink host, vocoder
-./ysf2dmrcon -c ysf2dmrcon-echolink-dmr.ini
+./adn-bridge -c config/adn-bridge-echolink-dmr.ini
 
 # EchoLink <-> YSF
-cp ysf2dmrcon-echolink-ysf.example.ini ysf2dmrcon-echolink-ysf.ini
+cp examples/adn-bridge-echolink-ysf.example.ini config/adn-bridge-echolink-ysf.ini
 # edit: passwords, bind_addr (or proxy_*), YSF reflector/DGID, EchoLink host, vocoder
-./ysf2dmrcon -c ysf2dmrcon-echolink-ysf.ini
+./adn-bridge -c config/adn-bridge-echolink-ysf.ini
 ```
 
 Behind NAT: set `proxy_server` (and optional `proxy_port` / `proxy_password`) instead of opening UDP 5198/5199 — see [EchoLink Proxy](#echolink-proxy-behind-nat).
@@ -98,20 +99,20 @@ tg = 730170
 clear_dynamic_tg = 1
 ```
 
-**`echolink-ysf`:** fill `[ysf]` (`host`, `port`, `dgid`). `[dmr] host` / `password` are unused; keep `callsign` / `dmrid` for YSF identity fields. `clear_dynamic_tg` does not apply (no DMR peer).
+**`echolink-ysf`:** fill `[ysf]` (`host`, `port`, `dgid`). Omit `[dmr]` entirely (no DMR peer). YSF gateway callsign comes from `[echolink] callsign`.
 
 Subscriber aliases (`[aliases]`) map callsigns ↔ DMR IDs the same way as YSF↔DMR — see [ysf-dmr-bridge.md](ysf-dmr-bridge.md) and the README.
 
 ## Logs (program output in the terminal)
 
 Strings like `EL->DMR`, `RTP RX`, or `vocoder ENC` are **not INI keys**.
-They appear in the **log** that `ysf2dmrcon` prints while it runs.
+They appear in the **log** that `adn-bridge` prints while it runs.
 
 1. Open a terminal on the server.
 2. Start the bridge in the foreground (so you see the log immediately):
 
 ```bash
-./ysf2dmrcon -c ysf2dmrcon-echolink-dmr.ini
+./adn-bridge -c adn-bridge-echolink-dmr.ini
 ```
 
 3. Keep that window open — each event prints a line there.
@@ -181,7 +182,7 @@ Reverse path: in the same log look for `DMR->EL call start` or `YSF->EL call sta
 Filter while it runs:
 
 ```bash
-./ysf2dmrcon -c your.ini 2>&1 | grep -E 'linked|RTP|EL audio|EL->|YSF->EL|DMR->EL|vocoder|call start|call end'
+./adn-bridge -c your.ini 2>&1 | grep -E 'linked|RTP|EL audio|EL->|YSF->EL|DMR->EL|vocoder|call start|call end'
 ```
 
 ## Notes

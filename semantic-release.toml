@@ -1,4 +1,4 @@
-# python-semantic-release config for ysf2dmrcon (C project — not a Python package).
+# python-semantic-release config for adn-bridge (C project — not a Python package).
 # Baseline 0.0.1 so the first release on master (feat: in history) publishes 0.1.0.
 # CI: .github/workflows/release.yml (config_file = this file).
 
@@ -9,12 +9,13 @@ commit_message = "chore(release): {version}"
 # Canonical version for a C tree: plain VERSION file (+ stamps below).
 version_variables = [
   "VERSION:*:nf",
-  "ysf2dmrcon.c:YSF2DMR_VERSION",
+  "adn_bridge.c:ADN_BRIDGE_VERSION",
   "README.md:**Version",
   "README.es.md:**Versión",
 ]
 allow_zero_version = true
-major_on_zero = false
+# Allow BREAKING CHANGE / feat! on 0.x to publish 1.0.0 (default false → 0.y.0).
+major_on_zero = true
 
 [semantic_release.branches.master]
 match = "master"

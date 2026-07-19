@@ -25,8 +25,8 @@ typedef struct {
     peer_dmr_t dmr;
     peer_ysf_t ysf; /* used only in echolink-ysf mode */
     vocoder_t voc;
-    ysf2dmr_aliases_t *aliases;
-    int mode; /* YSF2DMR_MODE_ECHOLINK_DMR or _YSF */
+    adn_bridge_aliases_t *aliases;
+    int mode; /* ADN_BRIDGE_MODE_ECHOLINK_DMR or _YSF */
     int bridge_dmrid; /* INI [dmr] dmrid — fallback RF id / alias miss */
     int el_rf_id; /* EL→DMR talker RF id (alias of remote SDES talker) */
     uint32_t dmr_stream_id;    /* EL->DMR TX stream */
@@ -65,7 +65,7 @@ typedef struct {
 } bridge_el_t;
 
 void bridge_el_init(bridge_el_t *b, int mode, const char *dmr_options,
-                    ysf2dmr_aliases_t *aliases, int bridge_dmrid,
+                    adn_bridge_aliases_t *aliases, int bridge_dmrid,
                     float el_pcm_gain, int clear_dynamic_tg);
 void bridge_el_on_dmrd(bridge_el_t *b, const uint8_t *pkt, int len);
 void bridge_el_on_ysfd(bridge_el_t *b, const uint8_t *pkt, int len);

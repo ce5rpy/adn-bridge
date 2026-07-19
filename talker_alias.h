@@ -1,5 +1,5 @@
 /*
- * DMR Talker Alias (HBP DMRA) decode for ysf2dmrcon.
+ * DMR Talker Alias (HBP DMRA) decode for adn-bridge.
  *
  * Copyright (C) 2026  Rodrigo Pérez, CE5RPY <ce5rpy@qmd.cl>
  * This program is free software; you can redistribute it and/or modify

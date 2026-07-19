@@ -1,0 +1,29 @@
+# Instance template — one unit per INI: config/adn-bridge-<instance>.ini
+#
+# Example:
+#   sudo make install
+#   sudo cp examples/adn-bridge@.service /etc/systemd/system/
+#   # INI at /opt/adn-bridge/config/adn-bridge-redchile.ini
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now adn-bridge@redchile.service
+#
+# journalctl -u adn-bridge@redchile -f
+
+[Unit]
+Description=adn-bridge bridge (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=root
+Type=simple
+Restart=always
+RestartSec=3
+SyslogIdentifier=adn-bridge-%i
+WorkingDirectory=/opt/adn-bridge
+ExecStart=/opt/adn-bridge/adn-bridge -c /opt/adn-bridge/config/adn-bridge-%i.ini
+KillSignal=SIGINT
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

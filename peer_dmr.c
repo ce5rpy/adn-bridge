@@ -56,7 +56,7 @@ static void send_rptc(peer_dmr_t *p)
 {
     uint8_t out[302];
     char body[294];
-    const char *desc = p->description[0] ? p->description : "ysf2dmrcon";
+    const char *desc = p->description[0] ? p->description : "adn-bridge";
     /* Monitor Linked Systems shows LOCATION only (not DESCRIPTION). */
     const char *loc = p->location[0] ? p->location
                     : (p->description[0] ? p->description : "");
@@ -75,7 +75,7 @@ static void send_rptc(peer_dmr_t *p)
     body[89] = p->slots ? (uint8_t)p->slots : (uint8_t)'0';
     pad_copy(body + 90, 124, "");
     pad_copy(body + 214, 40, p->software_id[0] ? p->software_id : "MMDVMHost");
-    pad_copy(body + 254, 40, p->package_id[0] ? p->package_id : "ysf2dmrcon");
+    pad_copy(body + 254, 40, p->package_id[0] ? p->package_id : "adn-bridge");
 
     memcpy(out, "RPTC", 4);
     out[4] = (get_dmrid(1, 0) >> 24) & 0xff;
@@ -141,7 +141,7 @@ int peer_dmr_open(peer_dmr_t *p, const char *host, int port, const char *cs,
         strncpy(p->description, description, sizeof(p->description) - 1);
     if (location && location[0])
         strncpy(p->location, location, sizeof(p->location) - 1);
-    strncpy(p->package_id, "ysf2dmrcon", sizeof(p->package_id) - 1);
+    strncpy(p->package_id, "adn-bridge", sizeof(p->package_id) - 1);
     strncpy(p->software_id, "MMDVMHost", sizeof(p->software_id) - 1);
     memset(p->callsign, ' ', 10);
     {
