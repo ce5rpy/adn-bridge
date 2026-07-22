@@ -21,14 +21,17 @@
 #include "peer_ysf.h"
 #include "vocoder.h"
 
+#define BRIDGE_EL_LINK_DMR 0
+#define BRIDGE_EL_LINK_YSF  1
+
 typedef struct {
     peer_echolink_t el;
     peer_dmr_t dmr;
-    peer_ysf_t ysf; /* used only in echolink-ysf mode */
+    peer_ysf_t ysf; /* used only in EchoLink+YSF layout */
     vocoder_t voc;
     adn_bridge_aliases_t *aliases;
-    int mode; /* ADN_BRIDGE_MODE_ECHOLINK_DMR or _YSF */
-    int bridge_dmrid; /* INI [dmr] dmrid — fallback RF id / alias miss */
+    int link_kind; /* BRIDGE_EL_LINK_DMR or BRIDGE_EL_LINK_YSF */
+    int bridge_dmrid; /* [peer.*] dmr dmrid — fallback RF id / alias miss */
     int el_rf_id; /* EL→DMR talker RF id (alias of remote SDES talker) */
     uint32_t dmr_stream_id;    /* EL->DMR TX stream */
     uint32_t dmr_rx_stream_id; /* DMR->EL RX stream (dedupe VHEAD) */
@@ -46,7 +49,7 @@ typedef struct {
     char net_dst[10];
     int16_t pcm_el_acc[160];
     int pcm_el_acc_n;
-    float el_pcm_gain; /* [echolink] gain — EL→DMR/YSF PCM scale (1.0 = unity) */
+    float el_pcm_gain; /* [peer.*] echolink gain — EL→DMR/YSF PCM scale (1.0 = unity) */
     struct timespec last_dmr_tx;
     struct timespec last_dmr_rx; /* last DMRD/YSFD while peer->EL (call_active==2) */
     struct timespec last_ysf_tx;
@@ -71,7 +74,7 @@ typedef struct {
 
 void bridge_el_bind_router(bridge_el_t *b, media_router_t *router,
                            int el_id, int dmr_id, int ysf_id);
-void bridge_el_init(bridge_el_t *b, int mode, const char *dmr_options,
+void bridge_el_init(bridge_el_t *b, int link_kind, const char *dmr_options,
                     adn_bridge_aliases_t *aliases, int bridge_dmrid,
                     float el_pcm_gain, int clear_dynamic_tg);
 void bridge_el_on_dmrd(bridge_el_t *b, const uint8_t *pkt, int len);

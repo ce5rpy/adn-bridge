@@ -1,19 +1,8 @@
 /*
- * INI configuration loader for adn-bridge.
+ * INI configuration loader for adn-bridge ([peer.*] bus model).
  *
  * Copyright (C) 2026  Rodrigo Pérez, CE5RPY <ce5rpy@qmd.cl>
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #include "config.h"
@@ -30,30 +19,84 @@
 void adn_bridge_config_init(adn_bridge_config_t *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
-    cfg->mode = ADN_BRIDGE_MODE_YSF_DMR;
     cfg->log_level = LOG_LEVEL_INFO;
-    cfg->dmr_log_level = -1;
-    cfg->ysf_log_level = -1;
-    cfg->default_ysf_dmrid = 0;
-    cfg->dmr_clear_dynamic_tg = 0;
     adn_bridge_aliases_cfg_init(&cfg->aliases);
-    strncpy(cfg->vocoder.host, "127.0.0.1", sizeof(cfg->vocoder.host) - 1);
-    cfg->vocoder.port = 2460;
-    cfg->vocoder.log_level = -1;
-    /* tlb defaults: LoginInterval=360, StationListInterval=600 */
-    cfg->echolink.login_interval = 360;
-    cfg->echolink.station_list_interval = 600;
-    cfg->echolink.gain = 1.0f;
-    cfg->echolink.proxy_port = 0; /* set to 8100 when proxy_server is used */
-    cfg->echolink.log_level = -1;
 }
 
-const char *adn_bridge_mode_name(int mode)
+int adn_bridge_config_enabled_peer_count(const adn_bridge_config_t *cfg)
 {
-    switch (mode) {
-    case ADN_BRIDGE_MODE_ECHOLINK_DMR: return "echolink-dmr";
-    case ADN_BRIDGE_MODE_ECHOLINK_YSF: return "echolink-ysf";
-    default:                        return "ysf-dmr";
+    int i, n = 0;
+
+    if (!cfg)
+        return 0;
+    for (i = 0; i < cfg->peer_count; i++) {
+        if (cfg->peers[i].enabled)
+            n++;
+    }
+    return n;
+}
+
+int adn_bridge_config_count_peers(const adn_bridge_config_t *cfg,
+                                  adn_bridge_peer_type_t type, int enabled_only)
+{
+    int i, n = 0;
+
+    if (!cfg)
+        return 0;
+    for (i = 0; i < cfg->peer_count; i++) {
+        if (!cfg->peers[i].type_set || cfg->peers[i].type != type)
+            continue;
+        if (enabled_only && !cfg->peers[i].enabled)
+            continue;
+        n++;
+    }
+    return n;
+}
+
+const adn_bridge_peer_t *adn_bridge_config_find_peer(const adn_bridge_config_t *cfg,
+                                                       adn_bridge_peer_type_t type)
+{
+    int i;
+
+    if (!cfg)
+        return NULL;
+    for (i = 0; i < cfg->peer_count; i++) {
+        if (cfg->peers[i].enabled && cfg->peers[i].type_set
+            && cfg->peers[i].type == type)
+            return &cfg->peers[i];
+    }
+    return NULL;
+}
+
+adn_bridge_layout_t adn_bridge_config_layout(const adn_bridge_config_t *cfg)
+{
+    int n_el, n_dmr, n_ysf;
+
+    if (!cfg)
+        return ADN_BRIDGE_LAYOUT_UNKNOWN;
+    n_el = adn_bridge_config_count_peers(cfg, ADN_BRIDGE_PEER_TYPE_ECHOLINK, 1);
+    n_dmr = adn_bridge_config_count_peers(cfg, ADN_BRIDGE_PEER_TYPE_DMR, 1);
+    n_ysf = adn_bridge_config_count_peers(cfg, ADN_BRIDGE_PEER_TYPE_YSF, 1);
+    if (n_dmr && n_ysf && !n_el)
+        return ADN_BRIDGE_LAYOUT_YSF_DMR;
+    if (n_el && n_dmr && !n_ysf)
+        return ADN_BRIDGE_LAYOUT_EL_DMR;
+    if (n_el && n_ysf && !n_dmr)
+        return ADN_BRIDGE_LAYOUT_EL_YSF;
+    return ADN_BRIDGE_LAYOUT_UNKNOWN;
+}
+
+const char *adn_bridge_layout_name(adn_bridge_layout_t layout)
+{
+    switch (layout) {
+    case ADN_BRIDGE_LAYOUT_YSF_DMR:
+        return "YSF <-> DMR";
+    case ADN_BRIDGE_LAYOUT_EL_DMR:
+        return "EchoLink <-> DMR";
+    case ADN_BRIDGE_LAYOUT_EL_YSF:
+        return "EchoLink <-> YSF";
+    default:
+        return "unknown";
     }
 }
 
@@ -94,10 +137,15 @@ static char *trim(char *s)
 
 static void set_str(char *dst, size_t dstlen, const char *val)
 {
-    if (!val || !*val)
+    size_t n;
+
+    if (!val || !*val || !dst || dstlen == 0)
         return;
-    strncpy(dst, val, dstlen - 1);
-    dst[dstlen - 1] = '\0';
+    n = strlen(val);
+    if (n >= dstlen)
+        n = dstlen - 1;
+    memcpy(dst, val, n);
+    dst[n] = '\0';
 }
 
 static void set_int(int *dst, const char *val)
@@ -107,7 +155,6 @@ static void set_int(int *dst, const char *val)
     *dst = atoi(val);
 }
 
-/* 0/1, true/false, yes/no (case-insensitive). */
 static void set_bool01(int *dst, const char *val)
 {
     char buf[16];
@@ -142,19 +189,7 @@ static void set_float(float *dst, const char *val)
     *dst = v;
 }
 
-static void apply_identity_key(adn_bridge_config_t *cfg, const char *key, const char *val)
-{
-    if (strcmp(key, "callsign") == 0)
-        set_str(cfg->callsign, sizeof(cfg->callsign), val);
-    else if (strcmp(key, "dmrid") == 0)
-        set_int(&cfg->dmrid, val);
-    else if (strcmp(key, "description") == 0)
-        set_str(cfg->description, sizeof(cfg->description), val);
-    else if (strcmp(key, "location") == 0)
-        set_str(cfg->location, sizeof(cfg->location), val);
-}
-
-static void parse_directory_servers(adn_bridge_echolink_cfg_t *el, const char *val)
+static void parse_directory_servers(adn_bridge_peer_el_t *el, const char *val)
 {
     char buf[512];
     char *tok, *save = NULL;
@@ -170,17 +205,6 @@ static void parse_directory_servers(adn_bridge_echolink_cfg_t *el, const char *v
         n++;
     }
     el->directory_server_count = n;
-}
-
-static int parse_mode(const char *val)
-{
-    if (!val || !*val)
-        return ADN_BRIDGE_MODE_YSF_DMR;
-    if (strcmp(val, "echolink-dmr") == 0 || strcmp(val, "el-dmr") == 0)
-        return ADN_BRIDGE_MODE_ECHOLINK_DMR;
-    if (strcmp(val, "echolink-ysf") == 0 || strcmp(val, "el-ysf") == 0)
-        return ADN_BRIDGE_MODE_ECHOLINK_YSF;
-    return ADN_BRIDGE_MODE_YSF_DMR;
 }
 
 static int parse_peer_type(const char *val)
@@ -210,133 +234,182 @@ static adn_bridge_peer_t *find_or_add_peer(adn_bridge_config_t *cfg, const char 
     memset(&cfg->peers[i], 0, sizeof(cfg->peers[i]));
     set_str(cfg->peers[i].name, sizeof(cfg->peers[i].name), peer_name);
     cfg->peers[i].enabled = 1;
+    cfg->peers[i].u.dmr.log_level = -1;
+    cfg->peers[i].u.ysf.log_level = -1;
+    cfg->peers[i].u.el.log_level = -1;
+    cfg->peers[i].u.el.vocoder_log_level = -1;
+    cfg->peers[i].u.el.vocoder_port = 2460;
+    cfg->peers[i].u.el.login_interval = 360;
+    cfg->peers[i].u.el.station_list_interval = 600;
+    cfg->peers[i].u.el.gain = 1.0f;
     return &cfg->peers[i];
 }
 
-static void apply_peer_key(adn_bridge_config_t *cfg, const char *peer_name,
-                           const char *key, const char *val)
+static int is_vocoder_peer_key(const char *key)
+{
+    return strcmp(key, "vocoder_host") == 0 || strcmp(key, "vocoder_port") == 0
+           || strcmp(key, "vocoder_log_level") == 0 || strcmp(key, "vocoder_log") == 0
+           || strcmp(key, "vocoder") == 0;
+}
+
+static void apply_peer_dmr_key(adn_bridge_peer_dmr_t *d, const char *key, const char *val)
+{
+    if (strcmp(key, "host") == 0)
+        set_str(d->host, sizeof(d->host), val);
+    else if (strcmp(key, "port") == 0)
+        set_int(&d->port, val);
+    else if (strcmp(key, "callsign") == 0)
+        set_str(d->callsign, sizeof(d->callsign), val);
+    else if (strcmp(key, "dmrid") == 0)
+        set_int(&d->dmrid, val);
+    else if (strcmp(key, "description") == 0)
+        set_str(d->description, sizeof(d->description), val);
+    else if (strcmp(key, "location") == 0)
+        set_str(d->location, sizeof(d->location), val);
+    else if (strcmp(key, "options") == 0)
+        set_str(d->options, sizeof(d->options), val);
+    else if (strcmp(key, "password") == 0 || strcmp(key, "passphrase") == 0)
+        set_str(d->password, sizeof(d->password), val);
+    else if (strcmp(key, "tg") == 0)
+        set_int(&d->tg, val);
+    else if (strcmp(key, "clear_dynamic_tg") == 0)
+        set_bool01(&d->clear_dynamic_tg, val);
+    else if (strcmp(key, "log_level") == 0 || strcmp(key, "log") == 0)
+        d->log_level = (int)log_level_from_string(val);
+}
+
+static void apply_peer_ysf_key(adn_bridge_peer_ysf_t *y, const char *key, const char *val)
+{
+    if (strcmp(key, "host") == 0)
+        set_str(y->host, sizeof(y->host), val);
+    else if (strcmp(key, "port") == 0)
+        set_int(&y->port, val);
+    else if (strcmp(key, "callsign") == 0)
+        set_str(y->callsign, sizeof(y->callsign), val);
+    else if (strcmp(key, "dgid") == 0)
+        set_int(&y->dgid, val);
+    else if (strcmp(key, "log_level") == 0 || strcmp(key, "log") == 0)
+        y->log_level = (int)log_level_from_string(val);
+}
+
+static void apply_peer_el_key(adn_bridge_peer_el_t *el, const char *key, const char *val)
+{
+    if (strcmp(key, "callsign") == 0)
+        set_str(el->callsign, sizeof(el->callsign), val);
+    else if (strcmp(key, "password") == 0)
+        set_str(el->password, sizeof(el->password), val);
+    else if (strcmp(key, "bind_addr") == 0)
+        set_str(el->bind_addr, sizeof(el->bind_addr), val);
+    else if (strcmp(key, "host") == 0)
+        set_str(el->host, sizeof(el->host), val);
+    else if (strcmp(key, "qth") == 0)
+        set_str(el->qth, sizeof(el->qth), val);
+    else if (strcmp(key, "email") == 0)
+        set_str(el->email, sizeof(el->email), val);
+    else if (strcmp(key, "directory_servers") == 0)
+        parse_directory_servers(el, val);
+    else if (strcmp(key, "login_interval") == 0 || strcmp(key, "LoginInterval") == 0)
+        set_int(&el->login_interval, val);
+    else if (strcmp(key, "station_list_interval") == 0
+             || strcmp(key, "StationListInterval") == 0)
+        set_int(&el->station_list_interval, val);
+    else if (strcmp(key, "gain") == 0)
+        set_float(&el->gain, val);
+    else if (strcmp(key, "proxy_server") == 0 || strcmp(key, "PROXY_SERVER") == 0)
+        set_str(el->proxy_server, sizeof(el->proxy_server), val);
+    else if (strcmp(key, "proxy_port") == 0 || strcmp(key, "PROXY_PORT") == 0)
+        set_int(&el->proxy_port, val);
+    else if (strcmp(key, "proxy_password") == 0 || strcmp(key, "PROXY_PASSWORD") == 0)
+        set_str(el->proxy_password, sizeof(el->proxy_password), val);
+    else if (strcmp(key, "vocoder_host") == 0)
+        set_str(el->vocoder_host, sizeof(el->vocoder_host), val);
+    else if (strcmp(key, "vocoder_port") == 0)
+        set_int(&el->vocoder_port, val);
+    else if (strcmp(key, "vocoder_log_level") == 0 || strcmp(key, "vocoder_log") == 0)
+        el->vocoder_log_level = (int)log_level_from_string(val);
+    else if (strcmp(key, "log_level") == 0 || strcmp(key, "log") == 0)
+        el->log_level = (int)log_level_from_string(val);
+}
+
+static int apply_peer_key(adn_bridge_config_t *cfg, const char *peer_name,
+                          const char *key, const char *val, const char *path,
+                          int lineno, char *err, size_t errlen)
 {
     adn_bridge_peer_t *p = find_or_add_peer(cfg, peer_name);
     int t;
 
     if (!p)
-        return;
+        return 0;
     if (strcmp(key, "type") == 0) {
         t = parse_peer_type(val);
-        if (t >= 0)
+        if (t >= 0) {
             p->type = (adn_bridge_peer_type_t)t;
-    } else if (strcmp(key, "enabled") == 0) {
-        set_bool01(&p->enabled, val);
+            p->type_set = 1;
+        }
+        return 0;
     }
+    if (strcmp(key, "enabled") == 0) {
+        set_bool01(&p->enabled, val);
+        return 0;
+    }
+    if (is_vocoder_peer_key(key)) {
+        if (!p->type_set) {
+            snprintf(err, errlen, "%s:%d: [peer.%s] set type before %s",
+                     path, lineno, peer_name, key);
+            return -1;
+        }
+        if (p->type != ADN_BRIDGE_PEER_TYPE_ECHOLINK) {
+            snprintf(err, errlen,
+                     "%s:%d: [peer.%s] %s only allowed on echolink peers",
+                     path, lineno, peer_name, key);
+            return -1;
+        }
+        if (strcmp(key, "vocoder") == 0) {
+            snprintf(err, errlen,
+                     "%s:%d: [peer.%s] use vocoder_host/vocoder_port (not vocoder=)",
+                     path, lineno, peer_name);
+            return -1;
+        }
+        apply_peer_el_key(&p->u.el, key, val);
+        return 0;
+    }
+    if (!p->type_set)
+        return 0;
+    if (p->type == ADN_BRIDGE_PEER_TYPE_DMR)
+        apply_peer_dmr_key(&p->u.dmr, key, val);
+    else if (p->type == ADN_BRIDGE_PEER_TYPE_YSF)
+        apply_peer_ysf_key(&p->u.ysf, key, val);
+    else if (p->type == ADN_BRIDGE_PEER_TYPE_ECHOLINK)
+        apply_peer_el_key(&p->u.el, key, val);
+    return 0;
 }
 
-static void apply_key(adn_bridge_config_t *cfg, const char *section, const char *key, const char *val)
+static int apply_key(adn_bridge_config_t *cfg, const char *section, const char *key,
+                     const char *val, const char *path, int lineno, char *err,
+                     size_t errlen)
 {
     if (!section || !key)
-        return;
+        return 0;
 
     if (strncmp(section, "peer.", 5) == 0) {
-        apply_peer_key(cfg, section + 5, key, val);
-        return;
+        return apply_peer_key(cfg, section + 5, key, val, path, lineno, err,
+                              errlen);
     }
-
-    if (strcmp(section, "bridge") == 0) {
-        if (strcmp(key, "mode") == 0)
-            cfg->mode = parse_mode(val);
-        return;
-    }
-    if (strcmp(section, "ysf") == 0) {
-        if (strcmp(key, "host") == 0)
-            set_str(cfg->ysf_host, sizeof(cfg->ysf_host), val);
-        else if (strcmp(key, "port") == 0)
-            set_int(&cfg->ysf_port, val);
-        else if (strcmp(key, "dgid") == 0)
-            set_int(&cfg->dgid, val);
-        else if (strcmp(key, "log_level") == 0 || strcmp(key, "log") == 0)
-            cfg->ysf_log_level = (int)log_level_from_string(val);
-        return;
-    }
-    if (strcmp(section, "dmr") == 0) {
-        if (strcmp(key, "callsign") == 0 || strcmp(key, "dmrid") == 0
-            || strcmp(key, "description") == 0 || strcmp(key, "location") == 0) {
-            apply_identity_key(cfg, key, val);
-            return;
-        }
-        if (strcmp(key, "host") == 0)
-            set_str(cfg->dmr_host, sizeof(cfg->dmr_host), val);
-        else if (strcmp(key, "port") == 0)
-            set_int(&cfg->dmr_port, val);
-        else if (strcmp(key, "options") == 0)
-            set_str(cfg->dmr_options, sizeof(cfg->dmr_options), val);
-        else if (strcmp(key, "tg") == 0)
-            set_int(&cfg->dmr_tg, val);
-        else if (strcmp(key, "clear_dynamic_tg") == 0)
-            set_bool01(&cfg->dmr_clear_dynamic_tg, val);
-        else if (strcmp(key, "password") == 0 || strcmp(key, "passphrase") == 0)
-            set_str(cfg->dmr_password, sizeof(cfg->dmr_password), val);
-        else if (strcmp(key, "default_ysf_dmrid") == 0)
-            set_int(&cfg->default_ysf_dmrid, val);
-        else if (strcmp(key, "log_level") == 0 || strcmp(key, "log") == 0)
-            cfg->dmr_log_level = (int)log_level_from_string(val);
-        return;
-    }
-    if (strcmp(section, "echolink") == 0) {
-        if (strcmp(key, "callsign") == 0)
-            set_str(cfg->echolink.callsign, sizeof(cfg->echolink.callsign), val);
-        else if (strcmp(key, "password") == 0)
-            set_str(cfg->echolink.password, sizeof(cfg->echolink.password), val);
-        else if (strcmp(key, "bind_addr") == 0)
-            set_str(cfg->echolink.bind_addr, sizeof(cfg->echolink.bind_addr), val);
-        else if (strcmp(key, "host") == 0)
-            set_str(cfg->echolink.host, sizeof(cfg->echolink.host), val);
-        else if (strcmp(key, "qth") == 0)
-            set_str(cfg->echolink.qth, sizeof(cfg->echolink.qth), val);
-        else if (strcmp(key, "email") == 0)
-            set_str(cfg->echolink.email, sizeof(cfg->echolink.email), val);
-        else if (strcmp(key, "directory_servers") == 0)
-            parse_directory_servers(&cfg->echolink, val);
-        else if (strcmp(key, "login_interval") == 0
-                 || strcmp(key, "LoginInterval") == 0)
-            set_int(&cfg->echolink.login_interval, val);
-        else if (strcmp(key, "station_list_interval") == 0
-                 || strcmp(key, "StationListInterval") == 0)
-            set_int(&cfg->echolink.station_list_interval, val);
-        else if (strcmp(key, "gain") == 0)
-            set_float(&cfg->echolink.gain, val);
-        else if (strcmp(key, "proxy_server") == 0
-                 || strcmp(key, "PROXY_SERVER") == 0)
-            set_str(cfg->echolink.proxy_server, sizeof(cfg->echolink.proxy_server),
-                    val);
-        else if (strcmp(key, "proxy_port") == 0
-                 || strcmp(key, "PROXY_PORT") == 0)
-            set_int(&cfg->echolink.proxy_port, val);
-        else if (strcmp(key, "proxy_password") == 0
-                 || strcmp(key, "PROXY_PASSWORD") == 0)
-            set_str(cfg->echolink.proxy_password,
-                    sizeof(cfg->echolink.proxy_password), val);
-        else if (strcmp(key, "log_level") == 0 || strcmp(key, "log") == 0)
-            cfg->echolink.log_level = (int)log_level_from_string(val);
-        return;
-    }
-    if (strcmp(section, "vocoder") == 0) {
-        if (strcmp(key, "host") == 0)
-            set_str(cfg->vocoder.host, sizeof(cfg->vocoder.host), val);
-        else if (strcmp(key, "port") == 0)
-            set_int(&cfg->vocoder.port, val);
-        else if (strcmp(key, "log_level") == 0 || strcmp(key, "log") == 0)
-            cfg->vocoder.log_level = (int)log_level_from_string(val);
-        return;
+    if (strncmp(section, "vocoder", 7) == 0) {
+        snprintf(err, errlen,
+                 "%s:%d: set vocoder_host/vocoder_port under [peer.*] (not [vocoder])",
+                 path, lineno);
+        return -1;
     }
     if (strcmp(section, "aliases") == 0) {
         if (strcmp(key, "try_download") == 0)
-            ; /* legacy key ignored — downloads are always enabled */
+            ;
         else if (strcmp(key, "stale_minutes") == 0)
             set_int(&cfg->aliases.stale_minutes, val);
         else if (strcmp(key, "stale_days") == 0) {
             set_int(&cfg->aliases.stale_minutes, val);
             cfg->aliases.stale_minutes *= 24 * 60;
-        }
-        else if (strcmp(key, "reload_minutes") == 0)
+        } else if (strcmp(key, "reload_minutes") == 0)
             set_int(&cfg->aliases.reload_minutes, val);
         else if (strcmp(key, "data_dir") == 0)
             set_str(cfg->aliases.data_dir, sizeof(cfg->aliases.data_dir), val);
@@ -345,99 +418,97 @@ static void apply_key(adn_bridge_config_t *cfg, const char *section, const char 
         else if (strcmp(key, "subscriber_url") == 0)
             set_str(cfg->aliases.subscriber_url, sizeof(cfg->aliases.subscriber_url), val);
         else if (strcmp(key, "local_subscriber_file") == 0)
-            set_str(cfg->aliases.local_subscriber_file, sizeof(cfg->aliases.local_subscriber_file), val);
+            set_str(cfg->aliases.local_subscriber_file,
+                    sizeof(cfg->aliases.local_subscriber_file), val);
         else if (strcmp(key, "checksum_file") == 0)
             set_str(cfg->aliases.checksum_file, sizeof(cfg->aliases.checksum_file), val);
         else if (strcmp(key, "checksum_url") == 0)
             set_str(cfg->aliases.checksum_url, sizeof(cfg->aliases.checksum_url), val);
-        return;
+        return 0;
     }
     if (strcmp(section, "log") == 0) {
-        /* Default for all channels; per-stanza log_level= overrides after load. */
         if (strcmp(key, "level") == 0)
             cfg->log_level = log_level_from_string(val);
-        else if (strcmp(key, "echolink") == 0 || strcmp(key, "el") == 0)
-            cfg->echolink.log_level = (int)log_level_from_string(val);
-        else if (strcmp(key, "dmr") == 0)
-            cfg->dmr_log_level = (int)log_level_from_string(val);
-        else if (strcmp(key, "ysf") == 0)
-            cfg->ysf_log_level = (int)log_level_from_string(val);
-        else if (strcmp(key, "vocoder") == 0 || strcmp(key, "voc") == 0)
-            cfg->vocoder.log_level = (int)log_level_from_string(val);
-        return;
-    }
-}
-
-static void add_synth_peer(adn_bridge_config_t *cfg, const char *name,
-                           adn_bridge_peer_type_t type)
-{
-    adn_bridge_peer_t *p = find_or_add_peer(cfg, name);
-
-    if (!p)
-        return;
-    p->type = type;
-    p->enabled = 1;
-}
-
-void adn_bridge_config_synthesize_peers(adn_bridge_config_t *cfg)
-{
-    if (!cfg || cfg->peer_count > 0)
-        return;
-
-    switch (cfg->mode) {
-    case ADN_BRIDGE_MODE_ECHOLINK_DMR:
-        add_synth_peer(cfg, "echolink", ADN_BRIDGE_PEER_TYPE_ECHOLINK);
-        add_synth_peer(cfg, "dmr", ADN_BRIDGE_PEER_TYPE_DMR);
-        break;
-    case ADN_BRIDGE_MODE_ECHOLINK_YSF:
-        add_synth_peer(cfg, "echolink", ADN_BRIDGE_PEER_TYPE_ECHOLINK);
-        add_synth_peer(cfg, "ysf", ADN_BRIDGE_PEER_TYPE_YSF);
-        break;
-    default:
-        add_synth_peer(cfg, "ysf", ADN_BRIDGE_PEER_TYPE_YSF);
-        add_synth_peer(cfg, "dmr", ADN_BRIDGE_PEER_TYPE_DMR);
-        break;
-    }
-}
-
-int adn_bridge_config_enabled_peer_count(const adn_bridge_config_t *cfg)
-{
-    int i, n = 0;
-
-    if (!cfg)
         return 0;
-    for (i = 0; i < cfg->peer_count; i++) {
-        if (cfg->peers[i].enabled)
-            n++;
     }
-    return n;
+    return 0;
 }
 
-/* Apply [log] level + per-stanza overrides to runtime channels. */
+static void finalize_el_peer(adn_bridge_peer_el_t *el)
+{
+    int i;
+
+    if (el->directory_server_count == 0) {
+        static const char *defs[] = {
+            "server1.echolink.org", "server2.echolink.org",
+            "server3.echolink.org", "server4.echolink.org"
+        };
+        for (i = 0; i < 4; i++)
+            set_str(el->directory_servers[i], sizeof(el->directory_servers[i]), defs[i]);
+        el->directory_server_count = 4;
+    }
+    if (el->proxy_server[0]) {
+        if (el->proxy_port <= 0)
+            el->proxy_port = 8100;
+        if (!el->proxy_password[0])
+            set_str(el->proxy_password, sizeof(el->proxy_password), "PUBLIC");
+    }
+}
+
+static void finalize_peers(adn_bridge_config_t *cfg)
+{
+    int i;
+
+    for (i = 0; i < cfg->peer_count; i++) {
+        if (cfg->peers[i].type_set && cfg->peers[i].type == ADN_BRIDGE_PEER_TYPE_ECHOLINK)
+            finalize_el_peer(&cfg->peers[i].u.el);
+        if (cfg->peers[i].type_set && cfg->peers[i].type == ADN_BRIDGE_PEER_TYPE_DMR
+            && strcmp(cfg->peers[i].u.dmr.options, "\"\"") == 0)
+            cfg->peers[i].u.dmr.options[0] = '\0';
+    }
+}
+
 void adn_bridge_config_apply_log_levels(const adn_bridge_config_t *cfg)
 {
     log_level_t def = cfg->log_level;
+    int i;
 
     log_set_channel_level(LOG_CH_APP, def);
-    log_set_channel_level(LOG_CH_ECHOLINK,
-                          cfg->echolink.log_level >= 0
-                              ? (log_level_t)cfg->echolink.log_level : def);
-    log_set_channel_level(LOG_CH_DMR,
-                          cfg->dmr_log_level >= 0
-                              ? (log_level_t)cfg->dmr_log_level : def);
-    log_set_channel_level(LOG_CH_YSF,
-                          cfg->ysf_log_level >= 0
-                              ? (log_level_t)cfg->ysf_log_level : def);
-    log_set_channel_level(LOG_CH_VOCODER,
-                          cfg->vocoder.log_level >= 0
-                              ? (log_level_t)cfg->vocoder.log_level : def);
+    log_set_channel_level(LOG_CH_VOCODER, def);
+    log_set_channel_level(LOG_CH_DMR, def);
+    log_set_channel_level(LOG_CH_YSF, def);
+    log_set_channel_level(LOG_CH_ECHOLINK, def);
+
+    for (i = 0; i < cfg->peer_count; i++) {
+        const adn_bridge_peer_t *p = &cfg->peers[i];
+        log_level_t lv = def;
+
+        if (!p->enabled || !p->type_set)
+            continue;
+        if (p->type == ADN_BRIDGE_PEER_TYPE_ECHOLINK && p->u.el.vocoder_log_level >= 0)
+            log_set_channel_level(LOG_CH_VOCODER,
+                                  (log_level_t)p->u.el.vocoder_log_level);
+        if (p->type == ADN_BRIDGE_PEER_TYPE_DMR && p->u.dmr.log_level >= 0)
+            lv = (log_level_t)p->u.dmr.log_level;
+        else if (p->type == ADN_BRIDGE_PEER_TYPE_YSF && p->u.ysf.log_level >= 0)
+            lv = (log_level_t)p->u.ysf.log_level;
+        else if (p->type == ADN_BRIDGE_PEER_TYPE_ECHOLINK && p->u.el.log_level >= 0)
+            lv = (log_level_t)p->u.el.log_level;
+
+        if (p->type == ADN_BRIDGE_PEER_TYPE_DMR)
+            log_set_channel_level(LOG_CH_DMR, lv);
+        else if (p->type == ADN_BRIDGE_PEER_TYPE_YSF)
+            log_set_channel_level(LOG_CH_YSF, lv);
+        else if (p->type == ADN_BRIDGE_PEER_TYPE_ECHOLINK)
+            log_set_channel_level(LOG_CH_ECHOLINK, lv);
+    }
 }
 
 int adn_bridge_config_load(const char *path, adn_bridge_config_t *cfg, char *err, size_t errlen)
 {
     FILE *fp;
     char line[512];
-    char section[32] = "";
+    char section[64] = "";
     int lineno = 0;
 
     adn_bridge_config_init(cfg);
@@ -477,117 +548,146 @@ int adn_bridge_config_load(const char *path, adn_bridge_config_t *cfg, char *err
         *eq = '\0';
         key = trim(p);
         val = trim(eq + 1);
-        apply_key(cfg, section, key, val);
+        if (apply_key(cfg, section, key, val, path, lineno, err, errlen) != 0) {
+            fclose(fp);
+            return -1;
+        }
     }
 
     fclose(fp);
+    finalize_peers(cfg);
+    return 0;
+}
 
-    if (strcmp(cfg->dmr_options, "\"\"") == 0)
-        cfg->dmr_options[0] = '\0';
+static int validate_peer_dmr(const adn_bridge_peer_t *p, char *err, size_t errlen)
+{
+    const adn_bridge_peer_dmr_t *d = &p->u.dmr;
 
-    /* Default directory servers if EL mode and none configured */
-    if ((cfg->mode == ADN_BRIDGE_MODE_ECHOLINK_DMR || cfg->mode == ADN_BRIDGE_MODE_ECHOLINK_YSF)
-        && cfg->echolink.directory_server_count == 0) {
-        static const char *defs[] = {
-            "server1.echolink.org", "server2.echolink.org",
-            "server3.echolink.org", "server4.echolink.org"
-        };
-        int i;
-        for (i = 0; i < 4; i++)
-            set_str(cfg->echolink.directory_servers[i],
-                    sizeof(cfg->echolink.directory_servers[i]), defs[i]);
-        cfg->echolink.directory_server_count = 4;
+    if (!d->callsign[0]) {
+        snprintf(err, errlen, "[peer.%s] missing callsign", p->name);
+        return -1;
     }
-
-    /* EchoLink Proxy defaults */
-    if (cfg->echolink.proxy_server[0]) {
-        if (cfg->echolink.proxy_port <= 0)
-            cfg->echolink.proxy_port = 8100;
-        if (!cfg->echolink.proxy_password[0])
-            set_str(cfg->echolink.proxy_password,
-                    sizeof(cfg->echolink.proxy_password), "PUBLIC");
+    if (d->dmrid <= 0) {
+        snprintf(err, errlen, "[peer.%s] missing dmrid", p->name);
+        return -1;
     }
+    if (!d->password[0]) {
+        snprintf(err, errlen, "[peer.%s] missing password", p->name);
+        return -1;
+    }
+    if (!d->host[0] || d->port <= 0) {
+        snprintf(err, errlen, "[peer.%s] missing host/port", p->name);
+        return -1;
+    }
+    if (d->tg <= 0) {
+        snprintf(err, errlen, "[peer.%s] missing tg", p->name);
+        return -1;
+    }
+    return 0;
+}
 
-    adn_bridge_config_synthesize_peers(cfg);
+static int validate_peer_ysf(const adn_bridge_peer_t *p, char *err, size_t errlen)
+{
+    const adn_bridge_peer_ysf_t *y = &p->u.ysf;
 
+    if (!y->host[0] || y->port <= 0) {
+        snprintf(err, errlen, "[peer.%s] missing host/port", p->name);
+        return -1;
+    }
+    if (y->dgid < 0 || y->dgid > 99) {
+        snprintf(err, errlen, "[peer.%s] invalid dgid (0-99)", p->name);
+        return -1;
+    }
+    if (!y->callsign[0]) {
+        snprintf(err, errlen, "[peer.%s] missing callsign", p->name);
+        return -1;
+    }
+    return 0;
+}
+
+static int validate_peer_el(const adn_bridge_peer_t *p, char *err, size_t errlen)
+{
+    const adn_bridge_peer_el_t *el = &p->u.el;
+
+    if (!el->callsign[0]) {
+        snprintf(err, errlen, "[peer.%s] missing callsign", p->name);
+        return -1;
+    }
+    if (!el->password[0]) {
+        snprintf(err, errlen, "[peer.%s] missing password", p->name);
+        return -1;
+    }
+    if (el->proxy_server[0]) {
+        if (el->proxy_port <= 0) {
+            snprintf(err, errlen, "[peer.%s] invalid proxy_port", p->name);
+            return -1;
+        }
+    } else if (!el->bind_addr[0]) {
+        snprintf(err, errlen, "[peer.%s] missing bind_addr", p->name);
+        return -1;
+    }
+    if (el->gain <= 0.0f || el->gain > 4.0f) {
+        snprintf(err, errlen, "[peer.%s] invalid gain (0 < gain <= 4)", p->name);
+        return -1;
+    }
+    if (!el->vocoder_host[0]) {
+        snprintf(err, errlen, "[peer.%s] missing vocoder_host", p->name);
+        return -1;
+    }
+    if (el->vocoder_port <= 0) {
+        snprintf(err, errlen, "[peer.%s] missing vocoder_port", p->name);
+        return -1;
+    }
     return 0;
 }
 
 int adn_bridge_config_valid(const adn_bridge_config_t *cfg, char *err, size_t errlen)
 {
-    int el = (cfg->mode == ADN_BRIDGE_MODE_ECHOLINK_DMR
-              || cfg->mode == ADN_BRIDGE_MODE_ECHOLINK_YSF);
-    int need_dmr = (cfg->mode == ADN_BRIDGE_MODE_YSF_DMR
-                    || cfg->mode == ADN_BRIDGE_MODE_ECHOLINK_DMR);
+    int i;
+    int n_el, n_dmr, n_ysf;
 
-    /* echolink-ysf: no DMR peer — [dmr] stanza is optional (omit entirely). */
-    if (need_dmr) {
-        if (!cfg->callsign[0]) {
-            snprintf(err, errlen, "missing [dmr] callsign");
-            return -1;
-        }
-        if (cfg->dmrid <= 0) {
-            snprintf(err, errlen, "missing [dmr] dmrid");
-            return -1;
-        }
-        if (!cfg->dmr_password[0]) {
-            snprintf(err, errlen, "missing [dmr] password (or passphrase)");
-            return -1;
-        }
-        if (!cfg->dmr_host[0] || cfg->dmr_port <= 0) {
-            snprintf(err, errlen, "missing [dmr] host/port");
-            return -1;
-        }
-        if (cfg->dmr_tg <= 0) {
-            snprintf(err, errlen, "missing [dmr] tg");
-            return -1;
-        }
+    if (!cfg->peer_count) {
+        snprintf(err, errlen, "no [peer.*] stanzas defined");
+        return -1;
     }
-
-    if (cfg->mode == ADN_BRIDGE_MODE_YSF_DMR || cfg->mode == ADN_BRIDGE_MODE_ECHOLINK_YSF) {
-        if (!cfg->ysf_host[0] || cfg->ysf_port <= 0) {
-            snprintf(err, errlen, "missing [ysf] host/port");
-            return -1;
-        }
-        if (cfg->dgid < 0 || cfg->dgid > 99) {
-            snprintf(err, errlen, "invalid [ysf] dgid (0-99)");
-            return -1;
-        }
-    }
-
-    if (el) {
-        if (!cfg->echolink.callsign[0]) {
-            snprintf(err, errlen, "missing [echolink] callsign");
-            return -1;
-        }
-        if (!cfg->echolink.password[0]) {
-            snprintf(err, errlen, "missing [echolink] password");
-            return -1;
-        }
-        if (cfg->echolink.proxy_server[0]) {
-            /* Proxy mode: bind_addr not required (defaults applied in load). */
-            if (cfg->echolink.proxy_port <= 0) {
-                snprintf(err, errlen, "invalid [echolink] proxy_port");
-                return -1;
-            }
-        } else if (!cfg->echolink.bind_addr[0]) {
-            snprintf(err, errlen, "missing [echolink] bind_addr");
-            return -1;
-        }
-        /* 1.0 = unity … up to 4.0 max; must be > 0 (mute not supported). */
-        if (cfg->echolink.gain <= 0.0f || cfg->echolink.gain > 4.0f) {
-            snprintf(err, errlen, "invalid [echolink] gain (use 0 < gain <= 4)");
-            return -1;
-        }
-        if (!cfg->vocoder.host[0] || cfg->vocoder.port <= 0) {
-            snprintf(err, errlen, "missing [vocoder] host/port");
-            return -1;
-        }
-    }
-
     if (adn_bridge_config_enabled_peer_count(cfg) < 2) {
         snprintf(err, errlen, "need at least two enabled [peer.*] entries");
         return -1;
     }
-    return 0;
+
+    for (i = 0; i < cfg->peer_count; i++) {
+        const adn_bridge_peer_t *p = &cfg->peers[i];
+
+        if (!p->enabled)
+            continue;
+        if (!p->type_set) {
+            snprintf(err, errlen, "[peer.%s] missing type", p->name);
+            return -1;
+        }
+        if (p->type == ADN_BRIDGE_PEER_TYPE_DMR && validate_peer_dmr(p, err, errlen) != 0)
+            return -1;
+        if (p->type == ADN_BRIDGE_PEER_TYPE_YSF && validate_peer_ysf(p, err, errlen) != 0)
+            return -1;
+        if (p->type == ADN_BRIDGE_PEER_TYPE_ECHOLINK && validate_peer_el(p, err, errlen) != 0)
+            return -1;
+    }
+
+    n_el = adn_bridge_config_count_peers(cfg, ADN_BRIDGE_PEER_TYPE_ECHOLINK, 1);
+    n_dmr = adn_bridge_config_count_peers(cfg, ADN_BRIDGE_PEER_TYPE_DMR, 1);
+    n_ysf = adn_bridge_config_count_peers(cfg, ADN_BRIDGE_PEER_TYPE_YSF, 1);
+
+    switch (adn_bridge_config_layout(cfg)) {
+    case ADN_BRIDGE_LAYOUT_EL_DMR:
+    case ADN_BRIDGE_LAYOUT_EL_YSF:
+        return 0;
+    case ADN_BRIDGE_LAYOUT_YSF_DMR:
+        return 0;
+    default:
+        (void)n_el;
+        (void)n_dmr;
+        (void)n_ysf;
+        snprintf(err, errlen,
+                 "unsupported peer mix (need dmr+ysf, echolink+dmr, or echolink+ysf)");
+        return -1;
+    }
 }

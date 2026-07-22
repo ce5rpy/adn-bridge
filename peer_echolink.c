@@ -1467,7 +1467,7 @@ static void el_flush_rtp_tx(peer_echolink_t *p)
     p->rtp_tx_packets++;
 }
 
-int peer_el_open(peer_echolink_t *p, const adn_bridge_echolink_cfg_t *cfg)
+int peer_el_open(peer_echolink_t *p, const adn_bridge_peer_el_t *cfg)
 {
     int i;
 

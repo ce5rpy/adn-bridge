@@ -68,9 +68,9 @@ static void bridge_el_router_release_active(bridge_el_t *b)
     if (b->call_active == 1 && b->router_peer_el >= 0)
         media_router_ingress_end(b->router, b->router_peer_el);
     else if (b->call_active == 2) {
-        if (b->mode == ADN_BRIDGE_MODE_ECHOLINK_DMR && b->router_peer_dmr >= 0)
+        if (b->link_kind == BRIDGE_EL_LINK_DMR && b->router_peer_dmr >= 0)
             media_router_ingress_end(b->router, b->router_peer_dmr);
-        else if (b->mode == ADN_BRIDGE_MODE_ECHOLINK_YSF && b->router_peer_ysf >= 0)
+        else if (b->link_kind == BRIDGE_EL_LINK_YSF && b->router_peer_ysf >= 0)
             media_router_ingress_end(b->router, b->router_peer_ysf);
     }
 }
@@ -229,12 +229,12 @@ static void bridge_el_end_dmr_call(bridge_el_t *b)
     bridge_el_finish_dmr_end(b);
 }
 
-void bridge_el_init(bridge_el_t *b, int mode, const char *dmr_options,
+void bridge_el_init(bridge_el_t *b, int link_kind, const char *dmr_options,
                     adn_bridge_aliases_t *aliases, int bridge_dmrid,
                     float el_pcm_gain, int clear_dynamic_tg)
 {
     memset(b, 0, sizeof(*b));
-    b->mode = mode;
+    b->link_kind = link_kind;
     b->aliases = aliases;
     b->bridge_dmrid = bridge_dmrid;
     b->el_pcm_gain = (el_pcm_gain > 0.0f && el_pcm_gain <= 4.0f) ? el_pcm_gain : 1.0f;
@@ -259,7 +259,7 @@ void bridge_el_process_el_audio(bridge_el_t *b)
     int n;
     int enc_fail_streak = 0;
 
-    if (b->mode != ADN_BRIDGE_MODE_ECHOLINK_DMR)
+    if (b->link_kind != BRIDGE_EL_LINK_DMR)
         return;
     /* Mirror YSF↔DMR: do not queue EL audio toward DMR while HBP is down. */
     if (!peer_dmr_connected(&b->dmr))
@@ -357,7 +357,7 @@ void bridge_el_on_dmrd(bridge_el_t *b, const uint8_t *pkt, int len)
     int rf, dst;
     static int rx_log;
 
-    if (b->mode != ADN_BRIDGE_MODE_ECHOLINK_DMR)
+    if (b->link_kind != BRIDGE_EL_LINK_DMR)
         return;
     if (len != 55 || memcmp(pkt, "DMRD", 4) != 0) {
         LOG_DMR_DEBUG("DMR RX ignore len=%d (expected DMRD 55)\n", len);
@@ -741,7 +741,7 @@ void bridge_el_process_el_to_ysf(bridge_el_t *b)
     int n;
     int enc_fail_streak = 0;
 
-    if (b->mode != ADN_BRIDGE_MODE_ECHOLINK_YSF)
+    if (b->link_kind != BRIDGE_EL_LINK_YSF)
         return;
     if (b->call_active == 2 || b->ysf_ending)
         return; /* YSF RX has the slot, or EOT drain in progress */
@@ -837,7 +837,7 @@ void bridge_el_on_ysfd(bridge_el_t *b, const uint8_t *pkt, int len)
     char rpt[11], src[11];
     uint8_t scratch[120];
 
-    if (b->mode != ADN_BRIDGE_MODE_ECHOLINK_YSF)
+    if (b->link_kind != BRIDGE_EL_LINK_YSF)
         return;
     if (len != 155 || memcmp(pkt, "YSFD", 4) != 0)
         return;
@@ -932,7 +932,7 @@ static void bridge_el_pace_dmr_tx(bridge_el_t *b)
 {
     uint8_t voice33[33];
 
-    if (b->mode != ADN_BRIDGE_MODE_ECHOLINK_DMR)
+    if (b->link_kind != BRIDGE_EL_LINK_DMR)
         return;
     if (b->call_active == 2 || b->connect_ptt_active || b->dmr_ending)
         return;
@@ -945,7 +945,7 @@ static void bridge_el_pace_dmr_tx(bridge_el_t *b)
 
 void bridge_el_tick(bridge_el_t *b)
 {
-    if (b->mode == ADN_BRIDGE_MODE_ECHOLINK_DMR) {
+    if (b->link_kind == BRIDGE_EL_LINK_DMR) {
         bridge_el_poll_connect_ptt(b);
         if (peer_dmr_connected(&b->dmr)) {
             if (b->dmr_ending)
@@ -956,16 +956,16 @@ void bridge_el_tick(bridge_el_t *b)
     }
 
     /* EL→YSF: one YSFD every 90 ms (identical pacing to DMR→YSF). */
-    if (b->mode == ADN_BRIDGE_MODE_ECHOLINK_YSF && b->call_active == 1
+    if (b->link_kind == BRIDGE_EL_LINK_YSF && b->call_active == 1
         && bridge_ms_elapsed(&b->last_ysf_tx, YSF_FRAME_MS))
         (void)bridge_el_emit_ysf_from_conv(b);
 
     /* End EL->DMR/YSF when inbound EL PCM stops (silence still holds while RTP). */
     if (b->call_active == 1 && !b->dmr_ending && !b->ysf_ending
         && bridge_ms_since(&b->last_el_speech) >= EL_HANG_MS) {
-        if (b->mode == ADN_BRIDGE_MODE_ECHOLINK_DMR)
+        if (b->link_kind == BRIDGE_EL_LINK_DMR)
             bridge_el_begin_dmr_end(b);
-        else if (b->mode == ADN_BRIDGE_MODE_ECHOLINK_YSF)
+        else if (b->link_kind == BRIDGE_EL_LINK_YSF)
             bridge_el_end_ysf_call(b);
     }
 
@@ -974,7 +974,7 @@ void bridge_el_tick(bridge_el_t *b)
      * half-duplex lock so EL TX can run again.
      */
     if (b->call_active == 2) {
-        if (b->mode == ADN_BRIDGE_MODE_ECHOLINK_DMR
+        if (b->link_kind == BRIDGE_EL_LINK_DMR
             && bridge_ms_since(&b->last_dmr_rx) >= DMR_RX_HANG_MS) {
             peer_el_flush_pcm(&b->el);
             LOG_DMR_INFO("DMR->EL call end (%d voice frames in, el_rtp_tx=%u) — RX hangtime\n",
@@ -983,7 +983,7 @@ void bridge_el_tick(bridge_el_t *b)
             b->call_active = 0;
             b->dmr_voice_frames = 0;
             b->dmr_rx_stream_id = 0;
-        } else if (b->mode == ADN_BRIDGE_MODE_ECHOLINK_YSF
+        } else if (b->link_kind == BRIDGE_EL_LINK_YSF
                    && bridge_ms_since(&b->last_dmr_rx) >= YSF_RX_HANG_MS) {
             peer_el_flush_pcm(&b->el);
             peer_el_set_talker_name(&b->el, NULL);

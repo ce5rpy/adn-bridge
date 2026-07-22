@@ -1,5 +1,5 @@
 /*
- * YSF <-> DMR adapter (Phase 2 strangler).
+ * YSF <-> DMR adapter.
  * Copyright (C) 2026  Rodrigo Pérez, CE5RPY <ce5rpy@qmd.cl>
  * SPDX-License-Identifier: GPL-3.0-or-later
  */

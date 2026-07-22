@@ -1,5 +1,5 @@
 /*
- * YSF <-> DMR voice bridge shim (Phase 2 → adapters).
+ * YSF <-> DMR voice bridge (delegates to adapters).
  */
 #include "bridge.h"
 #include "adapters/dmr.h"

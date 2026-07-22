@@ -1,5 +1,5 @@
 /*
- * Bridge engine — main loop with media router (Phase 3+).
+ * Bridge engine — main loop with media router.
  *
  * Copyright (C) 2026  Rodrigo Pérez, CE5RPY <ce5rpy@qmd.cl>
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -21,15 +21,7 @@ typedef struct {
     adn_bridge_aliases_t **aliases;
 } engine_host_t;
 
-/* EchoLink ↔ DMR / EchoLink ↔ YSF. */
-int engine_run_echolink(engine_host_t *host, adn_bridge_config_t *cfg,
-                        bridge_el_t *bel);
-
-/* YSF ↔ DMR (ModeConv). */
-int engine_run_ysf_dmr(engine_host_t *host, adn_bridge_config_t *cfg,
-                       adn_bridge_t *b);
-
-/* Dispatch by cfg->mode. */
+/* Start peers from [peer.*] layout, run until *keep_running clears, then shutdown. */
 int engine_run(engine_host_t *host, adn_bridge_config_t *cfg,
                adn_bridge_t *b, bridge_el_t *bel);
 

@@ -86,7 +86,7 @@ static void usage(const char *prog)
             "  %s -h | --help     show this help\n"
             "  %s -v | --version  print version\n"
             "\n"
-            "INI [bridge] mode=ysf-dmr|echolink-dmr|echolink-ysf\n"
+            "INI: [peer.*] stanzas (dmr + ysf, or echolink + dmr/ysf)\n"
             "  templates: examples/*.example.ini → copy to config/\n",
             prog, prog, prog, prog);
 }
@@ -133,6 +133,56 @@ static int resolve_config(int argc, char **argv, adn_bridge_config_t *cfg, char 
     return 0;
 }
 
+static const char *peer_type_label(adn_bridge_peer_type_t type)
+{
+    switch (type) {
+    case ADN_BRIDGE_PEER_TYPE_DMR:
+        return "dmr";
+    case ADN_BRIDGE_PEER_TYPE_YSF:
+        return "ysf";
+    case ADN_BRIDGE_PEER_TYPE_ECHOLINK:
+        return "echolink";
+    default:
+        return "?";
+    }
+}
+
+static const char *layout_label(const adn_bridge_config_t *cfg)
+{
+    return adn_bridge_layout_name(adn_bridge_config_layout(cfg));
+}
+
+static void print_peer_banner(const adn_bridge_peer_t *p)
+{
+    if (!p->enabled || !p->type_set)
+        return;
+
+    printf("  [peer.%s] type=%s\n", p->name, peer_type_label(p->type));
+    if (p->type == ADN_BRIDGE_PEER_TYPE_DMR) {
+        const adn_bridge_peer_dmr_t *d = &p->u.dmr;
+        printf("    DMR %s:%d %s (%d) TG %d\n",
+               d->host, d->port, d->callsign, d->dmrid, d->tg);
+    } else if (p->type == ADN_BRIDGE_PEER_TYPE_YSF) {
+        const adn_bridge_peer_ysf_t *y = &p->u.ysf;
+        printf("    YSF %s:%d %s DGID %d\n",
+               y->host, y->port, y->callsign, y->dgid);
+    } else if (p->type == ADN_BRIDGE_PEER_TYPE_ECHOLINK) {
+        const adn_bridge_peer_el_t *el = &p->u.el;
+        printf("    EchoLink %s", el->callsign);
+        if (el->host[0])
+            printf(" -> %s", el->host);
+        if (el->vocoder_host[0])
+            printf(" vocoder %s:%d", el->vocoder_host, el->vocoder_port);
+        if (el->proxy_server[0])
+            printf(" proxy %s:%d", el->proxy_server, el->proxy_port);
+        else if (el->bind_addr[0])
+            printf(" bind %s", el->bind_addr);
+        if (el->gain != 1.0f)
+            printf(" gain %.3f", (double)el->gain);
+        printf("\n");
+    }
+}
+
 int main(int argc, char **argv)
 {
     adn_bridge_config_t cfg;
@@ -172,45 +222,13 @@ int main(int argc, char **argv)
 
     print_credits(stdout);
     printf("\n");
-    printf("Mode: %s\n", adn_bridge_mode_name(cfg.mode));
-    if (cfg.mode == ADN_BRIDGE_MODE_ECHOLINK_YSF) {
-        printf("Identity: %s (EchoLink; no DMR peer)\n", cfg.echolink.callsign);
-    } else {
-        printf("Identity: %s (%d)\n", cfg.callsign, cfg.dmrid);
-        if (cfg.description[0])
-            printf("Description: %s\n", cfg.description);
-        if (cfg.location[0])
-            printf("Location: %s\n", cfg.location);
-    }
-    if (cfg.mode == ADN_BRIDGE_MODE_YSF_DMR || cfg.mode == ADN_BRIDGE_MODE_ECHOLINK_YSF)
-        printf("YSF: %s:%d DGID %d\n", cfg.ysf_host, cfg.ysf_port, cfg.dgid);
-    if (cfg.mode == ADN_BRIDGE_MODE_YSF_DMR || cfg.mode == ADN_BRIDGE_MODE_ECHOLINK_DMR)
-        printf("DMR: %s:%d voice TG %d OPTIONS=%s (%s)\n",
-               cfg.dmr_host, cfg.dmr_port, cfg.dmr_tg, cfg.dmr_options, cfg.callsign);
-    if (cfg.mode != ADN_BRIDGE_MODE_YSF_DMR) {
-        printf("EchoLink: %s bind %s", cfg.echolink.callsign, cfg.echolink.bind_addr);
-        if (cfg.echolink.host[0])
-            printf(" host %s", cfg.echolink.host);
-        if (cfg.echolink.gain != 1.0f)
-            printf(" gain %.3f", (double)cfg.echolink.gain);
-        printf("\n");
-        printf("Vocoder: %s:%d\n", cfg.vocoder.host, cfg.vocoder.port);
-    }
-    if (cfg.peer_count > 0) {
+    printf("Layout: %s\n", layout_label(&cfg));
+    printf("Peers (%d enabled / %d):\n",
+           adn_bridge_config_enabled_peer_count(&cfg), cfg.peer_count);
+    {
         int i;
-        printf("Peers (%d enabled / %d):\n",
-               adn_bridge_config_enabled_peer_count(&cfg), cfg.peer_count);
-        for (i = 0; i < cfg.peer_count; i++) {
-            const char *type = "?";
-            if (cfg.peers[i].type == ADN_BRIDGE_PEER_TYPE_DMR)
-                type = "dmr";
-            else if (cfg.peers[i].type == ADN_BRIDGE_PEER_TYPE_YSF)
-                type = "ysf";
-            else if (cfg.peers[i].type == ADN_BRIDGE_PEER_TYPE_ECHOLINK)
-                type = "echolink";
-            printf("  %s type=%s %s\n", cfg.peers[i].name, type,
-                   cfg.peers[i].enabled ? "enabled" : "disabled");
-        }
+        for (i = 0; i < cfg.peer_count; i++)
+            print_peer_banner(&cfg.peers[i]);
     }
 
     LOG_INFO("log levels app=%s el=%s dmr=%s ysf=%s voc=%s\n",

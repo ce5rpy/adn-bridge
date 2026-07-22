@@ -32,7 +32,7 @@ typedef enum {
     LOG_CH_ECHOLINK = 1, /* [echolink] log_level= */
     LOG_CH_DMR = 2,      /* [dmr] log_level= */
     LOG_CH_YSF = 3,      /* [ysf] log_level= */
-    LOG_CH_VOCODER = 4,  /* [vocoder] log_level= */
+    LOG_CH_VOCODER = 4,  /* [peer.*] vocoder_log_level= */
     LOG_CH_COUNT
 } log_channel_t;
 

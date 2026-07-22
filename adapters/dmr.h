@@ -14,7 +14,7 @@
 
 uint8_t adapter_dmr_slot_bit_from_options(const char *options);
 
-/* YSF <-> DMR (bridge.c shim) */
+/* YSF <-> DMR bridge path */
 void adapter_dmr_on_dmrd_ysf(adn_bridge_t *b, const uint8_t *pkt, int len);
 void adapter_dmr_on_dmra_ysf(adn_bridge_t *b, const uint8_t *pkt, int len);
 void adapter_dmr_poll_connect_ptt_ysf(adn_bridge_t *b);

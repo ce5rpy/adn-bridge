@@ -104,7 +104,7 @@ typedef struct {
     int sdes_reply_pending;
 } peer_echolink_t;
 
-int peer_el_open(peer_echolink_t *p, const adn_bridge_echolink_cfg_t *cfg);
+int peer_el_open(peer_echolink_t *p, const adn_bridge_peer_el_t *cfg);
 void peer_el_close(peer_echolink_t *p);
 void peer_el_tick(peer_echolink_t *p);
 int peer_el_linked(const peer_echolink_t *p);

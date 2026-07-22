@@ -2,20 +2,17 @@
 
 **Versión 0.3.1**
 
-Puente de voz con tres modos:
+Puente de voz — configure dos peers `[peer.*]`:
 
-| Modo | Función |
-|------|---------|
-| `ysf-dmr` (por defecto) | Reflector YSF ↔ servidor DMR (peer Homebrew + YSFP/DGID) |
-| `echolink-dmr` | EchoLink ↔ DMR (GSM/RTP + vocoder AMBE por hardware) |
-| `echolink-ysf` | EchoLink ↔ YSF (mismo camino EchoLink + vocoder por hardware) |
+| Layout | Peers |
+|--------|-------|
+| YSF ↔ DMR | `ysf` + `dmr` |
+| EchoLink ↔ DMR | `echolink` + `dmr` (`vocoder_host`/`port` en `[peer.el]`) |
+| EchoLink ↔ YSF | `echolink` + `ysf` (`vocoder_host`/`port` en `[peer.el]`) |
 
 Compilación autocontenida — código en `hbp/`, `mmdvm/` y `vendor/`.
 Referencia upstream: [MMDVM_CM](https://github.com/juribeparada/MMDVM_CM).
-Detalle YSF↔DMR: [docs/ysf-dmr-bridge.es.md](docs/ysf-dmr-bridge.es.md)
-([EN](docs/ysf-dmr-bridge.md)).
-Detalle EchoLink: [docs/echolink-bridge.es.md](docs/echolink-bridge.es.md)
-([EN](docs/echolink-bridge.md)).
+Guía completa: [docs/bridge.es.md](docs/bridge.es.md) ([EN](docs/bridge.md)).
 
 **Documentación en inglés:** [README.md](README.md)
 
@@ -83,8 +80,8 @@ sudo make install
    ```
 
 Los modos EchoLink necesitan vocoder AMBE por hardware e indicativo `-L` /
-`-R` / conferencia — [docs/echolink-bridge.es.md](docs/echolink-bridge.es.md)
-([EN](docs/echolink-bridge.md)).
+`-R` / conferencia — [docs/bridge.es.md](docs/bridge.es.md)
+([EN](docs/bridge.md)).
 
 Los INI locales en `config/` están en `.gitignore`; las plantillas viven en
 `examples/*.example.ini`.
@@ -128,45 +125,52 @@ sudo systemctl enable --now adn-bridge@redchile.service
 
 ## Configuración
 
-El modo se elige en `[bridge]`:
+Defina **dos** `[peer.<nombre>]` habilitados. Secciones globales: `[aliases]`,
+`[log]`. Los peers EchoLink requieren `vocoder_host` y `vocoder_port`.
 
 ```ini
-[bridge]
-mode = ysf-dmr          ; por defecto — YSF <-> DMR
-mode = echolink-dmr     ; EchoLink <-> DMR
-mode = echolink-ysf     ; EchoLink <-> YSF
+[peer.fusion]
+type = ysf
+enabled = true
+host = reflector.example.net
+port = 42000
+callsign = N0CALL
+dgid = 1
+
+[peer.master]
+type = dmr
+enabled = true
+callsign = N0CALL
+dmrid = 1234567
+host = master.example.net
+port = 62031
+tg = 1234
+password = change-me
+options = TS2=1234;SINGLE=0;
 ```
 
-Plantillas: master `examples/adn-bridge.example.ini` (todos los modos) y un archivo
-por modo en `examples/adn-bridge-*.example.ini`.
+Mezclas válidas: `dmr+ysf`, `echolink+dmr`, `echolink+ysf` (un peer de cada
+tipo, ambos habilitados).
 
-### `[ysf]` / `[dmr]` — YSF ↔ DMR
+Plantillas: `examples/adn-bridge.example.ini` y un archivo por layout en
+`examples/adn-bridge-*.example.ini`.
 
-Claves mínimas: YSF `host`/`port`/`dgid`; DMR `callsign`/`dmrid`/`host`/`port`/
-`tg`/`password` (`options` RPTO opcional). TX siempre TS2.
-Opcional `clear_dynamic_tg = 1`: al login DMR, PTT silencio a **TG 4000**
-primero (quita TGs dinámicos), luego el PTT de conexión a `tg`.
+### Peers YSF ↔ DMR
 
-Guía de puesta en marcha:
+`type = ysf` o `type = dmr` en `[peer.*]`. Claves YSF: `host`/`port`/`callsign`/
+`dgid`. DMR: `callsign`/`dmrid`/`host`/`port`/`tg`/`password` (`options` RPTO
+opcional). TX siempre TS2. Opcional `clear_dynamic_tg = 1`.
 
-→ **[docs/ysf-dmr-bridge.es.md](docs/ysf-dmr-bridge.es.md)**
-([English](docs/ysf-dmr-bridge.md))
+→ **[docs/bridge.es.md](docs/bridge.es.md)** ([EN](docs/bridge.md))
+— secciones *YSF ↔ DMR* y *Referencia de peers*.
 
-En modo **`echolink-ysf`** omita `[dmr]` por completo (sin peer DMR). La
-identidad de gateway YSF sale de `[echolink] callsign` — ver
-[docs/echolink-bridge.es.md](docs/echolink-bridge.es.md).
+### Peers EchoLink
 
-### `[echolink]` / `[vocoder]` — Modos EchoLink
+`type = echolink` con `callsign`, `password`, `bind_addr` (o `proxy_*`), `host`.
+`vocoder_host` / `vocoder_port` en cada `[peer.el]` (layouts EchoLink).
 
-Claves mínimas: `callsign`, `password`, `bind_addr`, `host` (nodo o `*CONF*`)
-y `[vocoder] host`/`port`. Puertos **5198/5199/5200** en modo directo.
-Proxy EchoLink opcional: `proxy_server` / `proxy_port` / `proxy_password`
-(por defecto `PUBLIC`) — entonces no hace falta `bind_addr`.
-
-Guía de puesta en marcha (puertos, proxy, vocoder, INI, comprobar audio):
-
-→ **[docs/echolink-bridge.es.md](docs/echolink-bridge.es.md)**
-([English](docs/echolink-bridge.md))
+→ **[docs/bridge.es.md](docs/bridge.es.md)** ([EN](docs/bridge.md))
+— secciones *EchoLink* y *Diagnóstico*.
 
 ### `[aliases]` — Base de suscriptores
 
@@ -198,11 +202,7 @@ Overrides opcionales por canal (también `log_level=` en cada sección, o
 
 La voz siempre cruza; solo cambia la identidad mostrada/transmitida.
 
-- **YSF ↔ DMR:** [docs/ysf-dmr-bridge.es.md](docs/ysf-dmr-bridge.es.md)
-  ([EN](docs/ysf-dmr-bridge.md))
-- **EchoLink → DMR / YSF:** RTCP SDES entrante; ver
-  [docs/echolink-bridge.es.md](docs/echolink-bridge.es.md)
-  ([EN](docs/echolink-bridge.md))
+Ver [docs/bridge.es.md](docs/bridge.es.md) ([EN](docs/bridge.md)) — *Alias de suscriptores* e *identidad*.
 
 ## Estructura del proyecto
 
@@ -220,8 +220,7 @@ La voz siempre cruza; solo cambia la identidad mostrada/transmitida.
 | `hbp/dmr_hbp.c` | Autenticación HBP y códec LC/embebido |
 | `mmdvm/` | ModeConv + Golay24128 (YSF2DMR de MMDVM_CM) |
 | `vendor/yyjson/` | Parser JSON (MIT) |
-| `docs/ysf-dmr-bridge.md` / `.es.md` | Guía YSF↔DMR |
-| `docs/echolink-bridge.md` / `.es.md` | Guía EchoLink |
+| `docs/bridge.md` / `bridge.es.md` | Configuración y operación (todos los layouts) |
 | `examples/` | `*.example.ini`, units systemd, `generate-config.sh` |
 | `config/` | INIs de instancia locales (gitignored; `make install` → `/opt/adn-bridge/config/`) |
 | `data/` | Caché de alias (gitignored; `make install` → `/opt/adn-bridge/data/`) |

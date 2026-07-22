@@ -40,7 +40,7 @@ void adapter_el_resolve_talker(bridge_el_t *b)
     if (id <= 0 && base[0] && b->aliases)
         id = identity_lookup_alias_id(b->aliases, base);
 
-    if (b->mode == ADN_BRIDGE_MODE_ECHOLINK_YSF) {
+    if (b->link_kind == BRIDGE_EL_LINK_YSF) {
         char prev[10];
 
         memcpy(prev, b->net_src, 10);
@@ -86,6 +86,6 @@ void adapter_el_set_ysf_talker_name(bridge_el_t *b)
         peer_el_set_talker_name(&b->el, NULL);
         return;
     }
-    snprintf(name, sizeof(name), "%s (%s)", b->el.callsign, talker);
+    snprintf(name, sizeof(name), "%.10s (%.12s)", b->el.callsign, talker);
     peer_el_set_talker_name(&b->el, name);
 }

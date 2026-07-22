@@ -1,5 +1,5 @@
 /*
- * Wire-level unit checks for Phase 0 session/media helpers.
+ * Wire-level unit checks for session/media helpers.
  *
  * Copyright (C) 2026  Rodrigo Pérez, CE5RPY <ce5rpy@qmd.cl>
  * SPDX-License-Identifier: GPL-3.0-or-later
