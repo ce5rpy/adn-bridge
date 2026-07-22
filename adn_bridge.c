@@ -26,6 +26,7 @@
 #include "bridge.h"
 #include "bridge_el.h"
 #include "config.h"
+#include "engine.h"
 #include "log.h"
 #include "aliases.h"
 #include "peer_dmr.h"
@@ -189,84 +190,13 @@ static int run_ysf_dmr(adn_bridge_config_t *cfg)
 
 static int run_echolink(adn_bridge_config_t *cfg)
 {
-    time_t last_alias_poll = time(NULL);
-    int use_dmr = (cfg->mode == ADN_BRIDGE_MODE_ECHOLINK_DMR);
-    int use_ysf = (cfg->mode == ADN_BRIDGE_MODE_ECHOLINK_YSF);
+    engine_host_t host = {
+        .keep_running = &keep_running,
+        .service_alarm = service_alarm,
+        .aliases = &g_aliases,
+    };
 
-    bridge_el_init(&bridge_el, cfg->mode, cfg->dmr_options, g_aliases, cfg->dmrid,
-                   cfg->echolink.gain, cfg->dmr_clear_dynamic_tg);
-
-    if (vocoder_open(&bridge_el.voc, cfg->vocoder.host, cfg->vocoder.port) < 0)
-        return 1;
-    if (peer_el_open(&bridge_el.el, &cfg->echolink) < 0)
-        return 1;
-
-    if (use_dmr) {
-        if (peer_dmr_open(&bridge_el.dmr, cfg->dmr_host, cfg->dmr_port, cfg->callsign,
-                          cfg->dmrid, cfg->dmr_tg, cfg->dmr_options,
-                          cfg->dmr_password,
-                          cfg->description, cfg->location) < 0)
-            return 1;
-        LOG_INFO("bridge running (EchoLink<->DMR via vocoder %s:%d)\n",
-                 cfg->vocoder.host, cfg->vocoder.port);
-    }
-    if (use_ysf) {
-        char ysf_cs[10];
-
-        /* Gateway YSFP callsign: full [echolink] callsign (incl. -L/-R). */
-        bridge_el_format_callsign10(ysf_cs, cfg->echolink.callsign);
-        if (peer_ysf_open(&bridge_el.ysf, cfg->ysf_host, cfg->ysf_port, ysf_cs,
-                          (uint8_t)cfg->dgid) < 0)
-            return 1;
-        LOG_INFO("bridge running (EchoLink<->YSF via vocoder %s:%d)\n",
-                 cfg->vocoder.host, cfg->vocoder.port);
-    }
-
-    while (keep_running) {
-        int from_dmr = 0, from_ysf = 0, len;
-        time_t now;
-
-        service_alarm();
-        peer_el_tick(&bridge_el.el);
-        if (use_dmr)
-            peer_dmr_tick(&bridge_el.dmr);
-        if (use_ysf)
-            peer_ysf_tick(&bridge_el.ysf);
-
-        now = time(NULL);
-        if ((cfg->aliases.stale_minutes > 0 || cfg->aliases.reload_minutes > 0)
-            && now - last_alias_poll >= 60) {
-            last_alias_poll = now;
-            if (adn_bridge_aliases_maybe_refresh(&cfg->aliases, &g_aliases) > 0)
-                bridge_el.aliases = g_aliases;
-        }
-
-        peer_el_poll(&bridge_el.el, 5);
-        if (use_dmr)
-            bridge_el_process_el_audio(&bridge_el);
-        else
-            bridge_el_process_el_to_ysf(&bridge_el);
-
-        if (use_dmr) {
-            len = peer_dmr_poll(&bridge_el.dmr, 5, &from_dmr);
-            if (from_dmr && len == 55 && memcmp(bridge_el.dmr.buf, "DMRD", 4) == 0)
-                bridge_el_on_dmrd(&bridge_el, bridge_el.dmr.buf, len);
-        }
-        if (use_ysf) {
-            len = peer_ysf_poll(&bridge_el.ysf, 5, &from_ysf);
-            if (from_ysf && len == 155)
-                bridge_el_on_ysfd(&bridge_el, bridge_el.ysf.buf, len);
-        }
-        bridge_el_tick(&bridge_el);
-    }
-
-    peer_el_on_sigint(&bridge_el.el);
-    if (use_dmr)
-        peer_dmr_on_sigint(&bridge_el.dmr);
-    if (use_ysf)
-        peer_ysf_on_sigint(&bridge_el.ysf);
-    vocoder_close(&bridge_el.voc);
-    return 0;
+    return engine_run_echolink(&host, cfg, &bridge_el);
 }
 
 int main(int argc, char **argv)

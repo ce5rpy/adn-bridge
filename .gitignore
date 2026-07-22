@@ -2,6 +2,7 @@ adn-bridge
 build/
 tests/test_wire
 tests/test_codecs
+tests/test_router
 tests/*.d
 data/
 debug/

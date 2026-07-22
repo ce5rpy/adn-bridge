@@ -15,6 +15,7 @@
 #include <time.h>
 
 #include "aliases.h"
+#include "media/router.h"
 #include "peer_dmr.h"
 #include "peer_echolink.h"
 #include "peer_ysf.h"
@@ -62,8 +63,14 @@ typedef struct {
     int connect_ptt_tg; /* DMRD dst while connect PTT active */
     int connect_ptt_clearing; /* 1 = current stage is TG 4000 */
     struct timespec connect_ptt_start;
+    media_router_t *router;
+    int router_peer_el;
+    int router_peer_dmr;
+    int router_peer_ysf;
 } bridge_el_t;
 
+void bridge_el_bind_router(bridge_el_t *b, media_router_t *router,
+                           int el_id, int dmr_id, int ysf_id);
 void bridge_el_init(bridge_el_t *b, int mode, const char *dmr_options,
                     adn_bridge_aliases_t *aliases, int bridge_dmrid,
                     float el_pcm_gain, int clear_dynamic_tg);

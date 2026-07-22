@@ -16,6 +16,7 @@
 #include "media/bridge_util.h"
 #include "media/call_meta.h"
 #include "media/identity.h"
+#include "media/router.h"
 #include "mmdvm/modeconv_wrap.h"
 #include "session/dmr_tx.h"
 #include "session/dmr_wire.h"
@@ -50,6 +51,39 @@ static int bridge_el_tx_tg(const bridge_el_t *b)
 /* DMR/YSF->EL without VTERM/EOT used to leave call_active=2 and block EL TX. */
 #define DMR_RX_HANG_MS 1500
 #define YSF_RX_HANG_MS 1500
+
+void bridge_el_bind_router(bridge_el_t *b, media_router_t *router,
+                           int el_id, int dmr_id, int ysf_id)
+{
+    b->router = router;
+    b->router_peer_el = el_id;
+    b->router_peer_dmr = dmr_id;
+    b->router_peer_ysf = ysf_id;
+}
+
+static void bridge_el_router_release_active(bridge_el_t *b)
+{
+    if (!b->router)
+        return;
+    if (b->call_active == 1 && b->router_peer_el >= 0)
+        media_router_ingress_end(b->router, b->router_peer_el);
+    else if (b->call_active == 2) {
+        if (b->mode == ADN_BRIDGE_MODE_ECHOLINK_DMR && b->router_peer_dmr >= 0)
+            media_router_ingress_end(b->router, b->router_peer_dmr);
+        else if (b->mode == ADN_BRIDGE_MODE_ECHOLINK_YSF && b->router_peer_ysf >= 0)
+            media_router_ingress_end(b->router, b->router_peer_ysf);
+    }
+}
+
+static int bridge_el_router_take(bridge_el_t *b, int peer_id)
+{
+    if (!b->router || peer_id < 0)
+        return 1;
+    if (!media_router_ingress_allowed(b->router, peer_id))
+        return 0;
+    media_router_ingress_begin(b->router, peer_id);
+    return 1;
+}
 
 static int pcm_rms16(const int16_t *pcm, int n)
 {
@@ -103,6 +137,8 @@ static void bridge_el_emit_dmr_voice(bridge_el_t *b, const uint8_t voice33[33])
     uint8_t b15;
 
     if (!b->call_active) {
+        if (!bridge_el_router_take(b, b->router_peer_el))
+            return;
         b->call_active = 1;
         b->dmr_stream_id = bridge_new_stream_id();
         b->dmr_seq = 0;
@@ -143,6 +179,7 @@ static void bridge_el_finish_dmr_end(bridge_el_t *b)
 {
     LOG_DMR_INFO("EL->DMR call end (%d DMR frames out, el_rtp_rx=%u, seq=%u)\n",
              b->dmr_voice_frames, b->el.rtp_rx_packets, (unsigned)b->dmr_seq);
+    bridge_el_router_release_active(b);
     b->call_active = 0;
     b->dmr_ending = 0;
     b->dmr_voice_frames = 0;
@@ -353,7 +390,10 @@ void bridge_el_on_dmrd(bridge_el_t *b, const uint8_t *pkt, int len)
             peer_el_flush_pcm(&b->el);
             LOG_DMR_INFO("DMR->EL call end (%d voice frames in, el_rtp_tx=%u) — replaced by new stream\n",
                      b->dmr_voice_frames, b->el.rtp_tx_packets);
+            bridge_el_router_release_active(b);
         }
+        if (!bridge_el_router_take(b, b->router_peer_dmr))
+            return;
         b->call_active = 2;
         b->dmr_rx_stream_id = sid;
         b->dmr_voice_frames = 0;
@@ -367,6 +407,7 @@ void bridge_el_on_dmrd(bridge_el_t *b, const uint8_t *pkt, int len)
             peer_el_flush_pcm(&b->el);
             LOG_DMR_INFO("DMR->EL call end (%d voice frames in, el_rtp_tx=%u)\n",
                      b->dmr_voice_frames, b->el.rtp_tx_packets);
+            bridge_el_router_release_active(b);
             b->call_active = 0;
             b->dmr_voice_frames = 0;
             b->dmr_rx_stream_id = 0;
@@ -501,6 +542,7 @@ static void bridge_el_abort_el_to_dmr(bridge_el_t *b)
         return;
     LOG_DMR_INFO("EL->DMR aborted — DMR peer down (was call_active=%d ending=%d)\n",
                  b->call_active, b->dmr_ending);
+    bridge_el_router_release_active(b);
     b->call_active = 0;
     b->dmr_ending = 0;
     b->dmr_voice_frames = 0;
@@ -582,6 +624,7 @@ static int bridge_el_emit_ysf_from_conv(bridge_el_t *b)
                             b->ysf_cnt, NULL, csd1, csd2);
         LOG_YSF_INFO("EL->YSF call end (%d voice frames out, el_rtp_rx=%u)\n",
                      b->ysf_voice_frames, b->el.rtp_rx_packets);
+        bridge_el_router_release_active(b);
         b->call_active = 0;
         b->ysf_ending = 0;
         b->ysf_voice_frames = 0;
@@ -630,6 +673,8 @@ static void bridge_el_begin_el_to_ysf(bridge_el_t *b)
      */
     adapter_el_resolve_talker(b);
     memcpy(b->net_dst, YSF_WIRE_DST_ALL, 10);
+    if (!bridge_el_router_take(b, b->router_peer_el))
+        return;
     b->call_active = 1;
     b->ysf_ending = 0;
     b->ysf_voice_frames = 0;
@@ -823,9 +868,12 @@ void bridge_el_on_ysfd(bridge_el_t *b, const uint8_t *pkt, int len)
             LOG_YSF_INFO("YSF->EL call end (%d voice frames in, el_rtp_tx=%u) "
                      "— replaced by new stream\n",
                      b->ysf_voice_frames, b->el.rtp_tx_packets);
+            bridge_el_router_release_active(b);
         }
         memcpy(b->net_src, pkt + 14, 10);
         memcpy(b->net_dst, YSF_WIRE_DST_ALL, 10);
+        if (!bridge_el_router_take(b, b->router_peer_ysf))
+            return;
         b->call_active = 2;
         b->ysf_voice_frames = 0;
         b->el.rtp_tx_packets = 0;
@@ -845,6 +893,7 @@ void bridge_el_on_ysfd(bridge_el_t *b, const uint8_t *pkt, int len)
             peer_el_set_talker_name(&b->el, NULL);
             LOG_YSF_INFO("YSF->EL call end (%d voice frames in, el_rtp_tx=%u)\n",
                      b->ysf_voice_frames, b->el.rtp_tx_packets);
+            bridge_el_router_release_active(b);
             b->call_active = 0;
             b->ysf_voice_frames = 0;
             modeconv_reset();
@@ -859,6 +908,8 @@ void bridge_el_on_ysfd(bridge_el_t *b, const uint8_t *pkt, int len)
         if (b->call_active == 1)
             bridge_el_end_ysf_call(b);
         memcpy(b->net_src, pkt + 14, 10);
+        if (!bridge_el_router_take(b, b->router_peer_ysf))
+            return;
         b->call_active = 2;
         b->ysf_voice_frames = 0;
         b->el.rtp_tx_packets = 0;
@@ -928,6 +979,7 @@ void bridge_el_tick(bridge_el_t *b)
             peer_el_flush_pcm(&b->el);
             LOG_DMR_INFO("DMR->EL call end (%d voice frames in, el_rtp_tx=%u) — RX hangtime\n",
                          b->dmr_voice_frames, b->el.rtp_tx_packets);
+            bridge_el_router_release_active(b);
             b->call_active = 0;
             b->dmr_voice_frames = 0;
             b->dmr_rx_stream_id = 0;
@@ -937,6 +989,7 @@ void bridge_el_tick(bridge_el_t *b)
             peer_el_set_talker_name(&b->el, NULL);
             LOG_YSF_INFO("YSF->EL call end (%d voice frames in, el_rtp_tx=%u) — RX hangtime\n",
                          b->ysf_voice_frames, b->el.rtp_tx_packets);
+            bridge_el_router_release_active(b);
             b->call_active = 0;
             b->ysf_voice_frames = 0;
             modeconv_reset();

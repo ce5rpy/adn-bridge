@@ -23,7 +23,8 @@ BUILD = build
 C_SRCS = adn_bridge.c config.c log.c aliases.c talker_alias.c peer_dmr.c peer_ysf.c \
          peer_echolink.c el_proxy.c bridge.c bridge_el.c vocoder_remote.c ysf_fich.c \
          hbp/dmr_hbp.c vendor/yyjson/yyjson.c \
-         media/bridge_util.c media/call_meta.c media/identity.c \
+         media/bridge_util.c media/call_meta.c media/identity.c media/router.c \
+         engine.c \
          session/dmr_wire.c session/dmr_tx.c session/ysf_tx.c \
          codecs/registry.c codecs/pcm.c codecs/dmr_ambe.c codecs/ysf_ambe.c \
          codecs/pair_modeconv.c adapters/dmr.c adapters/ysf.c adapters/el.c
@@ -63,11 +64,12 @@ install: adn-bridge
 	install -m 644 examples/adn-bridge-echolink-ysf.example.ini $(DESTDIR)$(CONFDIR)/
 
 clean:
-	rm -rf $(BUILD) adn-bridge tests/test_wire tests/test_codecs
+	rm -rf $(BUILD) adn-bridge tests/test_wire tests/test_codecs tests/test_router
 
-test: tests/test_wire tests/test_codecs
+test: tests/test_wire tests/test_codecs tests/test_router
 	./tests/test_wire
 	./tests/test_codecs
+	./tests/test_router
 
 $(BUILD)/tests/test_wire.o: tests/test_wire.c
 	@mkdir -p $(dir $@)
@@ -90,6 +92,13 @@ tests/test_codecs: adn-bridge $(BUILD)/tests/test_codecs.o
 		$(BUILD)/codecs/registry.o $(BUILD)/codecs/pcm.o \
 		$(BUILD)/codecs/pair_modeconv.o $(BUILD)/codecs/ysf_ambe.o \
 		$(filter $(BUILD)/mmdvm/%,$(OBJS)) $(LDFLAGS)
+
+$(BUILD)/tests/test_router.o: tests/test_router.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+tests/test_router: $(BUILD)/tests/test_router.o $(BUILD)/media/router.o
+	$(CC) -o $@ $(BUILD)/tests/test_router.o $(BUILD)/media/router.o
 
 -include $(DEPS)
 
