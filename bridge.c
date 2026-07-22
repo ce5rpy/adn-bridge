@@ -16,6 +16,14 @@
 #define YSF_FRAME_MS 90
 #define DMR_FRAME_MS 55
 
+void bridge_bind_router(adn_bridge_t *b, media_router_t *router,
+                        int dmr_id, int ysf_id)
+{
+    b->router = router;
+    b->router_peer_dmr = dmr_id;
+    b->router_peer_ysf = ysf_id;
+}
+
 void bridge_init(adn_bridge_t *b, const char *dmr_options,
                  adn_bridge_aliases_t *aliases, int default_ysf_dmrid,
                  int clear_dynamic_tg)

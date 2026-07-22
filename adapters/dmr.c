@@ -11,6 +11,7 @@
 #include "media/bridge_util.h"
 #include "media/call_meta.h"
 #include "media/identity.h"
+#include "media/router.h"
 #include "mmdvm/modeconv_wrap.h"
 #include "peer_dmr.h"
 #include "session/dmr_tx.h"
@@ -23,6 +24,21 @@
 #define DMR_FRAME_MS 55
 #define CONNECT_PTT_MS 500
 #define DMR_CLEAR_DYNAMIC_TG 4000
+
+static int adapter_dmr_router_take(adn_bridge_t *b, int peer_id)
+{
+    int active;
+
+    if (!b->router || peer_id < 0)
+        return 1;
+    active = media_router_active_ingress(b->router);
+    if (active >= 0 && active != peer_id)
+        media_router_ingress_end(b->router, active);
+    if (!media_router_ingress_allowed(b->router, peer_id))
+        return 0;
+    media_router_ingress_begin(b->router, peer_id);
+    return 1;
+}
 
 static int adapter_dmr_tx_tg(const adn_bridge_t *b)
 {
@@ -226,6 +242,8 @@ static uint8_t adapter_dmrd_b15_dtype(const uint8_t *pkt)
 
 static void adapter_dmr_begin_to_ysf(adn_bridge_t *b, const uint8_t *pkt)
 {
+    if (!adapter_dmr_router_take(b, b->router_peer_dmr))
+        return;
     b->call_active = 1;
     b->dmr_stream_id = *(const uint32_t *)(pkt + 16);
     if (b->dmr_stream_id == 0)

@@ -10,6 +10,7 @@
 #include "media/bridge_util.h"
 #include "media/call_meta.h"
 #include "media/identity.h"
+#include "media/router.h"
 #include "mmdvm/modeconv_wrap.h"
 #include "peer_ysf.h"
 #include "session/ysf_tx.h"
@@ -19,6 +20,32 @@
 
 #define ADAPTER_META(b) ((bridge_call_meta_t *)&(b)->net_src)
 #define YSF_DT_VD_MODE2 0x02U
+
+static void adapter_ysf_router_release_active(adn_bridge_t *b)
+{
+    int active;
+
+    if (!b->router)
+        return;
+    active = media_router_active_ingress(b->router);
+    if (active >= 0)
+        media_router_ingress_end(b->router, active);
+}
+
+static int adapter_ysf_router_take(adn_bridge_t *b, int peer_id)
+{
+    int active;
+
+    if (!b->router || peer_id < 0)
+        return 1;
+    active = media_router_active_ingress(b->router);
+    if (active >= 0 && active != peer_id)
+        media_router_ingress_end(b->router, active);
+    if (!media_router_ingress_allowed(b->router, peer_id))
+        return 0;
+    media_router_ingress_begin(b->router, peer_id);
+    return 1;
+}
 
 static const char *modeconv_tag_name(unsigned int tag)
 {
@@ -48,6 +75,7 @@ static int adapter_ysf_resolve_header(adn_bridge_t *b, const uint8_t *pkt)
 
 void adapter_ysf_dmr_reset_call(adn_bridge_t *b)
 {
+    adapter_ysf_router_release_active(b);
     b->call_active = 0;
     b->dmr_voice_frames = 0;
     b->dmr_tx_frames = 0;
@@ -167,6 +195,8 @@ void adapter_ysf_on_ysfd_ysf(adn_bridge_t *b, const uint8_t *pkt, int len)
         LOG_YSF_DEBUG("YSF process HEADER -> ModeConv (talker id %d)\n", b->ysf_rf_id);
         if (!b->call_active) {
             adapter_dmr_abort_connect_ptt_ysf(b);
+            if (!adapter_ysf_router_take(b, b->router_peer_ysf))
+                return;
             b->call_active = 1;
             b->dmr_stream_id = bridge_new_stream_id();
             b->dmr_seq = 0;
@@ -203,6 +233,8 @@ void adapter_ysf_on_ysfd_ysf(adn_bridge_t *b, const uint8_t *pkt, int len)
             (unsigned)fn, b->ysf_rf_id, b->ysf_voice_frames);
         if (!b->call_active) {
             adapter_dmr_abort_connect_ptt_ysf(b);
+            if (!adapter_ysf_router_take(b, b->router_peer_ysf))
+                return;
             b->call_active = 1;
             b->dmr_stream_id = bridge_new_stream_id();
             b->dmr_seq = 0;

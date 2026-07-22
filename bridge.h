@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <time.h>
 #include "aliases.h"
+#include "media/router.h"
 #include "peer_dmr.h"
 #include "peer_ysf.h"
 
@@ -61,8 +62,13 @@ typedef struct {
     int connect_ptt_tg;
     int connect_ptt_clearing;
     struct timespec connect_ptt_start;
+    media_router_t *router;
+    int router_peer_dmr;
+    int router_peer_ysf;
 } adn_bridge_t;
 
+void bridge_bind_router(adn_bridge_t *b, media_router_t *router,
+                        int dmr_id, int ysf_id);
 void bridge_init(adn_bridge_t *b, const char *dmr_options,
                  adn_bridge_aliases_t *aliases, int default_ysf_dmrid,
                  int clear_dynamic_tg);

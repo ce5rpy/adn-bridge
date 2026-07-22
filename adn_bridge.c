@@ -133,72 +133,6 @@ static int resolve_config(int argc, char **argv, adn_bridge_config_t *cfg, char 
     return 0;
 }
 
-static int run_ysf_dmr(adn_bridge_config_t *cfg)
-{
-    time_t last_alias_poll = time(NULL);
-
-    bridge_init(&bridge, cfg->dmr_options, g_aliases, cfg->default_ysf_dmrid,
-                cfg->dmr_clear_dynamic_tg);
-
-    if (peer_ysf_open(&bridge.ysf, cfg->ysf_host, cfg->ysf_port, cfg->callsign, (uint8_t)cfg->dgid) < 0)
-        return 1;
-    if (peer_dmr_open(&bridge.dmr, cfg->dmr_host, cfg->dmr_port, cfg->callsign,
-                      cfg->dmrid, cfg->dmr_tg, cfg->dmr_options,
-                      cfg->dmr_password,
-                      cfg->description, cfg->location) < 0)
-        return 1;
-
-    LOG_INFO("bridge running (YSF<->DMR voice via ModeConv)\n");
-
-    while (keep_running) {
-        int from_dmr = 0, from_ysf = 0, len;
-        time_t now;
-
-        service_alarm();
-        peer_dmr_tick(&bridge.dmr);
-        peer_ysf_tick(&bridge.ysf);
-
-        now = time(NULL);
-        if ((cfg->aliases.stale_minutes > 0 || cfg->aliases.reload_minutes > 0)
-            && now - last_alias_poll >= 60) {
-            last_alias_poll = now;
-            if (adn_bridge_aliases_maybe_refresh(&cfg->aliases, &g_aliases) > 0)
-                bridge.aliases = g_aliases;
-        }
-
-        len = peer_dmr_poll(&bridge.dmr, 5, &from_dmr);
-        if (from_dmr && len > 0) {
-            if (len == 55 && memcmp(bridge.dmr.buf, "DMRD", 4) == 0)
-                bridge_on_dmrd(&bridge, bridge.dmr.buf, len);
-            else if (len == DMRA_PACKET_LEN && memcmp(bridge.dmr.buf, "DMRA", 4) == 0)
-                bridge_on_dmra(&bridge, bridge.dmr.buf, len);
-        }
-
-        len = peer_ysf_poll(&bridge.ysf, 5, &from_ysf);
-        if (from_ysf && len > 0) {
-            if (len == 155)
-                bridge_on_ysfd(&bridge, bridge.ysf.buf, len);
-        }
-
-        bridge_tick(&bridge);
-    }
-
-    peer_dmr_on_sigint(&bridge.dmr);
-    peer_ysf_on_sigint(&bridge.ysf);
-    return 0;
-}
-
-static int run_echolink(adn_bridge_config_t *cfg)
-{
-    engine_host_t host = {
-        .keep_running = &keep_running,
-        .service_alarm = service_alarm,
-        .aliases = &g_aliases,
-    };
-
-    return engine_run_echolink(&host, cfg, &bridge_el);
-}
-
 int main(int argc, char **argv)
 {
     adn_bridge_config_t cfg;
@@ -277,10 +211,15 @@ int main(int argc, char **argv)
     signal(SIGALRM, on_signal);
     alarm(5);
 
-    if (cfg.mode == ADN_BRIDGE_MODE_YSF_DMR)
-        rc = run_ysf_dmr(&cfg);
-    else
-        rc = run_echolink(&cfg);
+    {
+        engine_host_t host = {
+            .keep_running = &keep_running,
+            .service_alarm = service_alarm,
+            .aliases = &g_aliases,
+        };
+
+        rc = engine_run(&host, &cfg, &bridge, &bridge_el);
+    }
 
     LOG_INFO("shutting down adn-bridge\n");
     alarm(0);

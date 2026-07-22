@@ -10,6 +10,7 @@
 
 #include <signal.h>
 
+#include "bridge.h"
 #include "bridge_el.h"
 #include "config.h"
 #include "aliases.h"
@@ -20,8 +21,16 @@ typedef struct {
     adn_bridge_aliases_t **aliases;
 } engine_host_t;
 
-/* EchoLink ↔ DMR / EchoLink ↔ YSF (replaces run_echolink in adn_bridge.c). */
+/* EchoLink ↔ DMR / EchoLink ↔ YSF. */
 int engine_run_echolink(engine_host_t *host, adn_bridge_config_t *cfg,
                         bridge_el_t *bel);
+
+/* YSF ↔ DMR (ModeConv). */
+int engine_run_ysf_dmr(engine_host_t *host, adn_bridge_config_t *cfg,
+                       adn_bridge_t *b);
+
+/* Dispatch by cfg->mode. */
+int engine_run(engine_host_t *host, adn_bridge_config_t *cfg,
+               adn_bridge_t *b, bridge_el_t *bel);
 
 #endif

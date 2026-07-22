@@ -1,5 +1,5 @@
 /*
- * Bridge engine — EchoLink modes with two-peer media router.
+ * Bridge engine — main loops with media router (Phase 3+).
  *
  * Copyright (C) 2026  Rodrigo Pérez, CE5RPY <ce5rpy@qmd.cl>
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -8,18 +8,33 @@
 #include "engine.h"
 
 #include "adapters/el.h"
+#include "bridge.h"
 #include "log.h"
 #include "media/router.h"
 #include "peer_dmr.h"
 #include "peer_echolink.h"
 #include "peer_ysf.h"
+#include "talker_alias.h"
 #include "vocoder.h"
 
 #include <string.h>
 #include <time.h>
 
-static void engine_register_peers(media_router_t *r, adn_bridge_config_t *cfg,
-                                bridge_el_t *bel, int *el_id, int *dmr_id, int *ysf_id)
+static void engine_poll_aliases(adn_bridge_config_t *cfg, engine_host_t *host,
+                                time_t *last_poll, adn_bridge_aliases_t **bel_aliases)
+{
+    time_t now = time(NULL);
+
+    if ((cfg->aliases.stale_minutes <= 0 && cfg->aliases.reload_minutes <= 0)
+        || now - *last_poll < 60)
+        return;
+    *last_poll = now;
+    if (adn_bridge_aliases_maybe_refresh(&cfg->aliases, host->aliases) > 0 && bel_aliases)
+        *bel_aliases = *host->aliases;
+}
+
+static void engine_register_el_peers(media_router_t *r, adn_bridge_config_t *cfg,
+                                     bridge_el_t *bel, int *el_id, int *dmr_id, int *ysf_id)
 {
     media_router_init(r);
     *el_id = media_router_add_peer(r, MEDIA_PEER_ECHOLINK);
@@ -30,6 +45,65 @@ static void engine_register_peers(media_router_t *r, adn_bridge_config_t *cfg,
     else if (cfg->mode == ADN_BRIDGE_MODE_ECHOLINK_YSF)
         *ysf_id = media_router_add_peer(r, MEDIA_PEER_YSF);
     bridge_el_bind_router(bel, r, *el_id, *dmr_id, *ysf_id);
+}
+
+static void engine_register_ysf_dmr_peers(media_router_t *r, adn_bridge_t *b,
+                                          int *dmr_id, int *ysf_id)
+{
+    media_router_init(r);
+    *dmr_id = media_router_add_peer(r, MEDIA_PEER_DMR);
+    *ysf_id = media_router_add_peer(r, MEDIA_PEER_YSF);
+    bridge_bind_router(b, r, *dmr_id, *ysf_id);
+}
+
+int engine_run_ysf_dmr(engine_host_t *host, adn_bridge_config_t *cfg, adn_bridge_t *b)
+{
+    media_router_t router;
+    int dmr_id, ysf_id;
+    time_t last_alias_poll = time(NULL);
+
+    bridge_init(b, cfg->dmr_options, *host->aliases, cfg->default_ysf_dmrid,
+                cfg->dmr_clear_dynamic_tg);
+    engine_register_ysf_dmr_peers(&router, b, &dmr_id, &ysf_id);
+
+    if (peer_ysf_open(&b->ysf, cfg->ysf_host, cfg->ysf_port, cfg->callsign, (uint8_t)cfg->dgid) < 0)
+        return 1;
+    if (peer_dmr_open(&b->dmr, cfg->dmr_host, cfg->dmr_port, cfg->callsign,
+                      cfg->dmrid, cfg->dmr_tg, cfg->dmr_options,
+                      cfg->dmr_password,
+                      cfg->description, cfg->location) < 0)
+        return 1;
+
+    LOG_INFO("engine: YSF<->DMR (%d peers, ModeConv)\n", media_router_peer_count(&router));
+
+    while (*host->keep_running) {
+        int from_dmr = 0, from_ysf = 0, len;
+
+        host->service_alarm();
+        peer_dmr_tick(&b->dmr);
+        peer_ysf_tick(&b->ysf);
+
+        engine_poll_aliases(cfg, host, &last_alias_poll, &b->aliases);
+
+        len = peer_dmr_poll(&b->dmr, 5, &from_dmr);
+        if (from_dmr && len > 0) {
+            if (len == 55 && memcmp(b->dmr.buf, "DMRD", 4) == 0)
+                bridge_on_dmrd(b, b->dmr.buf, len);
+            else if (len == DMRA_PACKET_LEN && memcmp(b->dmr.buf, "DMRA", 4) == 0)
+                bridge_on_dmra(b, b->dmr.buf, len);
+        }
+
+        len = peer_ysf_poll(&b->ysf, 5, &from_ysf);
+        if (from_ysf && len > 0 && len == 155)
+            bridge_on_ysfd(b, b->ysf.buf, len);
+
+        bridge_tick(b);
+    }
+
+    peer_dmr_on_sigint(&b->dmr);
+    peer_ysf_on_sigint(&b->ysf);
+    bridge_bind_router(b, NULL, -1, -1);
+    return 0;
 }
 
 int engine_run_echolink(engine_host_t *host, adn_bridge_config_t *cfg,
@@ -43,7 +117,7 @@ int engine_run_echolink(engine_host_t *host, adn_bridge_config_t *cfg,
 
     bridge_el_init(bel, cfg->mode, cfg->dmr_options, *host->aliases, cfg->dmrid,
                    cfg->echolink.gain, cfg->dmr_clear_dynamic_tg);
-    engine_register_peers(&router, cfg, bel, &el_id, &dmr_id, &ysf_id);
+    engine_register_el_peers(&router, cfg, bel, &el_id, &dmr_id, &ysf_id);
 
     if (vocoder_open(&bel->voc, cfg->vocoder.host, cfg->vocoder.port) < 0)
         return 1;
@@ -74,7 +148,6 @@ int engine_run_echolink(engine_host_t *host, adn_bridge_config_t *cfg,
 
     while (*host->keep_running) {
         int from_dmr = 0, from_ysf = 0, len;
-        time_t now;
 
         host->service_alarm();
         peer_el_tick(&bel->el);
@@ -83,13 +156,7 @@ int engine_run_echolink(engine_host_t *host, adn_bridge_config_t *cfg,
         if (use_ysf)
             peer_ysf_tick(&bel->ysf);
 
-        now = time(NULL);
-        if ((cfg->aliases.stale_minutes > 0 || cfg->aliases.reload_minutes > 0)
-            && now - last_alias_poll >= 60) {
-            last_alias_poll = now;
-            if (adn_bridge_aliases_maybe_refresh(&cfg->aliases, host->aliases) > 0)
-                bel->aliases = *host->aliases;
-        }
+        engine_poll_aliases(cfg, host, &last_alias_poll, &bel->aliases);
 
         peer_el_poll(&bel->el, 5);
         if (use_dmr)
@@ -118,4 +185,12 @@ int engine_run_echolink(engine_host_t *host, adn_bridge_config_t *cfg,
     vocoder_close(&bel->voc);
     bridge_el_bind_router(bel, NULL, -1, -1, -1);
     return 0;
+}
+
+int engine_run(engine_host_t *host, adn_bridge_config_t *cfg,
+               adn_bridge_t *b, bridge_el_t *bel)
+{
+    if (cfg->mode == ADN_BRIDGE_MODE_YSF_DMR)
+        return engine_run_ysf_dmr(host, cfg, b);
+    return engine_run_echolink(host, cfg, bel);
 }
