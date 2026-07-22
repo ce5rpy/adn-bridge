@@ -24,7 +24,7 @@ C_SRCS = adn_bridge.c config.c log.c aliases.c talker_alias.c peer_dmr.c peer_ys
          peer_echolink.c el_proxy.c bridge.c bridge_el.c vocoder_remote.c ysf_fich.c \
          hbp/dmr_hbp.c vendor/yyjson/yyjson.c \
          media/bridge_util.c media/call_meta.c media/identity.c media/router.c \
-         media/peer_bus.c media/codec_plan.c media/log_flow.c \
+         media/peer_bus.c media/codec_plan.c media/log_flow.c media/core.c \
          adapters/peer_plugin.c \
          engine.c \
          session/dmr_wire.c session/dmr_tx.c session/ysf_tx.c \
@@ -66,14 +66,15 @@ install: adn-bridge
 	install -m 644 examples/adn-bridge-echolink-ysf.example.ini $(DESTDIR)$(CONFDIR)/
 
 clean:
-	rm -rf $(BUILD) adn-bridge tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers tests/test_codec_plan
+	rm -rf $(BUILD) adn-bridge tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers tests/test_codec_plan tests/test_media_core
 
-test: tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers tests/test_codec_plan
+test: tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers tests/test_codec_plan tests/test_media_core
 	./tests/test_wire
 	./tests/test_codecs
 	./tests/test_router
 	./tests/test_config_peers
 	./tests/test_codec_plan
+	./tests/test_media_core
 
 $(BUILD)/tests/test_wire.o: tests/test_wire.c
 	@mkdir -p $(dir $@)
@@ -125,6 +126,16 @@ tests/test_codec_plan: $(BUILD)/tests/test_codec_plan.o $(BUILD)/media/router.o 
 	$(CC) -o $@ $(BUILD)/tests/test_codec_plan.o \
 		$(BUILD)/media/router.o $(BUILD)/media/codec_plan.o \
 		$(BUILD)/media/log_flow.o \
+		$(BUILD)/adapters/peer_plugin.o $(BUILD)/codecs/registry.o
+
+$(BUILD)/tests/test_media_core.o: tests/test_media_core.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+tests/test_media_core: $(BUILD)/tests/test_media_core.o $(BUILD)/media/core.o $(BUILD)/media/router.o $(BUILD)/media/codec_plan.o $(BUILD)/media/log_flow.o $(BUILD)/adapters/peer_plugin.o $(BUILD)/codecs/registry.o
+	$(CC) -o $@ $(BUILD)/tests/test_media_core.o \
+		$(BUILD)/media/core.o $(BUILD)/media/router.o \
+		$(BUILD)/media/codec_plan.o $(BUILD)/media/log_flow.o \
 		$(BUILD)/adapters/peer_plugin.o $(BUILD)/codecs/registry.o
 
 -include $(DEPS)

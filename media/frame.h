@@ -1,5 +1,5 @@
 /*
- * Universal media bus frame (PCM hub).
+ * Universal media bus frame — wire-agnostic unit adapters hand to media_core.
  *
  * Copyright (C) 2026  Rodrigo Pérez, CE5RPY <ce5rpy@qmd.cl>
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -11,28 +11,37 @@
 #include <stdint.h>
 
 #include "codecs/codec.h"
-
-typedef struct {
-    int32_t  src_id;
-    int32_t  dst_id;
-    char     src_callsign[16];
-    char     dst_callsign[16];
-    uint8_t  slot;
-    uint8_t  private_call;
-    uint32_t stream_id;
-} call_meta_t;
+#include "media/call_meta.h"
 
 typedef enum {
-    MEDIA_EVT_CALL_BEGIN,
-    MEDIA_EVT_PCM,
-    MEDIA_EVT_CALL_END,
-} media_event_type_t;
+    MEDIA_FRAME_CALL_BEGIN,
+    MEDIA_FRAME_CALL_END,
+    MEDIA_FRAME_VOICE,
+    MEDIA_FRAME_SIDECHAIN,   /* DMRA block, metadata only */
+} media_frame_kind_t;
+
+/* Wire callsign slots (bridge_call_meta_t) + the scalars adapters/core actually
+ * use for routing and TX framing today (dmr.c/ysf.c/bridge_el.c). */
+typedef struct {
+    bridge_call_meta_t netcall;   /* net_src / net_dst, 10-char wire callsigns */
+    int                talker_id; /* resolved DMR radio ID / alias id */
+    uint32_t           stream_id;
+} media_call_meta_t;
 
 typedef struct {
-    media_event_type_t type;
-    call_meta_t        meta;
-    int16_t            pcm[CODEC_PCM_SAMPLES];
-    uint64_t           ts_us;
-} media_frame_t;
+    media_frame_kind_t kind;
+    codec_id_t         codec;    /* CODEC_PCM | CODEC_DMR_AMBE | CODEC_YSF_AMBE */
+    media_call_meta_t  meta;
+    union {
+        int16_t  pcm[CODEC_PCM_SAMPLES];
+        uint8_t  dmr_voice33[CODEC_DMR_VOICE_BYTES];
+        uint8_t  ysf_payload120[CODEC_YSF_PAYLOAD_BYTES];
+        struct {
+            int     rf;
+            int     block_id;
+            uint8_t block7[7];
+        } dmra;
+    } payload;
+} media_bus_frame_t;
 
 #endif
