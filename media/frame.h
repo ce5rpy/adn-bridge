@@ -32,6 +32,11 @@ typedef struct {
     media_frame_kind_t kind;
     codec_id_t         codec;    /* CODEC_PCM | CODEC_DMR_AMBE | CODEC_YSF_AMBE */
     media_call_meta_t  meta;
+    /* Protocol-specific wire bits core needs for exact session bookkeeping
+     * (DMR b15 dtype gate on VOICE frames, wire seq for late-entry sync) —
+     * not part of the universal contract, just carried through unparsed. */
+    uint8_t            wire_dtype;
+    uint8_t            wire_seq;
     union {
         int16_t  pcm[CODEC_PCM_SAMPLES];
         uint8_t  dmr_voice33[CODEC_DMR_VOICE_BYTES];

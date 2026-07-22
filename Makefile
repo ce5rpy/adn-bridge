@@ -25,6 +25,7 @@ C_SRCS = adn_bridge.c config.c log.c aliases.c talker_alias.c peer_dmr.c peer_ys
          hbp/dmr_hbp.c vendor/yyjson/yyjson.c \
          media/bridge_util.c media/call_meta.c media/identity.c media/router.c \
          media/peer_bus.c media/codec_plan.c media/log_flow.c media/core.c \
+         media/core_ysf_dmr.c \
          adapters/peer_plugin.c \
          engine.c \
          session/dmr_wire.c session/dmr_tx.c session/ysf_tx.c \
@@ -132,11 +133,20 @@ $(BUILD)/tests/test_media_core.o: tests/test_media_core.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-tests/test_media_core: $(BUILD)/tests/test_media_core.o $(BUILD)/media/core.o $(BUILD)/media/router.o $(BUILD)/media/codec_plan.o $(BUILD)/media/log_flow.o $(BUILD)/adapters/peer_plugin.o $(BUILD)/codecs/registry.o
-	$(CC) -o $@ $(BUILD)/tests/test_media_core.o \
-		$(BUILD)/media/core.o $(BUILD)/media/router.o \
-		$(BUILD)/media/codec_plan.o $(BUILD)/media/log_flow.o \
-		$(BUILD)/adapters/peer_plugin.o $(BUILD)/codecs/registry.o
+tests/test_media_core: adn-bridge $(BUILD)/tests/test_media_core.o
+	$(CXX) -o $@ $(BUILD)/tests/test_media_core.o \
+		$(BUILD)/media/core.o $(BUILD)/media/core_ysf_dmr.o \
+		$(BUILD)/media/router.o $(BUILD)/media/codec_plan.o \
+		$(BUILD)/media/log_flow.o $(BUILD)/media/peer_bus.o \
+		$(BUILD)/media/bridge_util.o $(BUILD)/media/call_meta.o \
+		$(BUILD)/media/identity.o \
+		$(BUILD)/adapters/peer_plugin.o $(BUILD)/codecs/registry.o \
+		$(BUILD)/session/dmr_wire.o $(BUILD)/session/dmr_tx.o $(BUILD)/session/ysf_tx.o \
+		$(BUILD)/peer_dmr.o $(BUILD)/peer_ysf.o $(BUILD)/peer_echolink.o $(BUILD)/el_proxy.o \
+		$(BUILD)/vocoder_remote.o $(BUILD)/talker_alias.o \
+		$(BUILD)/hbp/dmr_hbp.o $(BUILD)/log.o $(BUILD)/ysf_fich.o $(BUILD)/aliases.o \
+		$(BUILD)/vendor/yyjson/yyjson.o \
+		$(filter $(BUILD)/mmdvm/%,$(OBJS)) $(LDFLAGS)
 
 -include $(DEPS)
 

@@ -51,6 +51,7 @@ typedef struct {
     /* DMR TX framing. */
     uint8_t dmr_seq;
     uint8_t dmr_slot_bit; /* always 0x80 = TS2 */
+    uint8_t dmr_last_dtype; /* gate duplicate VHEAD (YSF2DMR m_dmrLastDT) */
     int     dmr_voice_frames;
     int     dmr_tx_frames;
 
