@@ -2,6 +2,7 @@ adn-bridge
 build/
 data/
 debug/
+docs-priv/
 
 # Local instance configs (templates stay under examples/)
 *.ini
