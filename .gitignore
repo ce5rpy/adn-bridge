@@ -3,6 +3,7 @@ build/
 tests/test_wire
 tests/test_codecs
 tests/test_router
+tests/test_config_peers
 tests/*.d
 data/
 debug/

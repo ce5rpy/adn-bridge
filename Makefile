@@ -64,12 +64,13 @@ install: adn-bridge
 	install -m 644 examples/adn-bridge-echolink-ysf.example.ini $(DESTDIR)$(CONFDIR)/
 
 clean:
-	rm -rf $(BUILD) adn-bridge tests/test_wire tests/test_codecs tests/test_router
+	rm -rf $(BUILD) adn-bridge tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers
 
-test: tests/test_wire tests/test_codecs tests/test_router
+test: tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers
 	./tests/test_wire
 	./tests/test_codecs
 	./tests/test_router
+	./tests/test_config_peers
 
 $(BUILD)/tests/test_wire.o: tests/test_wire.c
 	@mkdir -p $(dir $@)
@@ -99,6 +100,15 @@ $(BUILD)/tests/test_router.o: tests/test_router.c
 
 tests/test_router: $(BUILD)/tests/test_router.o $(BUILD)/media/router.o
 	$(CC) -o $@ $(BUILD)/tests/test_router.o $(BUILD)/media/router.o
+
+$(BUILD)/tests/test_config_peers.o: tests/test_config_peers.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+tests/test_config_peers: $(BUILD)/tests/test_config_peers.o $(BUILD)/config.o $(BUILD)/log.o $(BUILD)/aliases.o $(BUILD)/vendor/yyjson/yyjson.o
+	$(CC) -o $@ $(BUILD)/tests/test_config_peers.o \
+		$(BUILD)/config.o $(BUILD)/log.o $(BUILD)/aliases.o \
+		$(BUILD)/vendor/yyjson/yyjson.o -lcrypto -lpthread
 
 -include $(DEPS)
 

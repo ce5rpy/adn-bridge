@@ -29,6 +29,21 @@
 #define ADN_BRIDGE_MODE_ECHOLINK_DMR 1
 #define ADN_BRIDGE_MODE_ECHOLINK_YSF 2
 
+#define ADN_BRIDGE_PEER_MAX 16
+#define ADN_BRIDGE_PEER_NAME_LEN 32
+
+typedef enum {
+    ADN_BRIDGE_PEER_TYPE_DMR = 0,
+    ADN_BRIDGE_PEER_TYPE_YSF,
+    ADN_BRIDGE_PEER_TYPE_ECHOLINK,
+} adn_bridge_peer_type_t;
+
+typedef struct {
+    char name[ADN_BRIDGE_PEER_NAME_LEN];
+    adn_bridge_peer_type_t type;
+    int enabled;
+} adn_bridge_peer_t;
+
 #define ADN_BRIDGE_EL_DIR_MAX 8
 
 typedef struct {
@@ -85,9 +100,14 @@ typedef struct {
     adn_bridge_aliases_cfg_t aliases;
     adn_bridge_echolink_cfg_t echolink;
     adn_bridge_vocoder_cfg_t vocoder;
+    int peer_count;
+    adn_bridge_peer_t peers[ADN_BRIDGE_PEER_MAX];
 } adn_bridge_config_t;
 
 void adn_bridge_config_init(adn_bridge_config_t *cfg);
+/* Build implicit [peer.*] entries from legacy mode= + flat stanzas when none set. */
+void adn_bridge_config_synthesize_peers(adn_bridge_config_t *cfg);
+int adn_bridge_config_enabled_peer_count(const adn_bridge_config_t *cfg);
 /* Resolve default adn-bridge.ini (cwd, then directory of argv[0]). */
 int adn_bridge_config_default_path(const char *argv0, char *path, size_t pathlen);
 /* Returns 0 on success, -1 on error (message in err, errlen). */

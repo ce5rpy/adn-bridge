@@ -196,6 +196,22 @@ int main(int argc, char **argv)
         printf("\n");
         printf("Vocoder: %s:%d\n", cfg.vocoder.host, cfg.vocoder.port);
     }
+    if (cfg.peer_count > 0) {
+        int i;
+        printf("Peers (%d enabled / %d):\n",
+               adn_bridge_config_enabled_peer_count(&cfg), cfg.peer_count);
+        for (i = 0; i < cfg.peer_count; i++) {
+            const char *type = "?";
+            if (cfg.peers[i].type == ADN_BRIDGE_PEER_TYPE_DMR)
+                type = "dmr";
+            else if (cfg.peers[i].type == ADN_BRIDGE_PEER_TYPE_YSF)
+                type = "ysf";
+            else if (cfg.peers[i].type == ADN_BRIDGE_PEER_TYPE_ECHOLINK)
+                type = "echolink";
+            printf("  %s type=%s %s\n", cfg.peers[i].name, type,
+                   cfg.peers[i].enabled ? "enabled" : "disabled");
+        }
+    }
 
     LOG_INFO("log levels app=%s el=%s dmr=%s ysf=%s voc=%s\n",
              log_level_name(log_get_channel_level(LOG_CH_APP)),

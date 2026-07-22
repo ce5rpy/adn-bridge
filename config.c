@@ -183,10 +183,62 @@ static int parse_mode(const char *val)
     return ADN_BRIDGE_MODE_YSF_DMR;
 }
 
+static int parse_peer_type(const char *val)
+{
+    if (!val || !*val)
+        return -1;
+    if (strcmp(val, "dmr") == 0)
+        return ADN_BRIDGE_PEER_TYPE_DMR;
+    if (strcmp(val, "ysf") == 0)
+        return ADN_BRIDGE_PEER_TYPE_YSF;
+    if (strcmp(val, "echolink") == 0 || strcmp(val, "el") == 0)
+        return ADN_BRIDGE_PEER_TYPE_ECHOLINK;
+    return -1;
+}
+
+static adn_bridge_peer_t *find_or_add_peer(adn_bridge_config_t *cfg, const char *peer_name)
+{
+    int i;
+
+    for (i = 0; i < cfg->peer_count; i++) {
+        if (strcmp(cfg->peers[i].name, peer_name) == 0)
+            return &cfg->peers[i];
+    }
+    if (cfg->peer_count >= ADN_BRIDGE_PEER_MAX)
+        return NULL;
+    i = cfg->peer_count++;
+    memset(&cfg->peers[i], 0, sizeof(cfg->peers[i]));
+    set_str(cfg->peers[i].name, sizeof(cfg->peers[i].name), peer_name);
+    cfg->peers[i].enabled = 1;
+    return &cfg->peers[i];
+}
+
+static void apply_peer_key(adn_bridge_config_t *cfg, const char *peer_name,
+                           const char *key, const char *val)
+{
+    adn_bridge_peer_t *p = find_or_add_peer(cfg, peer_name);
+    int t;
+
+    if (!p)
+        return;
+    if (strcmp(key, "type") == 0) {
+        t = parse_peer_type(val);
+        if (t >= 0)
+            p->type = (adn_bridge_peer_type_t)t;
+    } else if (strcmp(key, "enabled") == 0) {
+        set_bool01(&p->enabled, val);
+    }
+}
+
 static void apply_key(adn_bridge_config_t *cfg, const char *section, const char *key, const char *val)
 {
     if (!section || !key)
         return;
+
+    if (strncmp(section, "peer.", 5) == 0) {
+        apply_peer_key(cfg, section + 5, key, val);
+        return;
+    }
 
     if (strcmp(section, "bridge") == 0) {
         if (strcmp(key, "mode") == 0)
@@ -316,6 +368,51 @@ static void apply_key(adn_bridge_config_t *cfg, const char *section, const char 
     }
 }
 
+static void add_synth_peer(adn_bridge_config_t *cfg, const char *name,
+                           adn_bridge_peer_type_t type)
+{
+    adn_bridge_peer_t *p = find_or_add_peer(cfg, name);
+
+    if (!p)
+        return;
+    p->type = type;
+    p->enabled = 1;
+}
+
+void adn_bridge_config_synthesize_peers(adn_bridge_config_t *cfg)
+{
+    if (!cfg || cfg->peer_count > 0)
+        return;
+
+    switch (cfg->mode) {
+    case ADN_BRIDGE_MODE_ECHOLINK_DMR:
+        add_synth_peer(cfg, "echolink", ADN_BRIDGE_PEER_TYPE_ECHOLINK);
+        add_synth_peer(cfg, "dmr", ADN_BRIDGE_PEER_TYPE_DMR);
+        break;
+    case ADN_BRIDGE_MODE_ECHOLINK_YSF:
+        add_synth_peer(cfg, "echolink", ADN_BRIDGE_PEER_TYPE_ECHOLINK);
+        add_synth_peer(cfg, "ysf", ADN_BRIDGE_PEER_TYPE_YSF);
+        break;
+    default:
+        add_synth_peer(cfg, "ysf", ADN_BRIDGE_PEER_TYPE_YSF);
+        add_synth_peer(cfg, "dmr", ADN_BRIDGE_PEER_TYPE_DMR);
+        break;
+    }
+}
+
+int adn_bridge_config_enabled_peer_count(const adn_bridge_config_t *cfg)
+{
+    int i, n = 0;
+
+    if (!cfg)
+        return 0;
+    for (i = 0; i < cfg->peer_count; i++) {
+        if (cfg->peers[i].enabled)
+            n++;
+    }
+    return n;
+}
+
 /* Apply [log] level + per-stanza overrides to runtime channels. */
 void adn_bridge_config_apply_log_levels(const adn_bridge_config_t *cfg)
 {
@@ -411,6 +508,8 @@ int adn_bridge_config_load(const char *path, adn_bridge_config_t *cfg, char *err
                     sizeof(cfg->echolink.proxy_password), "PUBLIC");
     }
 
+    adn_bridge_config_synthesize_peers(cfg);
+
     return 0;
 }
 
@@ -484,6 +583,11 @@ int adn_bridge_config_valid(const adn_bridge_config_t *cfg, char *err, size_t er
             snprintf(err, errlen, "missing [vocoder] host/port");
             return -1;
         }
+    }
+
+    if (adn_bridge_config_enabled_peer_count(cfg) < 2) {
+        snprintf(err, errlen, "need at least two enabled [peer.*] entries");
+        return -1;
     }
     return 0;
 }
