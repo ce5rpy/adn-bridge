@@ -219,7 +219,7 @@ void peer_dmr_tick(peer_dmr_t *p)
         if (now - pong_time1 > TIMEOUT) {
             host1_connect_status = DISCONNECTED;
             p->status = DISCONNECTED;
-            fprintf(stderr, "DMR: keepalive timeout, reconnecting...\n");
+            fprintf(stderr, "DMR: keepalive timeout (no MSTPONG), reconnecting...\n");
         }
     } else if (host1_connect_status == CONNECTING) {
         if (now - pong_time1 > TIMEOUT * 2) {
@@ -231,8 +231,26 @@ void peer_dmr_tick(peer_dmr_t *p)
 
 static void handle_rx(peer_dmr_t *p)
 {
-    if (host1_connect_status == CONNECTED)
-        pong_time1 = time(NULL); /* any server traffic resets keepalive */
+    /* Keepalive is MSTPONG-only (narspt/dmrcon). Refreshing on any packet
+     * masked server restarts: MSTCL/stray traffic kept the session "alive"
+     * while RPTPING went unanswered. */
+    if (host1_connect_status == CONNECTED) {
+        if (memcmp(buf, "MSTCL", 5) == 0) {
+            fprintf(stderr, "DMR: MSTCL from server — disconnected, will reconnect\n");
+            host1_connect_status = DISCONNECTED;
+            p->status = DISCONNECTED;
+            return;
+        }
+        if (memcmp(buf, "MSTNAK", 6) == 0) {
+            fprintf(stderr, "DMR: MSTNAK while connected — disconnected, will reconnect\n");
+            host1_connect_status = DISCONNECTED;
+            p->status = DISCONNECTED;
+            p->login_fail_until = time(NULL) + 3;
+            return;
+        }
+        if (memcmp(buf, "MSTPONG", 7) == 0)
+            pong_time1 = time(NULL);
+    }
 
     if (host1_connect_status == CONNECTING) {
         if (memcmp(buf, "RPTACK", 6) == 0) {
@@ -309,6 +327,9 @@ int peer_dmr_poll(peer_dmr_t *p, int timeout_ms, int *from_peer)
 
 void peer_dmr_send(peer_dmr_t *p, const uint8_t *data, int len)
 {
+    /* DMRD / app traffic only while registered. Login uses sendto() directly. */
+    if (host1_connect_status != CONNECTED)
+        return;
     sendto(p->sock, data, len, 0, (const struct sockaddr *)&p->peer, sizeof(p->peer));
 }
 

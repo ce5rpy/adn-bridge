@@ -530,6 +530,9 @@ void bridge_el_process_el_audio(bridge_el_t *b)
 
     if (b->mode != ADN_BRIDGE_MODE_ECHOLINK_DMR)
         return;
+    /* Mirror YSF↔DMR: do not queue EL audio toward DMR while HBP is down. */
+    if (!peer_dmr_connected(&b->dmr))
+        return;
     if (b->call_active == 2 || b->dmr_ending)
         return; /* DMR has the slot, or paced teardown in progress */
 
@@ -797,6 +800,26 @@ static void bridge_el_emit_connect_ptt(bridge_el_t *b)
     }
 }
 
+static void bridge_el_abort_el_to_dmr(bridge_el_t *b)
+{
+    /* Silent abort on DMR drop — do not emit VTERM into a dead/reconnecting session. */
+    if (b->call_active != 1 && !b->dmr_ending)
+        return;
+    LOG_DMR_INFO("EL->DMR aborted — DMR peer down (was call_active=%d ending=%d)\n",
+                 b->call_active, b->dmr_ending);
+    b->call_active = 0;
+    b->dmr_ending = 0;
+    b->dmr_voice_frames = 0;
+    b->el_ambe_count = 0;
+    b->pcm_el_acc_n = 0;
+    b->el_speech_run = 0;
+    b->el_rf_id = 0;
+    peer_el_drop_pcm_in(&b->el);
+    peer_el_clear_remote_talker(&b->el);
+    modeconv_reset();
+    stamp_now(&b->last_el_tx_end);
+}
+
 static void bridge_el_poll_connect_ptt(bridge_el_t *b)
 {
     int connected = peer_dmr_connected(&b->dmr);
@@ -809,6 +832,7 @@ static void bridge_el_poll_connect_ptt(bridge_el_t *b)
         b->connect_ptt_voice_frames = 0;
         b->connect_ptt_tg = 0;
         b->connect_ptt_clearing = 0;
+        bridge_el_abort_el_to_dmr(b);
     }
     b->dmr_was_connected = connected;
 
@@ -1373,10 +1397,12 @@ void bridge_el_tick(bridge_el_t *b)
 {
     if (b->mode == ADN_BRIDGE_MODE_ECHOLINK_DMR) {
         bridge_el_poll_connect_ptt(b);
-        if (b->dmr_ending)
-            bridge_el_pace_dmr_end(b);
-        else
-            bridge_el_pace_dmr_tx(b);
+        if (peer_dmr_connected(&b->dmr)) {
+            if (b->dmr_ending)
+                bridge_el_pace_dmr_end(b);
+            else
+                bridge_el_pace_dmr_tx(b);
+        }
     }
 
     /* EL→YSF: one YSFD every 90 ms (identical pacing to DMR→YSF). */
