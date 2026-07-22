@@ -26,7 +26,7 @@ C_SRCS = adn_bridge.c config.c log.c aliases.c talker_alias.c peer_dmr.c peer_ys
          media/bridge_util.c media/call_meta.c media/identity.c \
          session/dmr_wire.c session/dmr_tx.c session/ysf_tx.c \
          codecs/registry.c codecs/pcm.c codecs/dmr_ambe.c codecs/ysf_ambe.c \
-         codecs/pair_modeconv.c
+         codecs/pair_modeconv.c adapters/dmr.c adapters/ysf.c adapters/el.c
 CXX_SRCS = mmdvm/ModeConv.cpp mmdvm/Golay24128.cpp mmdvm/modeconv_wrap.cpp \
            mmdvm/YSFPayload.cpp mmdvm/YSFConvolution.cpp mmdvm/CRC.cpp \
            mmdvm/Utils.cpp mmdvm/ysfpayload_wrap.cpp

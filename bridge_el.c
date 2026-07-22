@@ -9,6 +9,7 @@
  */
 
 #include "bridge_el.h"
+#include "adapters/el.h"
 #include "config.h"
 #include "hbp/dmr_codec.h"
 #include "log.h"
@@ -50,11 +51,6 @@ static int bridge_el_tx_tg(const bridge_el_t *b)
 #define DMR_RX_HANG_MS 1500
 #define YSF_RX_HANG_MS 1500
 
-void bridge_el_format_callsign10(char out[10], const char *src)
-{
-    identity_format_full_callsign10(out, src);
-}
-
 static int pcm_rms16(const int16_t *pcm, int n)
 {
     long long acc = 0;
@@ -85,68 +81,6 @@ static void pcm_apply_gain(int16_t *pcm, int n, float gain)
     }
 }
 
-/*
- * Resolve EchoLink remote talker (inbound SDES / conference) like YSF→DMR:
- *   callsign base → numeric id or subscriber alias → DMR RF id.
- * Unknown talker falls back to bridge [dmr] callsign + dmrid.
- * EL→YSF keeps the full wire callsign (incl. -L/-R) in net_src for the radio.
- */
-static void bridge_el_resolve_el_talker(bridge_el_t *b)
-{
-    const char *raw = peer_el_remote_talker(&b->el);
-    char base[16];
-    char talker10[10];
-    int id = 0;
-
-    if (!raw || !raw[0])
-        raw = b->el.callsign;
-    identity_callsign_base(raw, base);
-    if (!base[0]) {
-        identity_callsign_base(b->el.callsign, base);
-        raw = b->el.callsign;
-    }
-
-    identity_format_base_callsign10(talker10, base);
-    id = identity_callsign10_to_dmrid((const uint8_t *)talker10);
-    if (id <= 0 && base[0] && b->aliases)
-        id = identity_lookup_alias_id(b->aliases, base);
-
-    if (b->mode == ADN_BRIDGE_MODE_ECHOLINK_YSF) {
-        char prev[10];
-
-        memcpy(prev, b->net_src, 10);
-        bridge_el_format_callsign10(b->net_src, raw);
-        b->el_rf_id = id > 0 ? id : b->bridge_dmrid;
-        if (memcmp(prev, b->net_src, 10) != 0)
-            LOG_YSF_INFO("EL->YSF talker raw=%s base=%s\n", raw, base[0] ? base : "?");
-        return;
-    }
-
-    if (id > 0) {
-        memcpy(b->net_src, talker10, 10);
-        b->el_rf_id = id;
-        LOG_DMR_INFO("EL->DMR talker %s -> id %d (alias)\n", base, id);
-        return;
-    }
-
-    if (b->dmr.dmrid > 0) {
-        memcpy(b->net_src, b->dmr.callsign, 10);
-        b->el_rf_id = b->dmr.dmrid;
-        LOG_DMR_INFO("EL->DMR talker %s unknown -> bridge %.10s id %d\n",
-                     base[0] ? base : "?", b->net_src, b->el_rf_id);
-        return;
-    }
-    if (b->bridge_dmrid > 0) {
-        b->el_rf_id = b->bridge_dmrid;
-        LOG_DMR_INFO("EL->DMR talker %s unknown -> bridge id %d\n",
-                     base[0] ? base : "?", b->el_rf_id);
-        return;
-    }
-    b->el_rf_id = 0;
-    LOG_DMR_WARNING("EL->DMR talker %s: no DMR id (alias miss, no bridge dmrid)\n",
-                    base[0] ? base : "?");
-}
-
 static void bridge_el_send_dmrd(bridge_el_t *b, uint8_t frame_type, const uint8_t *voice33)
 {
     dmr_tx_args_t args;
@@ -174,7 +108,7 @@ static void bridge_el_emit_dmr_voice(bridge_el_t *b, const uint8_t voice33[33])
         b->dmr_seq = 0;
         b->dmr_voice_frames = 0;
         modeconv_reset();
-        bridge_el_resolve_el_talker(b);
+        adapter_el_resolve_talker(b);
         /* One VHEAD only: identical repeats are counted as loss by adn-server
          * PacketControl (duplicate CRC / lastData) and also create SEQ gaps. */
         bridge_el_send_dmrd(b, (uint8_t)(slot_bit | (DMRD_FT_DATA_SYNC << 4) | DMRD_DTYPE_VHEAD),
@@ -602,20 +536,6 @@ static void bridge_el_poll_connect_ptt(bridge_el_t *b)
 
 /* ---- EchoLink <-> YSF (framing mirrors bridge.c DMR2YSF path) ---- */
 
-static void bridge_el_set_ysf_talker_on_el(bridge_el_t *b)
-{
-    char talker[16];
-    char name[32];
-
-    identity_wire_call_to_cstr(talker, b->net_src);
-    if (!talker[0]) {
-        peer_el_set_talker_name(&b->el, NULL);
-        return;
-    }
-    snprintf(name, sizeof(name), "%s (%s)", b->el.callsign, talker);
-    peer_el_set_talker_name(&b->el, name);
-}
-
 static int bridge_el_send_ysfd(bridge_el_t *b, uint8_t fi, uint8_t ft, uint8_t cm,
                                uint8_t fich_fn, uint8_t net_cnt,
                                const uint8_t *payload120,
@@ -708,7 +628,7 @@ static void bridge_el_begin_el_to_ysf(bridge_el_t *b)
      * HEADER is queued like putDMRHeader; CSD bytes filled on emit.
      * Previous QSO talker is cleared on call end; late SDES → re-HEADER.
      */
-    bridge_el_resolve_el_talker(b);
+    adapter_el_resolve_talker(b);
     memcpy(b->net_dst, YSF_WIRE_DST_ALL, 10);
     b->call_active = 1;
     b->ysf_ending = 0;
@@ -738,7 +658,7 @@ static void bridge_el_ysf_reheader_if_talker_changed(bridge_el_t *b)
     if (memcmp(want, b->net_src, 10) == 0)
         return;
     memcpy(prev, b->net_src, 10);
-    bridge_el_resolve_el_talker(b);
+    adapter_el_resolve_talker(b);
     if (memcmp(prev, b->net_src, 10) == 0)
         return;
     modeconv_put_dmr_header();
@@ -912,7 +832,7 @@ void bridge_el_on_ysfd(bridge_el_t *b, const uint8_t *pkt, int len)
         bridge_stamp_now(&b->last_dmr_rx); /* reuse: last peer->EL activity */
         modeconv_reset();
         modeconv_put_ysf_header();
-        bridge_el_set_ysf_talker_on_el(b);
+        adapter_el_set_ysf_talker_name(b);
         LOG_YSF_INFO("YSF->EL call start (src %.10s)\n", b->net_src);
         return;
     }
@@ -944,7 +864,7 @@ void bridge_el_on_ysfd(bridge_el_t *b, const uint8_t *pkt, int len)
         b->el.rtp_tx_packets = 0;
         modeconv_reset();
         modeconv_put_ysf_header();
-        bridge_el_set_ysf_talker_on_el(b);
+        adapter_el_set_ysf_talker_name(b);
         LOG_YSF_INFO("YSF->EL call start (src %.10s, no HEADER)\n", b->net_src);
     }
     if (dt != YSF_DT_VD_MODE2) {
