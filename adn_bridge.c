@@ -59,14 +59,7 @@ static void service_alarm(void)
     if (!alarm_pending)
         return;
     alarm_pending = 0;
-    if (bridge.dmr.sock >= 0)
-        peer_dmr_on_alarm(&bridge.dmr);
-    if (bridge.ysf.sock >= 0)
-        peer_ysf_on_alarm(&bridge.ysf);
-    if (bridge_el.dmr.sock >= 0)
-        peer_dmr_on_alarm(&bridge_el.dmr);
-    if (bridge_el.ysf.sock >= 0)
-        peer_ysf_on_alarm(&bridge_el.ysf);
+    engine_service_peer_alarms();
 }
 
 static void print_credits(FILE *out)
@@ -191,11 +184,6 @@ int main(int argc, char **argv)
 
     memset(&bridge, 0, sizeof(bridge));
     memset(&bridge_el, 0, sizeof(bridge_el));
-    bridge.dmr.sock = -1;
-    bridge.ysf.sock = -1;
-    bridge_el.dmr.sock = -1;
-    bridge_el.ysf.sock = -1;
-    bridge_el.el.rtp_sock = -1;
 
     log_set_level(LOG_LEVEL_INFO);
 

@@ -7,6 +7,7 @@
 
 #include "config.h"
 #include "log.h"
+#include "media/codec_plan.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -630,13 +631,35 @@ static int validate_peer_el(const adn_bridge_peer_t *p, char *err, size_t errlen
         snprintf(err, errlen, "[peer.%s] invalid gain (0 < gain <= 4)", p->name);
         return -1;
     }
-    if (!el->vocoder_host[0]) {
-        snprintf(err, errlen, "[peer.%s] missing vocoder_host", p->name);
-        return -1;
-    }
-    if (el->vocoder_port <= 0) {
-        snprintf(err, errlen, "[peer.%s] missing vocoder_port", p->name);
-        return -1;
+    return 0;
+}
+
+static int validate_el_vocoder_when_needed(const adn_bridge_config_t *cfg,
+                                            char *err, size_t errlen)
+{
+    media_codec_plan_t plan;
+    int i;
+
+    if (media_codec_plan_from_config(cfg, &plan) != 0 || !plan.needs_vocoder)
+        return 0;
+
+    for (i = 0; i < cfg->peer_count; i++) {
+        const adn_bridge_peer_t *p = &cfg->peers[i];
+        const adn_bridge_peer_el_t *el;
+
+        if (!p->enabled || p->type != ADN_BRIDGE_PEER_TYPE_ECHOLINK)
+            continue;
+        el = &p->u.el;
+        if (!el->vocoder_host[0]) {
+            snprintf(err, errlen,
+                     "[peer.%s] missing vocoder_host (PCM bridge required for this layout)",
+                     p->name);
+            return -1;
+        }
+        if (el->vocoder_port <= 0) {
+            snprintf(err, errlen, "[peer.%s] missing vocoder_port", p->name);
+            return -1;
+        }
     }
     return 0;
 }
@@ -675,6 +698,9 @@ int adn_bridge_config_valid(const adn_bridge_config_t *cfg, char *err, size_t er
     n_el = adn_bridge_config_count_peers(cfg, ADN_BRIDGE_PEER_TYPE_ECHOLINK, 1);
     n_dmr = adn_bridge_config_count_peers(cfg, ADN_BRIDGE_PEER_TYPE_DMR, 1);
     n_ysf = adn_bridge_config_count_peers(cfg, ADN_BRIDGE_PEER_TYPE_YSF, 1);
+
+    if (validate_el_vocoder_when_needed(cfg, err, errlen) != 0)
+        return -1;
 
     switch (adn_bridge_config_layout(cfg)) {
     case ADN_BRIDGE_LAYOUT_EL_DMR:

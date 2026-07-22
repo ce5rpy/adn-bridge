@@ -15,6 +15,8 @@
 #include <time.h>
 
 #include "aliases.h"
+#include "media/peer_bus.h"
+#include "media/codec_plan.h"
 #include "media/router.h"
 #include "peer_dmr.h"
 #include "peer_echolink.h"
@@ -25,10 +27,13 @@
 #define BRIDGE_EL_LINK_YSF  1
 
 typedef struct {
-    peer_echolink_t el;
-    peer_dmr_t dmr;
-    peer_ysf_t ysf; /* used only in EchoLink+YSF layout */
+    media_peer_bus_t *bus;
+    peer_echolink_t *el;
+    peer_dmr_t *dmr;
+    peer_ysf_t *ysf;
+    int ingress_router_id;
     vocoder_t voc;
+    int use_vocoder; /* set from media_codec_plan — skip vocoder I/O when 0 */
     adn_bridge_aliases_t *aliases;
     int link_kind; /* BRIDGE_EL_LINK_DMR or BRIDGE_EL_LINK_YSF */
     int bridge_dmrid; /* [peer.*] dmr dmrid — fallback RF id / alias miss */
@@ -67,18 +72,18 @@ typedef struct {
     int connect_ptt_clearing; /* 1 = current stage is TG 4000 */
     struct timespec connect_ptt_start;
     media_router_t *router;
-    int router_peer_el;
-    int router_peer_dmr;
-    int router_peer_ysf;
 } bridge_el_t;
 
-void bridge_el_bind_router(bridge_el_t *b, media_router_t *router,
-                           int el_id, int dmr_id, int ysf_id);
+void bridge_el_bind_router(bridge_el_t *b, media_router_t *router);
+void bridge_el_attach_bus(bridge_el_t *b, media_peer_bus_t *bus);
+void bridge_el_apply_codec_plan(bridge_el_t *b, const media_codec_plan_t *plan);
 void bridge_el_init(bridge_el_t *b, int link_kind, const char *dmr_options,
                     adn_bridge_aliases_t *aliases, int bridge_dmrid,
                     float el_pcm_gain, int clear_dynamic_tg);
-void bridge_el_on_dmrd(bridge_el_t *b, const uint8_t *pkt, int len);
-void bridge_el_on_ysfd(bridge_el_t *b, const uint8_t *pkt, int len);
+void bridge_el_on_dmrd_slot(bridge_el_t *b, int src_router_id, peer_dmr_t *dmr,
+                            const uint8_t *pkt, int len);
+void bridge_el_on_ysfd_slot(bridge_el_t *b, int src_router_id, peer_ysf_t *ysf,
+                            const uint8_t *pkt, int len);
 void bridge_el_tick(bridge_el_t *b);
 /* Drain EL PCM through vocoder into DMR (call after peer_el_poll). */
 void bridge_el_process_el_audio(bridge_el_t *b);

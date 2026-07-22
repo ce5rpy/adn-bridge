@@ -10,6 +10,7 @@
 #include "config.h"
 #include "log.h"
 #include "media/identity.h"
+#include "media/log_flow.h"
 #include "peer_echolink.h"
 
 #include <stdio.h>
@@ -22,17 +23,19 @@ void bridge_el_format_callsign10(char out[10], const char *src)
 
 void adapter_el_resolve_talker(bridge_el_t *b)
 {
-    const char *raw = peer_el_remote_talker(&b->el);
+    const char *raw = peer_el_remote_talker(b->el);
     char base[16];
     char talker10[10];
     int id = 0;
 
+    if (!b->el)
+        return;
     if (!raw || !raw[0])
-        raw = b->el.callsign;
+        raw = b->el->callsign;
     identity_callsign_base(raw, base);
     if (!base[0]) {
-        identity_callsign_base(b->el.callsign, base);
-        raw = b->el.callsign;
+        identity_callsign_base(b->el->callsign, base);
+        raw = b->el->callsign;
     }
 
     identity_format_base_callsign10(talker10, base);
@@ -42,37 +45,45 @@ void adapter_el_resolve_talker(bridge_el_t *b)
 
     if (b->link_kind == BRIDGE_EL_LINK_YSF) {
         char prev[10];
+        media_peer_kind_t dst = MEDIA_PEER_YSF;
 
         memcpy(prev, b->net_src, 10);
         bridge_el_format_callsign10(b->net_src, raw);
         b->el_rf_id = id > 0 ? id : b->bridge_dmrid;
         if (memcmp(prev, b->net_src, 10) != 0)
-            LOG_YSF_INFO("EL->YSF talker raw=%s base=%s\n", raw, base[0] ? base : "?");
+            LOG_YSF_INFO("%s talker raw=%s base=%s\n",
+                         media_flow_label(MEDIA_PEER_ECHOLINK, dst),
+                         raw, base[0] ? base : "?");
         return;
     }
 
     if (id > 0) {
         memcpy(b->net_src, talker10, 10);
         b->el_rf_id = id;
-        LOG_DMR_INFO("EL->DMR talker %s -> id %d (alias)\n", base, id);
+        LOG_DMR_INFO("%s talker %s -> id %d (alias)\n",
+                     media_flow_label(MEDIA_PEER_ECHOLINK, MEDIA_PEER_DMR),
+                     base, id);
         return;
     }
 
-    if (b->dmr.dmrid > 0) {
-        memcpy(b->net_src, b->dmr.callsign, 10);
-        b->el_rf_id = b->dmr.dmrid;
-        LOG_DMR_INFO("EL->DMR talker %s unknown -> bridge %.10s id %d\n",
+    if (b->dmr && b->dmr->dmrid > 0) {
+        memcpy(b->net_src, b->dmr->callsign, 10);
+        b->el_rf_id = b->dmr->dmrid;
+        LOG_DMR_INFO("%s talker %s unknown -> bridge %.10s id %d\n",
+                     media_flow_label(MEDIA_PEER_ECHOLINK, MEDIA_PEER_DMR),
                      base[0] ? base : "?", b->net_src, b->el_rf_id);
         return;
     }
     if (b->bridge_dmrid > 0) {
         b->el_rf_id = b->bridge_dmrid;
-        LOG_DMR_INFO("EL->DMR talker %s unknown -> bridge id %d\n",
+        LOG_DMR_INFO("%s talker %s unknown -> bridge id %d\n",
+                     media_flow_label(MEDIA_PEER_ECHOLINK, MEDIA_PEER_DMR),
                      base[0] ? base : "?", b->el_rf_id);
         return;
     }
     b->el_rf_id = 0;
-    LOG_DMR_WARNING("EL->DMR talker %s: no DMR id (alias miss, no bridge dmrid)\n",
+    LOG_DMR_WARNING("%s talker %s: no DMR id (alias miss, no bridge dmrid)\n",
+                    media_flow_label(MEDIA_PEER_ECHOLINK, MEDIA_PEER_DMR),
                     base[0] ? base : "?");
 }
 
@@ -83,9 +94,9 @@ void adapter_el_set_ysf_talker_name(bridge_el_t *b)
 
     identity_wire_call_to_cstr(talker, b->net_src);
     if (!talker[0]) {
-        peer_el_set_talker_name(&b->el, NULL);
+        peer_el_set_talker_name(b->el, NULL);
         return;
     }
-    snprintf(name, sizeof(name), "%.10s (%.12s)", b->el.callsign, talker);
-    peer_el_set_talker_name(&b->el, name);
+    snprintf(name, sizeof(name), "%.10s (%.12s)", b->el->callsign, talker);
+    peer_el_set_talker_name(b->el, name);
 }

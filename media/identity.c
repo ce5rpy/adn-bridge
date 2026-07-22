@@ -8,6 +8,7 @@
 #include "media/identity.h"
 
 #include "log.h"
+#include "media/log_flow.h"
 #include "mmdvm/ysfpayload_wrap.h"
 #include "session/ysf_tx.h"
 #include "ysf_fich.h"
@@ -247,21 +248,25 @@ void identity_resolve_dmr_to_ysf(bridge_call_meta_t *meta, const identity_dmr_ct
     memcpy(prev, meta->net_src, 10);
 
     if (identity_lookup_dmr_callsign(ctx->aliases, rf, meta->net_src)) {
-        LOG_DMR_DEBUG("DMR->YSF src id %d -> %.10s (subscriber DB)\n", rf, meta->net_src);
+        LOG_DMR_DEBUG("%s src id %d -> %.10s (subscriber DB)\n",
+                      media_flow_label(MEDIA_PEER_DMR, MEDIA_PEER_YSF), rf, meta->net_src);
     } else {
         identity_format_id_callsign10(meta->net_src, rf);
-        LOG_DMR_WARNING("DMR->YSF src id %d: not in subscriber DB, using numeric\n", rf);
+        LOG_DMR_WARNING("%s src id %d: not in subscriber DB, using numeric\n",
+                        media_flow_label(MEDIA_PEER_DMR, MEDIA_PEER_YSF), rf);
     }
 
     if (ctx->dmra_text && ctx->dmra_text[0] && ctx->dmra_rf == rf) {
-        LOG_DMR_DEBUG("DMR->YSF id %d DMRA '%s'\n", rf, ctx->dmra_text);
+        LOG_DMR_DEBUG("%s id %d DMRA '%s'\n",
+                      media_flow_label(MEDIA_PEER_DMR, MEDIA_PEER_YSF), rf, ctx->dmra_text);
     }
 
     if (dst > 0)
         identity_format_tg_dst10(meta->net_dst, dst);
 
     if (memcmp(prev, meta->net_src, 10) != 0) {
-        LOG_DMR_INFO("DMR->YSF talker id %d -> %.10s\n", rf, meta->net_src);
+        LOG_DMR_INFO("%s talker id %d -> %.10s\n",
+                     media_flow_label(MEDIA_PEER_DMR, MEDIA_PEER_YSF), rf, meta->net_src);
     }
 }
 
@@ -280,21 +285,24 @@ int identity_assign_ysf_talker(bridge_call_meta_t *meta, int *ysf_rf_id,
     identity_callsign_base_src(src, base);
     identity_format_base_callsign10(talker, base);
     memcpy(meta->net_src, talker, 10);
-    LOG_DMR_DEBUG("YSF->DMR callsign raw=%s base=%s\n", raw_label, base);
+    LOG_DMR_DEBUG("%s callsign raw=%s base=%s\n",
+                  media_flow_label(MEDIA_PEER_YSF, MEDIA_PEER_DMR), raw_label, base);
 
     id = identity_callsign10_to_dmrid((const uint8_t *)talker);
     if (id <= 0)
         id = identity_lookup_alias_id(ctx->aliases, base);
     if (id > 0) {
         *ysf_rf_id = id;
-        LOG_DMR_DEBUG("YSF->DMR base %s -> id %d (alias)\n", base, id);
+        LOG_DMR_DEBUG("%s base %s -> id %d (alias)\n",
+                      media_flow_label(MEDIA_PEER_YSF, MEDIA_PEER_DMR), base, id);
         return 1;
     }
 
     if (ctx->bridge_dmrid > 0 && ctx->bridge_callsign) {
         memcpy(meta->net_src, ctx->bridge_callsign, 10);
         *ysf_rf_id = ctx->bridge_dmrid;
-        LOG_DMR_INFO("YSF->DMR talker %s unknown -> bridge %.10s id %d\n",
+        LOG_DMR_INFO("%s talker %s unknown -> bridge %.10s id %d\n",
+                     media_flow_label(MEDIA_PEER_YSF, MEDIA_PEER_DMR),
                      base, meta->net_src, *ysf_rf_id);
         return 1;
     }

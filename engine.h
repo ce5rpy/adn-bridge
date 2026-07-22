@@ -25,4 +25,7 @@ typedef struct {
 int engine_run(engine_host_t *host, adn_bridge_config_t *cfg,
                adn_bridge_t *b, bridge_el_t *bel);
 
+/* Iterate open bus peers for SIGALRM keepalives (set during engine_run). */
+void engine_service_peer_alarms(void);
+
 #endif

@@ -15,7 +15,8 @@ void media_router_init(media_router_t *r)
     r->active_ingress = -1;
 }
 
-int media_router_add_peer(media_router_t *r, media_peer_kind_t kind)
+int media_router_add_peer_cfg(media_router_t *r, media_peer_kind_t kind,
+                               int cfg_index, int enabled)
 {
     media_router_peer_t *p;
 
@@ -24,9 +25,49 @@ int media_router_add_peer(media_router_t *r, media_peer_kind_t kind)
     p = &r->peers[r->n_peers];
     p->id = r->n_peers;
     p->kind = kind;
-    p->enabled = 1;
+    p->enabled = enabled ? 1 : 0;
+    p->cfg_index = cfg_index;
     r->n_peers++;
     return p->id;
+}
+
+int media_router_add_peer(media_router_t *r, media_peer_kind_t kind)
+{
+    return media_router_add_peer_cfg(r, kind, MEDIA_ROUTER_CFG_NONE, 1);
+}
+
+int media_router_peer_kind(const media_router_t *r, int peer_id)
+{
+    if (!r || peer_id < 0 || peer_id >= r->n_peers)
+        return -1;
+    return (int)r->peers[peer_id].kind;
+}
+
+int media_router_peer_cfg_index(const media_router_t *r, int peer_id)
+{
+    if (!r || peer_id < 0 || peer_id >= r->n_peers)
+        return MEDIA_ROUTER_CFG_NONE;
+    return r->peers[peer_id].cfg_index;
+}
+
+void media_router_set_peer_enabled(media_router_t *r, int peer_id, int enabled)
+{
+    if (!r || peer_id < 0 || peer_id >= r->n_peers)
+        return;
+    r->peers[peer_id].enabled = enabled ? 1 : 0;
+}
+
+int media_router_find_first(const media_router_t *r, media_peer_kind_t kind)
+{
+    int i;
+
+    if (!r)
+        return -1;
+    for (i = 0; i < r->n_peers; i++) {
+        if (r->peers[i].enabled && r->peers[i].kind == kind)
+            return i;
+    }
+    return -1;
 }
 
 int media_router_peer_count(const media_router_t *r)

@@ -16,6 +16,7 @@
 #include "media/bridge_util.h"
 #include "media/call_meta.h"
 #include "media/identity.h"
+#include "media/log_flow.h"
 #include "media/router.h"
 #include "mmdvm/modeconv_wrap.h"
 #include "session/dmr_tx.h"
@@ -37,11 +38,30 @@
 #define CONNECT_PTT_MS 500
 #define DMR_CLEAR_DYNAMIC_TG 4000
 
+static media_peer_kind_t bridge_el_dst_kind(const bridge_el_t *b)
+{
+    return b->link_kind == BRIDGE_EL_LINK_DMR ? MEDIA_PEER_DMR : MEDIA_PEER_YSF;
+}
+
+#define BRIDGE_EL_FLOW_TX(b) \
+    media_flow_label(MEDIA_PEER_ECHOLINK, bridge_el_dst_kind(b))
+
+static media_peer_kind_t bridge_el_ingress_kind(const bridge_el_t *b)
+{
+    if (b->ingress_router_id >= 0 && b->router
+        && b->ingress_router_id < b->router->n_peers)
+        return b->router->peers[b->ingress_router_id].kind;
+    return bridge_el_dst_kind(b);
+}
+
+#define BRIDGE_EL_FLOW_RX(b) \
+    media_flow_label(bridge_el_ingress_kind(b), MEDIA_PEER_ECHOLINK)
+
 static int bridge_el_tx_tg(const bridge_el_t *b)
 {
     if (b->connect_ptt_active && b->connect_ptt_tg > 0)
         return b->connect_ptt_tg;
-    return b->dmr.tg;
+    return b->dmr ? b->dmr->tg : 0;
 }
 /* End EL->DMR/YSF after this much without inbound EL PCM (key-down silence
  * must still hold / activate the TG; hang follows PCM presence, not RMS). */
@@ -52,27 +72,25 @@ static int bridge_el_tx_tg(const bridge_el_t *b)
 #define DMR_RX_HANG_MS 1500
 #define YSF_RX_HANG_MS 1500
 
-void bridge_el_bind_router(bridge_el_t *b, media_router_t *router,
-                           int el_id, int dmr_id, int ysf_id)
+void bridge_el_bind_router(bridge_el_t *b, media_router_t *router)
 {
     b->router = router;
-    b->router_peer_el = el_id;
-    b->router_peer_dmr = dmr_id;
-    b->router_peer_ysf = ysf_id;
+}
+
+static int bridge_el_router_slot(const bridge_el_t *b, media_peer_kind_t kind)
+{
+    return b->router ? media_router_find_first(b->router, kind) : -1;
 }
 
 static void bridge_el_router_release_active(bridge_el_t *b)
 {
+    int active;
+
     if (!b->router)
         return;
-    if (b->call_active == 1 && b->router_peer_el >= 0)
-        media_router_ingress_end(b->router, b->router_peer_el);
-    else if (b->call_active == 2) {
-        if (b->link_kind == BRIDGE_EL_LINK_DMR && b->router_peer_dmr >= 0)
-            media_router_ingress_end(b->router, b->router_peer_dmr);
-        else if (b->link_kind == BRIDGE_EL_LINK_YSF && b->router_peer_ysf >= 0)
-            media_router_ingress_end(b->router, b->router_peer_ysf);
-    }
+    active = media_router_active_ingress(b->router);
+    if (active >= 0)
+        media_router_ingress_end(b->router, active);
 }
 
 static int bridge_el_router_take(bridge_el_t *b, int peer_id)
@@ -83,6 +101,11 @@ static int bridge_el_router_take(bridge_el_t *b, int peer_id)
         return 0;
     media_router_ingress_begin(b->router, peer_id);
     return 1;
+}
+
+static int bridge_el_router_take_kind(bridge_el_t *b, media_peer_kind_t kind)
+{
+    return bridge_el_router_take(b, bridge_el_router_slot(b, kind));
 }
 
 static int pcm_rms16(const int16_t *pcm, int n)
@@ -115,19 +138,89 @@ static void pcm_apply_gain(int16_t *pcm, int n, float gain)
     }
 }
 
-static void bridge_el_send_dmrd(bridge_el_t *b, uint8_t frame_type, const uint8_t *voice33)
+void bridge_el_attach_bus(bridge_el_t *b, media_peer_bus_t *bus)
+{
+    b->bus = bus;
+    b->el = bus ? media_peer_bus_primary_el(bus) : NULL;
+    b->dmr = bus ? media_peer_bus_primary_dmr(bus) : NULL;
+    b->ysf = bus ? media_peer_bus_primary_ysf(bus) : NULL;
+}
+
+void bridge_el_apply_codec_plan(bridge_el_t *b, const media_codec_plan_t *plan)
+{
+    if (!b)
+        return;
+    b->use_vocoder = plan && plan->needs_vocoder;
+}
+
+static int bridge_el_vocoder_active(const bridge_el_t *b)
+{
+    return b && b->use_vocoder && vocoder_is_ready(&b->voc);
+}
+
+static int bridge_el_pcm_to_ambe(bridge_el_t *b, const int16_t *pcm, uint8_t ambe[7])
+{
+    if (!bridge_el_vocoder_active(b))
+        return -1;
+    return vocoder_encode(&b->voc, pcm, ambe);
+}
+
+static int bridge_el_ambe_to_pcm(bridge_el_t *b, const uint8_t ambe[7], int16_t pcm[160])
+{
+    if (!bridge_el_vocoder_active(b))
+        return -1;
+    return vocoder_decode(&b->voc, ambe, pcm);
+}
+
+static void bridge_el_tx_dmrd(bridge_el_t *b, peer_dmr_t *dmr,
+                              uint8_t frame_type, const uint8_t *voice33)
 {
     dmr_tx_args_t args;
-    int rf_id = (b->el_rf_id > 0) ? b->el_rf_id : b->dmr.dmrid;
+    int rf_id;
 
-    args.peer = &b->dmr;
-    args.bridge_dmrid = b->dmr.dmrid;
+    if (!dmr)
+        return;
+    rf_id = (b->el_rf_id > 0) ? b->el_rf_id : dmr->dmrid;
+
+    args.peer = dmr;
+    args.bridge_dmrid = dmr->dmrid;
     args.talker_rf_id = rf_id;
     args.tx_tg = bridge_el_tx_tg(b);
     args.seq = &b->dmr_seq;
     args.stream_id = b->dmr_stream_id;
     args.last_tx = &b->last_dmr_tx;
     dmr_tx_send(&args, frame_type, voice33);
+}
+
+typedef struct {
+    bridge_el_t     *b;
+    uint8_t          frame_type;
+    const uint8_t   *voice33;
+} bridge_el_fanout_dmrd_ctx_t;
+
+static int bridge_el_fanout_dmrd_cb(int dst_id, media_peer_kind_t kind, void *vctx)
+{
+    bridge_el_fanout_dmrd_ctx_t *ctx = vctx;
+    peer_dmr_t *dmr;
+
+    if (kind != MEDIA_PEER_DMR)
+        return 0;
+    dmr = media_peer_bus_dmr(ctx->b->bus, dst_id);
+    if (!dmr)
+        return 0;
+    bridge_el_tx_dmrd(ctx->b, dmr, ctx->frame_type, ctx->voice33);
+    return 0;
+}
+
+static void bridge_el_send_dmrd(bridge_el_t *b, uint8_t frame_type, const uint8_t *voice33)
+{
+    bridge_el_fanout_dmrd_ctx_t ctx = { b, frame_type, voice33 };
+    int src = bridge_el_router_slot(b, MEDIA_PEER_ECHOLINK);
+
+    if (b->router && src >= 0)
+        media_router_fanout(b->router, src, bridge_el_fanout_dmrd_cb, &ctx);
+    else if (b->dmr)
+        bridge_el_tx_dmrd(b, b->dmr, frame_type, voice33);
 }
 
 static void bridge_el_emit_dmr_voice(bridge_el_t *b, const uint8_t voice33[33])
@@ -137,7 +230,7 @@ static void bridge_el_emit_dmr_voice(bridge_el_t *b, const uint8_t voice33[33])
     uint8_t b15;
 
     if (!b->call_active) {
-        if (!bridge_el_router_take(b, b->router_peer_el))
+        if (!bridge_el_router_take_kind(b, MEDIA_PEER_ECHOLINK))
             return;
         b->call_active = 1;
         b->dmr_stream_id = bridge_new_stream_id();
@@ -149,9 +242,9 @@ static void bridge_el_emit_dmr_voice(bridge_el_t *b, const uint8_t voice33[33])
          * PacketControl (duplicate CRC / lastData) and also create SEQ gaps. */
         bridge_el_send_dmrd(b, (uint8_t)(slot_bit | (DMRD_FT_DATA_SYNC << 4) | DMRD_DTYPE_VHEAD),
                             NULL);
-        b->el.rtp_rx_packets = 0;
-        LOG_DMR_INFO("EL->DMR call start (TG %d, src %.10s id %d)\n",
-                     b->dmr.tg, b->net_src, b->el_rf_id);
+        b->el->rtp_rx_packets = 0;
+        LOG_DMR_INFO("%s call start (TG %d, src %.10s id %d)\n",
+                     BRIDGE_EL_FLOW_TX(b), b->dmr->tg, b->net_src, b->el_rf_id);
     }
 
     b15 = (uint8_t)(n == 0 ? (slot_bit | (DMRD_FT_VOICE_SYNC << 4)) : (slot_bit | n));
@@ -168,7 +261,7 @@ static void bridge_el_begin_dmr_end(bridge_el_t *b)
     b->dmr_ending = 1;
     b->el_ambe_count = 0;
     b->pcm_el_acc_n = 0;
-    peer_el_drop_pcm_in(&b->el);
+    peer_el_drop_pcm_in(b->el);
     modeconv_reset();
     /* Allow first pad/VTERM on the next tick immediately. */
     b->last_dmr_tx.tv_sec = 0;
@@ -177,8 +270,9 @@ static void bridge_el_begin_dmr_end(bridge_el_t *b)
 
 static void bridge_el_finish_dmr_end(bridge_el_t *b)
 {
-    LOG_DMR_INFO("EL->DMR call end (%d DMR frames out, el_rtp_rx=%u, seq=%u)\n",
-             b->dmr_voice_frames, b->el.rtp_rx_packets, (unsigned)b->dmr_seq);
+    LOG_DMR_INFO("%s call end (%d DMR frames out, el_rtp_rx=%u, seq=%u)\n",
+             BRIDGE_EL_FLOW_TX(b),
+             b->dmr_voice_frames, b->el->rtp_rx_packets, (unsigned)b->dmr_seq);
     bridge_el_router_release_active(b);
     b->call_active = 0;
     b->dmr_ending = 0;
@@ -187,8 +281,8 @@ static void bridge_el_finish_dmr_end(bridge_el_t *b)
     b->pcm_el_acc_n = 0;
     b->el_speech_run = 0;
     b->el_rf_id = 0;
-    peer_el_drop_pcm_in(&b->el);
-    peer_el_clear_remote_talker(&b->el);
+    peer_el_drop_pcm_in(b->el);
+    peer_el_clear_remote_talker(b->el);
     modeconv_reset();
     bridge_stamp_now(&b->last_el_tx_end);
 }
@@ -234,6 +328,7 @@ void bridge_el_init(bridge_el_t *b, int link_kind, const char *dmr_options,
                     float el_pcm_gain, int clear_dynamic_tg)
 {
     memset(b, 0, sizeof(*b));
+    b->ingress_router_id = -1;
     b->link_kind = link_kind;
     b->aliases = aliases;
     b->bridge_dmrid = bridge_dmrid;
@@ -259,15 +354,18 @@ void bridge_el_process_el_audio(bridge_el_t *b)
     int n;
     int enc_fail_streak = 0;
 
+    if (!b->el || !b->use_vocoder)
+        return;
+
     if (b->link_kind != BRIDGE_EL_LINK_DMR)
         return;
     /* Mirror YSF↔DMR: do not queue EL audio toward DMR while HBP is down. */
-    if (!peer_dmr_connected(&b->dmr))
+    if (!b->dmr || !peer_dmr_connected(b->dmr))
         return;
     if (b->call_active == 2 || b->dmr_ending)
         return; /* DMR has the slot, or paced teardown in progress */
 
-    while ((n = peer_el_read_pcm(&b->el, pcm, 160)) > 0) {
+    while ((n = peer_el_read_pcm(b->el, pcm, 160)) > 0) {
         int i;
         int rms;
         int in_cooldown;
@@ -301,15 +399,15 @@ void bridge_el_process_el_audio(bridge_el_t *b)
         }
 
         pcm_apply_gain(b->pcm_el_acc, 160, b->el_pcm_gain);
-        if (vocoder_encode(&b->voc, b->pcm_el_acc, ambe) != 0) {
+        if (bridge_el_pcm_to_ambe(b, b->pcm_el_acc, ambe) != 0) {
             static int voc_enc_fail;
             b->pcm_el_acc_n = 0;
             enc_fail_streak++;
             if (bridge_dbg_periodic(&voc_enc_fail))
-                LOG_DMR_WARNING("EL->DMR vocoder encode failed\n");
+                LOG_DMR_WARNING("%s vocoder encode failed\n", BRIDGE_EL_FLOW_TX(b));
             /* Drop queued PCM so one wedged emu does not stall the main loop. */
             if (enc_fail_streak >= 3) {
-                while (peer_el_read_pcm(&b->el, pcm, 160) > 0)
+                while (peer_el_read_pcm(b->el, pcm, 160) > 0)
                     ;
                 b->pcm_el_acc_n = 0;
                 b->el_ambe_count = 0;
@@ -326,9 +424,10 @@ void bridge_el_process_el_audio(bridge_el_t *b)
         {
             static int el_tc_log;
             if (bridge_dbg_periodic(&el_tc_log)) {
-                LOG_DMR_DEBUG("EL->DMR ambe raw=%02x%02x%02x%02x%02x%02x%02x "
+                LOG_DMR_DEBUG("%s ambe raw=%02x%02x%02x%02x%02x%02x%02x "
                           "%02x%02x%02x%02x%02x%02x%02x "
                           "%02x%02x%02x%02x%02x%02x%02x (rms=%d)\n",
+                          BRIDGE_EL_FLOW_TX(b),
                           b->el_ambe_buf[0][0], b->el_ambe_buf[0][1], b->el_ambe_buf[0][2],
                           b->el_ambe_buf[0][3], b->el_ambe_buf[0][4], b->el_ambe_buf[0][5],
                           b->el_ambe_buf[0][6],
@@ -348,8 +447,11 @@ void bridge_el_process_el_audio(bridge_el_t *b)
     }
 }
 
-void bridge_el_on_dmrd(bridge_el_t *b, const uint8_t *pkt, int len)
+void bridge_el_on_dmrd_slot(bridge_el_t *b, int src_router_id, peer_dmr_t *dmr,
+                            const uint8_t *pkt, int len)
 {
+    b->ingress_router_id = src_router_id;
+    b->dmr = dmr;
     uint8_t ft, dtype;
     uint8_t ambe[3][7];
     int16_t pcm[160];
@@ -387,26 +489,26 @@ void bridge_el_on_dmrd(bridge_el_t *b, const uint8_t *pkt, int len)
         if (b->call_active == 1)
             bridge_el_end_dmr_call(b);
         if (b->call_active == 2) {
-            peer_el_flush_pcm(&b->el);
-            LOG_DMR_INFO("DMR->EL call end (%d voice frames in, el_rtp_tx=%u) — replaced by new stream\n",
-                     b->dmr_voice_frames, b->el.rtp_tx_packets);
+            peer_el_flush_pcm(b->el);
+            LOG_DMR_INFO("%s call end (%d voice frames in, el_rtp_tx=%u) — replaced by new stream\n",
+                     BRIDGE_EL_FLOW_RX(b), b->dmr_voice_frames, b->el->rtp_tx_packets);
             bridge_el_router_release_active(b);
         }
-        if (!bridge_el_router_take(b, b->router_peer_dmr))
+        if (!bridge_el_router_take(b, src_router_id))
             return;
         b->call_active = 2;
         b->dmr_rx_stream_id = sid;
         b->dmr_voice_frames = 0;
-        b->el.rtp_tx_packets = 0;
+        b->el->rtp_tx_packets = 0;
         bridge_stamp_now(&b->last_dmr_rx);
-        LOG_DMR_INFO("DMR->EL call start (TG %d)\n", b->dmr.tg);
+        LOG_DMR_INFO("%s call start (TG %d)\n", BRIDGE_EL_FLOW_RX(b), b->dmr->tg);
         return;
     }
     if (dmrd_is_terminator(pkt, len)) {
         if (b->call_active == 2) {
-            peer_el_flush_pcm(&b->el);
-            LOG_DMR_INFO("DMR->EL call end (%d voice frames in, el_rtp_tx=%u)\n",
-                     b->dmr_voice_frames, b->el.rtp_tx_packets);
+            peer_el_flush_pcm(b->el);
+            LOG_DMR_INFO("%s call end (%d voice frames in, el_rtp_tx=%u)\n",
+                     BRIDGE_EL_FLOW_RX(b), b->dmr_voice_frames, b->el->rtp_tx_packets);
             bridge_el_router_release_active(b);
             b->call_active = 0;
             b->dmr_voice_frames = 0;
@@ -416,6 +518,8 @@ void bridge_el_on_dmrd(bridge_el_t *b, const uint8_t *pkt, int len)
     }
     if (b->call_active != 2)
         return;
+    if (!b->use_vocoder)
+        return;
 
     bridge_stamp_now(&b->last_dmr_rx);
     b->dmr_voice_frames++;
@@ -423,9 +527,10 @@ void bridge_el_on_dmrd(bridge_el_t *b, const uint8_t *pkt, int len)
     {
         static int dmr_tc_log;
         if (bridge_dbg_periodic(&dmr_tc_log)) {
-            LOG_DMR_DEBUG("DMR->EL ambe raw=%02x%02x%02x%02x%02x%02x%02x "
+            LOG_DMR_DEBUG("%s ambe raw=%02x%02x%02x%02x%02x%02x%02x "
                       "%02x%02x%02x%02x%02x%02x%02x "
                       "%02x%02x%02x%02x%02x%02x%02x (voice_in=%d)\n",
+                      BRIDGE_EL_FLOW_RX(b),
                       ambe[0][0], ambe[0][1], ambe[0][2], ambe[0][3],
                       ambe[0][4], ambe[0][5], ambe[0][6],
                       ambe[1][0], ambe[1][1], ambe[1][2], ambe[1][3],
@@ -436,13 +541,13 @@ void bridge_el_on_dmrd(bridge_el_t *b, const uint8_t *pkt, int len)
         }
     }
     for (i = 0; i < 3; i++) {
-        if (vocoder_decode(&b->voc, ambe[i], pcm) != 0) {
+        if (bridge_el_ambe_to_pcm(b, ambe[i], pcm) != 0) {
             static int voc_fail;
             if (bridge_dbg_periodic(&voc_fail))
-                LOG_DMR_WARNING("DMR->EL vocoder decode failed\n");
+                LOG_DMR_WARNING("%s vocoder decode failed\n", BRIDGE_EL_FLOW_RX(b));
             continue;
         }
-        peer_el_write_pcm(&b->el, pcm, 160);
+        peer_el_write_pcm(b->el, pcm, 160);
     }
 }
 
@@ -467,7 +572,7 @@ static void bridge_el_connect_ptt_begin_stream(bridge_el_t *b, int tg, int clear
 static void bridge_el_connect_ptt_finish(bridge_el_t *b)
 {
     uint8_t slot_bit = b->dmr_slot_bit;
-    int ended_tg = b->connect_ptt_tg > 0 ? b->connect_ptt_tg : b->dmr.tg;
+    int ended_tg = b->connect_ptt_tg > 0 ? b->connect_ptt_tg : b->dmr->tg;
     int was_clearing = b->connect_ptt_clearing;
 
     while ((b->connect_ptt_voice_frames % 6) != 0) {
@@ -480,9 +585,9 @@ static void bridge_el_connect_ptt_finish(bridge_el_t *b)
     LOG_DMR_INFO("DMR connect PTT end (TG %d, %d voice frames)\n",
                  ended_tg, b->connect_ptt_voice_frames);
 
-    if (was_clearing && b->dmr.tg > 0) {
+    if (was_clearing && b->dmr->tg > 0) {
         /* Next: activate configured talkgroup. */
-        bridge_el_connect_ptt_begin_stream(b, b->dmr.tg, 0);
+        bridge_el_connect_ptt_begin_stream(b, b->dmr->tg, 0);
         return;
     }
 
@@ -497,13 +602,13 @@ static void bridge_el_start_connect_ptt(bridge_el_t *b)
 {
     if (b->call_active || b->connect_ptt_active)
         return;
-    if (b->dmr.tg <= 0)
+    if (b->dmr->tg <= 0)
         return;
 
     if (b->clear_dynamic_tg)
         bridge_el_connect_ptt_begin_stream(b, DMR_CLEAR_DYNAMIC_TG, 1);
     else
-        bridge_el_connect_ptt_begin_stream(b, b->dmr.tg, 0);
+        bridge_el_connect_ptt_begin_stream(b, b->dmr->tg, 0);
 }
 
 static void bridge_el_emit_connect_ptt(bridge_el_t *b)
@@ -540,8 +645,8 @@ static void bridge_el_abort_el_to_dmr(bridge_el_t *b)
     /* Silent abort on DMR drop — do not emit VTERM into a dead/reconnecting session. */
     if (b->call_active != 1 && !b->dmr_ending)
         return;
-    LOG_DMR_INFO("EL->DMR aborted — DMR peer down (was call_active=%d ending=%d)\n",
-                 b->call_active, b->dmr_ending);
+    LOG_DMR_INFO("%s aborted — DMR peer down (was call_active=%d ending=%d)\n",
+                 BRIDGE_EL_FLOW_TX(b), b->call_active, b->dmr_ending);
     bridge_el_router_release_active(b);
     b->call_active = 0;
     b->dmr_ending = 0;
@@ -550,15 +655,15 @@ static void bridge_el_abort_el_to_dmr(bridge_el_t *b)
     b->pcm_el_acc_n = 0;
     b->el_speech_run = 0;
     b->el_rf_id = 0;
-    peer_el_drop_pcm_in(&b->el);
-    peer_el_clear_remote_talker(&b->el);
+    peer_el_drop_pcm_in(b->el);
+    peer_el_clear_remote_talker(b->el);
     modeconv_reset();
     bridge_stamp_now(&b->last_el_tx_end);
 }
 
 static void bridge_el_poll_connect_ptt(bridge_el_t *b)
 {
-    int connected = peer_dmr_connected(&b->dmr);
+    int connected = b->dmr && peer_dmr_connected(b->dmr);
 
     if (connected && !b->dmr_was_connected)
         bridge_el_start_connect_ptt(b);
@@ -578,21 +683,71 @@ static void bridge_el_poll_connect_ptt(bridge_el_t *b)
 
 /* ---- EchoLink <-> YSF (framing mirrors bridge.c DMR2YSF path) ---- */
 
+static int bridge_el_tx_ysfd(bridge_el_t *b, peer_ysf_t *ysf, uint8_t fi, uint8_t ft,
+                             uint8_t cm, uint8_t fich_fn, uint8_t net_cnt,
+                             const uint8_t *payload120,
+                             const uint8_t csd1[20], const uint8_t csd2[20])
+{
+    ysf_tx_args_t args;
+
+    if (!ysf)
+        return 0;
+    args = (ysf_tx_args_t){
+        .peer = ysf,
+        .repeater_callsign = ysf->callsign,
+        .meta = BRIDGE_CALL_META(b),
+        .last_tx = &b->last_ysf_tx,
+        .ysf_fn = NULL,
+        .dgid_cfg = ysf->dgid,
+    };
+
+    return ysf_tx_send(&args, fi, ft, cm, fich_fn, net_cnt, payload120, csd1, csd2);
+}
+
+typedef struct {
+    bridge_el_t     *b;
+    uint8_t          fi;
+    uint8_t          ft;
+    uint8_t          cm;
+    uint8_t          fich_fn;
+    uint8_t          net_cnt;
+    const uint8_t   *payload120;
+    const uint8_t   *csd1;
+    const uint8_t   *csd2;
+} bridge_el_fanout_ysfd_ctx_t;
+
+static int bridge_el_fanout_ysfd_cb(int dst_id, media_peer_kind_t kind, void *vctx)
+{
+    bridge_el_fanout_ysfd_ctx_t *ctx = vctx;
+    peer_ysf_t *ysf;
+
+    if (kind != MEDIA_PEER_YSF)
+        return 0;
+    ysf = media_peer_bus_ysf(ctx->b->bus, dst_id);
+    if (!ysf)
+        return 0;
+    bridge_el_tx_ysfd(ctx->b, ysf, ctx->fi, ctx->ft, ctx->cm, ctx->fich_fn, ctx->net_cnt,
+                      ctx->payload120, ctx->csd1, ctx->csd2);
+    return 0;
+}
+
 static int bridge_el_send_ysfd(bridge_el_t *b, uint8_t fi, uint8_t ft, uint8_t cm,
                                uint8_t fich_fn, uint8_t net_cnt,
                                const uint8_t *payload120,
                                const uint8_t csd1[20], const uint8_t csd2[20])
 {
-    ysf_tx_args_t args = {
-        .peer = &b->ysf,
-        .repeater_callsign = b->ysf.callsign,
-        .meta = BRIDGE_CALL_META(b),
-        .last_tx = &b->last_ysf_tx,
-        .ysf_fn = NULL,
-        .dgid_cfg = b->ysf.dgid,
+    bridge_el_fanout_ysfd_ctx_t ctx = {
+        b, fi, ft, cm, fich_fn, net_cnt, payload120, csd1, csd2,
     };
+    int src = bridge_el_router_slot(b, MEDIA_PEER_ECHOLINK);
 
-    return ysf_tx_send(&args, fi, ft, cm, fich_fn, net_cnt, payload120, csd1, csd2);
+    if (b->router && src >= 0) {
+        int n = media_router_fanout(b->router, src, bridge_el_fanout_ysfd_cb, &ctx);
+
+        return n > 0 ? 1 : 0;
+    }
+    return b->ysf ? bridge_el_tx_ysfd(b, b->ysf, fi, ft, cm, fich_fn, net_cnt, payload120,
+                                      csd1, csd2) : 0;
 }
 
 /* Drain one ModeConv YSF tag — same control flow as bridge_emit_ysf_from_conv. */
@@ -622,8 +777,8 @@ static int bridge_el_emit_ysf_from_conv(bridge_el_t *b)
         ysf_tx_fill_csd(BRIDGE_CALL_META(b), csd1, csd2);
         bridge_el_send_ysfd(b, YSF_FI_TERMINATOR, YSF_FICH_FT, YSF_FICH_CM, 0,
                             b->ysf_cnt, NULL, csd1, csd2);
-        LOG_YSF_INFO("EL->YSF call end (%d voice frames out, el_rtp_rx=%u)\n",
-                     b->ysf_voice_frames, b->el.rtp_rx_packets);
+        LOG_YSF_INFO("%s call end (%d voice frames out, el_rtp_rx=%u)\n",
+                     BRIDGE_EL_FLOW_TX(b), b->ysf_voice_frames, b->el->rtp_rx_packets);
         bridge_el_router_release_active(b);
         b->call_active = 0;
         b->ysf_ending = 0;
@@ -633,8 +788,8 @@ static int bridge_el_emit_ysf_from_conv(bridge_el_t *b)
         b->pcm_el_acc_n = 0;
         b->el_speech_run = 0;
         b->el_rf_id = 0;
-        peer_el_drop_pcm_in(&b->el);
-        peer_el_clear_remote_talker(&b->el);
+        peer_el_drop_pcm_in(b->el);
+        peer_el_clear_remote_talker(b->el);
         modeconv_reset();
         bridge_stamp_now(&b->last_el_tx_end);
         return 1;
@@ -673,7 +828,7 @@ static void bridge_el_begin_el_to_ysf(bridge_el_t *b)
      */
     adapter_el_resolve_talker(b);
     memcpy(b->net_dst, YSF_WIRE_DST_ALL, 10);
-    if (!bridge_el_router_take(b, b->router_peer_el))
+    if (!bridge_el_router_take_kind(b, MEDIA_PEER_ECHOLINK))
         return;
     b->call_active = 1;
     b->ysf_ending = 0;
@@ -683,8 +838,8 @@ static void bridge_el_begin_el_to_ysf(bridge_el_t *b)
     b->ysf_cnt = 0;
     modeconv_reset();
     modeconv_put_dmr_header();
-    b->el.rtp_rx_packets = 0;
-    LOG_YSF_INFO("EL->YSF call start (src %.10s)\n", b->net_src);
+    b->el->rtp_rx_packets = 0;
+    LOG_YSF_INFO("%s call start (src %.10s)\n", BRIDGE_EL_FLOW_TX(b), b->net_src);
 }
 
 /* Late SDES user talker: radios lock HEADER — re-queue HEADER with new CSD. */
@@ -696,7 +851,7 @@ static void bridge_el_ysf_reheader_if_talker_changed(bridge_el_t *b)
 
     if (b->call_active != 1 || b->ysf_ending)
         return;
-    raw = peer_el_remote_talker(&b->el);
+    raw = peer_el_remote_talker(b->el);
     if (!raw || !raw[0])
         return;
     bridge_el_format_callsign10(want, raw);
@@ -707,7 +862,8 @@ static void bridge_el_ysf_reheader_if_talker_changed(bridge_el_t *b)
     if (memcmp(prev, b->net_src, 10) == 0)
         return;
     modeconv_put_dmr_header();
-    LOG_YSF_INFO("EL->YSF re-HEADER talker %.10s -> %.10s\n", prev, b->net_src);
+    LOG_YSF_INFO("%s re-HEADER talker %.10s -> %.10s\n",
+                 BRIDGE_EL_FLOW_TX(b), prev, b->net_src);
 }
 
 static void bridge_el_drain_ysf_to_el_pcm(bridge_el_t *b)
@@ -723,13 +879,13 @@ static void bridge_el_drain_ysf_to_el_pcm(bridge_el_t *b)
             continue;
         modeconv_dmr33_to_ambe(voice33, ambe);
         for (i = 0; i < 3; i++) {
-            if (vocoder_decode(&b->voc, ambe[i], pcm) != 0) {
+            if (bridge_el_ambe_to_pcm(b, ambe[i], pcm) != 0) {
                 static int voc_fail;
                 if (bridge_dbg_periodic(&voc_fail))
-                    LOG_YSF_WARNING("YSF->EL vocoder decode failed\n");
+                    LOG_YSF_WARNING("%s vocoder decode failed\n", BRIDGE_EL_FLOW_RX(b));
                 continue;
             }
-            peer_el_write_pcm(&b->el, pcm, 160);
+            peer_el_write_pcm(b->el, pcm, 160);
         }
     }
 }
@@ -741,6 +897,9 @@ void bridge_el_process_el_to_ysf(bridge_el_t *b)
     int n;
     int enc_fail_streak = 0;
 
+    if (!b->el || !b->use_vocoder)
+        return;
+
     if (b->link_kind != BRIDGE_EL_LINK_YSF)
         return;
     if (b->call_active == 2 || b->ysf_ending)
@@ -750,7 +909,7 @@ void bridge_el_process_el_to_ysf(bridge_el_t *b)
     if (b->call_active == 1)
         bridge_el_ysf_reheader_if_talker_changed(b);
 
-    while ((n = peer_el_read_pcm(&b->el, pcm, 160)) > 0) {
+    while ((n = peer_el_read_pcm(b->el, pcm, 160)) > 0) {
         int i;
         int rms;
         int in_cooldown;
@@ -778,22 +937,22 @@ void bridge_el_process_el_to_ysf(bridge_el_t *b)
                 continue;
             }
             if (!b->el_speech_run) {
-                LOG_EL_INFO("echolink: EL audio rms=%d — starting EL->YSF path\n",
-                            rms);
+                LOG_EL_INFO("echolink: audio rms=%d — starting %s path\n",
+                            rms, BRIDGE_EL_FLOW_TX(b));
                 b->el_speech_run = 1;
             }
         }
 
         pcm_apply_gain(b->pcm_el_acc, 160, b->el_pcm_gain);
-        if (vocoder_encode(&b->voc, b->pcm_el_acc, ambe) != 0) {
+        if (bridge_el_pcm_to_ambe(b, b->pcm_el_acc, ambe) != 0) {
             static int voc_enc_fail;
 
             b->pcm_el_acc_n = 0;
             enc_fail_streak++;
             if (bridge_dbg_periodic(&voc_enc_fail))
-                LOG_YSF_WARNING("EL->YSF vocoder encode failed\n");
+                LOG_YSF_WARNING("%s vocoder encode failed\n", BRIDGE_EL_FLOW_TX(b));
             if (enc_fail_streak >= 3) {
-                while (peer_el_read_pcm(&b->el, pcm, 160) > 0)
+                while (peer_el_read_pcm(b->el, pcm, 160) > 0)
                     ;
                 b->pcm_el_acc_n = 0;
                 b->ysf_ambe_count = 0;
@@ -815,8 +974,9 @@ void bridge_el_process_el_to_ysf(bridge_el_t *b)
         {
             static int el_ysf_log;
             if (bridge_dbg_periodic(&el_ysf_log)) {
-                LOG_YSF_DEBUG("EL->YSF ambe raw=%02x%02x%02x%02x%02x%02x%02x "
+                LOG_YSF_DEBUG("%s ambe raw=%02x%02x%02x%02x%02x%02x%02x "
                           "(voice_out=%d rms=%d)\n",
+                          BRIDGE_EL_FLOW_TX(b),
                           b->ysf_ambe_buf[0][0], b->ysf_ambe_buf[0][1],
                           b->ysf_ambe_buf[0][2], b->ysf_ambe_buf[0][3],
                           b->ysf_ambe_buf[0][4], b->ysf_ambe_buf[0][5],
@@ -830,8 +990,11 @@ void bridge_el_process_el_to_ysf(bridge_el_t *b)
     }
 }
 
-void bridge_el_on_ysfd(bridge_el_t *b, const uint8_t *pkt, int len)
+void bridge_el_on_ysfd_slot(bridge_el_t *b, int src_router_id, peer_ysf_t *ysf,
+                            const uint8_t *pkt, int len)
 {
+    b->ingress_router_id = src_router_id;
+    b->ysf = ysf;
     uint8_t fi, fn, ft, cm, dt;
     uint8_t rx_dgid;
     char rpt[11], src[11];
@@ -853,9 +1016,9 @@ void bridge_el_on_ysfd(bridge_el_t *b, const uint8_t *pkt, int len)
               ysf_tx_fi_name(fi), (unsigned)fi, (unsigned)fn, (unsigned)ft,
               (unsigned)cm, (unsigned)dt, (unsigned)rx_dgid, rpt, src);
 
-    if (b->ysf.dgid >= 1U && rx_dgid >= 1U && rx_dgid != b->ysf.dgid) {
+    if (b->ysf->dgid >= 1U && rx_dgid >= 1U && rx_dgid != b->ysf->dgid) {
         LOG_YSF_DEBUG("YSF RX skip DGID %u (want %u)\n",
-                  (unsigned)rx_dgid, (unsigned)b->ysf.dgid);
+                  (unsigned)rx_dgid, (unsigned)b->ysf->dgid);
         return;
     }
 
@@ -863,25 +1026,25 @@ void bridge_el_on_ysfd(bridge_el_t *b, const uint8_t *pkt, int len)
         if (b->call_active == 1)
             bridge_el_end_ysf_call(b);
         if (b->call_active == 2) {
-            peer_el_flush_pcm(&b->el);
-            peer_el_set_talker_name(&b->el, NULL);
-            LOG_YSF_INFO("YSF->EL call end (%d voice frames in, el_rtp_tx=%u) "
+            peer_el_flush_pcm(b->el);
+            peer_el_set_talker_name(b->el, NULL);
+            LOG_YSF_INFO("%s call end (%d voice frames in, el_rtp_tx=%u) "
                      "— replaced by new stream\n",
-                     b->ysf_voice_frames, b->el.rtp_tx_packets);
+                     BRIDGE_EL_FLOW_RX(b), b->ysf_voice_frames, b->el->rtp_tx_packets);
             bridge_el_router_release_active(b);
         }
         memcpy(b->net_src, pkt + 14, 10);
         memcpy(b->net_dst, YSF_WIRE_DST_ALL, 10);
-        if (!bridge_el_router_take(b, b->router_peer_ysf))
+        if (!bridge_el_router_take(b, src_router_id))
             return;
         b->call_active = 2;
         b->ysf_voice_frames = 0;
-        b->el.rtp_tx_packets = 0;
+        b->el->rtp_tx_packets = 0;
         bridge_stamp_now(&b->last_dmr_rx); /* reuse: last peer->EL activity */
         modeconv_reset();
         modeconv_put_ysf_header();
         adapter_el_set_ysf_talker_name(b);
-        LOG_YSF_INFO("YSF->EL call start (src %.10s)\n", b->net_src);
+        LOG_YSF_INFO("%s call start (src %.10s)\n", BRIDGE_EL_FLOW_RX(b), b->net_src);
         return;
     }
 
@@ -889,10 +1052,10 @@ void bridge_el_on_ysfd(bridge_el_t *b, const uint8_t *pkt, int len)
         if (b->call_active == 2) {
             modeconv_put_ysf_eot();
             bridge_el_drain_ysf_to_el_pcm(b);
-            peer_el_flush_pcm(&b->el);
-            peer_el_set_talker_name(&b->el, NULL);
-            LOG_YSF_INFO("YSF->EL call end (%d voice frames in, el_rtp_tx=%u)\n",
-                     b->ysf_voice_frames, b->el.rtp_tx_packets);
+            peer_el_flush_pcm(b->el);
+            peer_el_set_talker_name(b->el, NULL);
+            LOG_YSF_INFO("%s call end (%d voice frames in, el_rtp_tx=%u)\n",
+                     BRIDGE_EL_FLOW_RX(b), b->ysf_voice_frames, b->el->rtp_tx_packets);
             bridge_el_router_release_active(b);
             b->call_active = 0;
             b->ysf_voice_frames = 0;
@@ -908,15 +1071,16 @@ void bridge_el_on_ysfd(bridge_el_t *b, const uint8_t *pkt, int len)
         if (b->call_active == 1)
             bridge_el_end_ysf_call(b);
         memcpy(b->net_src, pkt + 14, 10);
-        if (!bridge_el_router_take(b, b->router_peer_ysf))
+        if (!bridge_el_router_take(b, src_router_id))
             return;
         b->call_active = 2;
         b->ysf_voice_frames = 0;
-        b->el.rtp_tx_packets = 0;
+        b->el->rtp_tx_packets = 0;
         modeconv_reset();
         modeconv_put_ysf_header();
         adapter_el_set_ysf_talker_name(b);
-        LOG_YSF_INFO("YSF->EL call start (src %.10s, no HEADER)\n", b->net_src);
+        LOG_YSF_INFO("%s call start (src %.10s, no HEADER)\n",
+                     BRIDGE_EL_FLOW_RX(b), b->net_src);
     }
     if (dt != YSF_DT_VD_MODE2) {
         LOG_YSF_DEBUG("YSF VOICE dt=%u (expect VD2; using repack+putYSF)\n",
@@ -947,7 +1111,7 @@ void bridge_el_tick(bridge_el_t *b)
 {
     if (b->link_kind == BRIDGE_EL_LINK_DMR) {
         bridge_el_poll_connect_ptt(b);
-        if (peer_dmr_connected(&b->dmr)) {
+        if (b->dmr && peer_dmr_connected(b->dmr)) {
             if (b->dmr_ending)
                 bridge_el_pace_dmr_end(b);
             else
@@ -976,19 +1140,19 @@ void bridge_el_tick(bridge_el_t *b)
     if (b->call_active == 2) {
         if (b->link_kind == BRIDGE_EL_LINK_DMR
             && bridge_ms_since(&b->last_dmr_rx) >= DMR_RX_HANG_MS) {
-            peer_el_flush_pcm(&b->el);
-            LOG_DMR_INFO("DMR->EL call end (%d voice frames in, el_rtp_tx=%u) — RX hangtime\n",
-                         b->dmr_voice_frames, b->el.rtp_tx_packets);
+            peer_el_flush_pcm(b->el);
+            LOG_DMR_INFO("%s call end (%d voice frames in, el_rtp_tx=%u) — RX hangtime\n",
+                     BRIDGE_EL_FLOW_RX(b), b->dmr_voice_frames, b->el->rtp_tx_packets);
             bridge_el_router_release_active(b);
             b->call_active = 0;
             b->dmr_voice_frames = 0;
             b->dmr_rx_stream_id = 0;
         } else if (b->link_kind == BRIDGE_EL_LINK_YSF
                    && bridge_ms_since(&b->last_dmr_rx) >= YSF_RX_HANG_MS) {
-            peer_el_flush_pcm(&b->el);
-            peer_el_set_talker_name(&b->el, NULL);
-            LOG_YSF_INFO("YSF->EL call end (%d voice frames in, el_rtp_tx=%u) — RX hangtime\n",
-                         b->ysf_voice_frames, b->el.rtp_tx_packets);
+            peer_el_flush_pcm(b->el);
+            peer_el_set_talker_name(b->el, NULL);
+            LOG_YSF_INFO("%s call end (%d voice frames in, el_rtp_tx=%u) — RX hangtime\n",
+                     BRIDGE_EL_FLOW_RX(b), b->ysf_voice_frames, b->el->rtp_tx_packets);
             bridge_el_router_release_active(b);
             b->call_active = 0;
             b->ysf_voice_frames = 0;

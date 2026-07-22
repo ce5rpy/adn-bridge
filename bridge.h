@@ -22,13 +22,16 @@
 #include <stdint.h>
 #include <time.h>
 #include "aliases.h"
+#include "media/peer_bus.h"
 #include "media/router.h"
 #include "peer_dmr.h"
 #include "peer_ysf.h"
 
 typedef struct {
-    peer_dmr_t dmr;
-    peer_ysf_t ysf;
+    media_peer_bus_t *bus;
+    peer_dmr_t *dmr;
+    peer_ysf_t *ysf;
+    int ingress_router_id;
     adn_bridge_aliases_t *aliases;
     int default_ysf_dmrid;
     uint32_t dmr_stream_id;
@@ -63,18 +66,19 @@ typedef struct {
     int connect_ptt_clearing;
     struct timespec connect_ptt_start;
     media_router_t *router;
-    int router_peer_dmr;
-    int router_peer_ysf;
 } adn_bridge_t;
 
-void bridge_bind_router(adn_bridge_t *b, media_router_t *router,
-                        int dmr_id, int ysf_id);
+void bridge_bind_router(adn_bridge_t *b, media_router_t *router);
+void bridge_attach_bus(adn_bridge_t *b, media_peer_bus_t *bus);
 void bridge_init(adn_bridge_t *b, const char *dmr_options,
                  adn_bridge_aliases_t *aliases, int default_ysf_dmrid,
                  int clear_dynamic_tg);
-void bridge_on_dmrd(adn_bridge_t *b, const uint8_t *pkt, int len);
-void bridge_on_dmra(adn_bridge_t *b, const uint8_t *pkt, int len);
-void bridge_on_ysfd(adn_bridge_t *b, const uint8_t *pkt, int len);
+void bridge_on_dmrd_slot(adn_bridge_t *b, int src_router_id, peer_dmr_t *dmr,
+                         const uint8_t *pkt, int len);
+void bridge_on_dmra_slot(adn_bridge_t *b, int src_router_id, peer_dmr_t *dmr,
+                         const uint8_t *pkt, int len);
+void bridge_on_ysfd_slot(adn_bridge_t *b, int src_router_id, peer_ysf_t *ysf,
+                         const uint8_t *pkt, int len);
 void bridge_tick(adn_bridge_t *b);
 /* Abort connect-PTT early (e.g. real YSF call starts). */
 void bridge_abort_connect_ptt(adn_bridge_t *b);

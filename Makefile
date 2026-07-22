@@ -24,6 +24,8 @@ C_SRCS = adn_bridge.c config.c log.c aliases.c talker_alias.c peer_dmr.c peer_ys
          peer_echolink.c el_proxy.c bridge.c bridge_el.c vocoder_remote.c ysf_fich.c \
          hbp/dmr_hbp.c vendor/yyjson/yyjson.c \
          media/bridge_util.c media/call_meta.c media/identity.c media/router.c \
+         media/peer_bus.c media/codec_plan.c media/log_flow.c \
+         adapters/peer_plugin.c \
          engine.c \
          session/dmr_wire.c session/dmr_tx.c session/ysf_tx.c \
          codecs/registry.c codecs/pcm.c codecs/dmr_ambe.c codecs/ysf_ambe.c \
@@ -64,13 +66,14 @@ install: adn-bridge
 	install -m 644 examples/adn-bridge-echolink-ysf.example.ini $(DESTDIR)$(CONFDIR)/
 
 clean:
-	rm -rf $(BUILD) adn-bridge tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers
+	rm -rf $(BUILD) adn-bridge tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers tests/test_codec_plan
 
-test: tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers
+test: tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers tests/test_codec_plan
 	./tests/test_wire
 	./tests/test_codecs
 	./tests/test_router
 	./tests/test_config_peers
+	./tests/test_codec_plan
 
 $(BUILD)/tests/test_wire.o: tests/test_wire.c
 	@mkdir -p $(dir $@)
@@ -80,6 +83,8 @@ tests/test_wire: adn-bridge $(BUILD)/tests/test_wire.o
 	$(CXX) -o $@ $(BUILD)/tests/test_wire.o \
 		$(BUILD)/session/dmr_wire.o $(BUILD)/media/call_meta.o \
 		$(BUILD)/media/identity.o $(BUILD)/media/bridge_util.o \
+		$(BUILD)/media/log_flow.o $(BUILD)/adapters/peer_plugin.o \
+		$(BUILD)/codecs/registry.o \
 		$(BUILD)/session/ysf_tx.o $(BUILD)/log.o $(BUILD)/ysf_fich.o \
 		$(BUILD)/peer_ysf.o $(BUILD)/aliases.o $(BUILD)/vendor/yyjson/yyjson.o \
 		$(filter $(BUILD)/mmdvm/%,$(OBJS)) $(LDFLAGS)
@@ -105,10 +110,22 @@ $(BUILD)/tests/test_config_peers.o: tests/test_config_peers.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-tests/test_config_peers: $(BUILD)/tests/test_config_peers.o $(BUILD)/config.o $(BUILD)/log.o $(BUILD)/aliases.o $(BUILD)/vendor/yyjson/yyjson.o
+tests/test_config_peers: $(BUILD)/tests/test_config_peers.o $(BUILD)/config.o $(BUILD)/log.o $(BUILD)/aliases.o $(BUILD)/vendor/yyjson/yyjson.o $(BUILD)/media/router.o $(BUILD)/media/codec_plan.o $(BUILD)/adapters/peer_plugin.o $(BUILD)/codecs/registry.o
 	$(CC) -o $@ $(BUILD)/tests/test_config_peers.o \
 		$(BUILD)/config.o $(BUILD)/log.o $(BUILD)/aliases.o \
+		$(BUILD)/media/router.o $(BUILD)/media/codec_plan.o \
+		$(BUILD)/adapters/peer_plugin.o $(BUILD)/codecs/registry.o \
 		$(BUILD)/vendor/yyjson/yyjson.o -lcrypto -lpthread
+
+$(BUILD)/tests/test_codec_plan.o: tests/test_codec_plan.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+tests/test_codec_plan: $(BUILD)/tests/test_codec_plan.o $(BUILD)/media/router.o $(BUILD)/media/codec_plan.o $(BUILD)/media/log_flow.o $(BUILD)/adapters/peer_plugin.o $(BUILD)/codecs/registry.o
+	$(CC) -o $@ $(BUILD)/tests/test_codec_plan.o \
+		$(BUILD)/media/router.o $(BUILD)/media/codec_plan.o \
+		$(BUILD)/media/log_flow.o \
+		$(BUILD)/adapters/peer_plugin.o $(BUILD)/codecs/registry.o
 
 -include $(DEPS)
 

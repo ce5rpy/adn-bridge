@@ -27,6 +27,7 @@ typedef struct {
 
 int vocoder_open(vocoder_t *v, const char *host, int port);
 void vocoder_close(vocoder_t *v);
+int vocoder_is_ready(const vocoder_t *v);
 /* PCM s16 LE (host endian) 160 samples -> 7-byte raw (deinterleaved) AMBE. */
 int vocoder_encode(vocoder_t *v, const int16_t pcm[VOC_PCM_SAMPLES], uint8_t ambe[VOC_AMBE_BYTES]);
 /* 7-byte raw (deinterleaved) AMBE -> PCM s16 LE 160 samples. */
