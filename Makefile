@@ -22,7 +22,9 @@ BUILD = build
 
 C_SRCS = adn_bridge.c config.c log.c aliases.c talker_alias.c peer_dmr.c peer_ysf.c \
          peer_echolink.c el_proxy.c bridge.c bridge_el.c vocoder_remote.c ysf_fich.c \
-         hbp/dmr_hbp.c vendor/yyjson/yyjson.c
+         hbp/dmr_hbp.c vendor/yyjson/yyjson.c \
+         media/bridge_util.c media/call_meta.c media/identity.c \
+         session/dmr_wire.c session/dmr_tx.c session/ysf_tx.c
 CXX_SRCS = mmdvm/ModeConv.cpp mmdvm/Golay24128.cpp mmdvm/modeconv_wrap.cpp \
            mmdvm/YSFPayload.cpp mmdvm/YSFConvolution.cpp mmdvm/CRC.cpp \
            mmdvm/Utils.cpp mmdvm/ysfpayload_wrap.cpp
@@ -59,8 +61,23 @@ install: adn-bridge
 	install -m 644 examples/adn-bridge-echolink-ysf.example.ini $(DESTDIR)$(CONFDIR)/
 
 clean:
-	rm -rf $(BUILD) adn-bridge
+	rm -rf $(BUILD) adn-bridge tests/test_wire
+
+test: tests/test_wire
+	./tests/test_wire
+
+$(BUILD)/tests/test_wire.o: tests/test_wire.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+tests/test_wire: adn-bridge $(BUILD)/tests/test_wire.o
+	$(CXX) -o $@ $(BUILD)/tests/test_wire.o \
+		$(BUILD)/session/dmr_wire.o $(BUILD)/media/call_meta.o \
+		$(BUILD)/media/identity.o $(BUILD)/media/bridge_util.o \
+		$(BUILD)/session/ysf_tx.o $(BUILD)/log.o $(BUILD)/ysf_fich.o \
+		$(BUILD)/peer_ysf.o $(BUILD)/aliases.o $(BUILD)/vendor/yyjson/yyjson.o \
+		$(filter $(BUILD)/mmdvm/%,$(OBJS)) $(LDFLAGS)
 
 -include $(DEPS)
 
-.PHONY: all install clean
+.PHONY: all install clean test

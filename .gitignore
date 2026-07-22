@@ -1,5 +1,8 @@
 adn-bridge
 build/
+tests/test_wire
+tests/test_codecs
+tests/*.d
 data/
 debug/
 docs-priv/
