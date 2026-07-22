@@ -56,21 +56,21 @@ sudo make install
 
    ```bash
    mkdir -p config
-   # Master (todas las secciones; elija mode=) — punto de partida recomendado
+   # Plantilla master (peers YSF+DMR; EchoLink comentado)
    cp examples/adn-bridge.example.ini config/adn-bridge.ini
 
-   # O un archivo listo por modo:
+   # O un layout listo para usar:
    # cp examples/adn-bridge-ysf-dmr.example.ini config/adn-bridge.ini
    # cp examples/adn-bridge-echolink-dmr.example.ini config/adn-bridge.ini
    # cp examples/adn-bridge-echolink-ysf.example.ini config/adn-bridge.ini
    ```
 
-| Plantilla | Modo |
-|-----------|------|
-| `examples/adn-bridge.example.ini` | Master — todas las claves, elija `mode=` |
-| `examples/adn-bridge-ysf-dmr.example.ini` | `ysf-dmr` |
-| `examples/adn-bridge-echolink-dmr.example.ini` | `echolink-dmr` |
-| `examples/adn-bridge-echolink-ysf.example.ini` | `echolink-ysf` |
+| Plantilla | Layout |
+|-----------|--------|
+| `examples/adn-bridge.example.ini` | Master — peers YSF+DMR (EchoLink comentado) |
+| `examples/adn-bridge-ysf-dmr.example.ini` | YSF ↔ DMR |
+| `examples/adn-bridge-echolink-dmr.example.ini` | EchoLink ↔ DMR |
+| `examples/adn-bridge-echolink-ysf.example.ini` | EchoLink ↔ YSF |
 
 2. Ejecute con la ruta del INI:
 
