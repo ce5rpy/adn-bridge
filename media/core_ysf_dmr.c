@@ -553,13 +553,14 @@ static void core_emit_connect_ptt(media_core_t *core, media_peer_slot_t *slot)
     }
 }
 
+/* DMR HBP login keepalive — independent of what else shares the bus (a pure
+ * DMR-only or DMR-relay-only bus still needs it, not just YSF<->DMR). */
 void core_ysf_dmr_poll_connect_ptt(media_core_t *core)
 {
-    peer_ysf_t *ysf = media_peer_bus_primary_ysf(core->bus);
     int i;
 
-    if (!ysf || !core->bus)
-        return; /* only meaningful when this layout's peers exist */
+    if (!core->bus)
+        return;
 
     for (i = 0; i < core->bus->n_slots; i++) {
         media_peer_slot_t *slot = &core->bus->slots[i];

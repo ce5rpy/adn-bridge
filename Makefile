@@ -25,7 +25,7 @@ C_SRCS = adn_bridge.c config.c log.c aliases.c talker_alias.c peer_dmr.c peer_ys
          hbp/dmr_hbp.c vendor/yyjson/yyjson.c \
          media/bridge_util.c media/call_meta.c media/identity.c media/router.c \
          media/peer_bus.c media/codec_plan.c media/log_flow.c media/core.c \
-         media/core_ysf_dmr.c media/core_echolink.c \
+         media/core_ysf_dmr.c media/core_echolink.c media/core_relay.c \
          adapters/peer_plugin.c \
          engine.c \
          session/dmr_wire.c session/dmr_tx.c session/ysf_tx.c \
@@ -136,6 +136,7 @@ $(BUILD)/tests/test_media_core.o: tests/test_media_core.c
 tests/test_media_core: adn-bridge $(BUILD)/tests/test_media_core.o
 	$(CXX) -o $@ $(BUILD)/tests/test_media_core.o \
 		$(BUILD)/media/core.o $(BUILD)/media/core_ysf_dmr.o $(BUILD)/media/core_echolink.o \
+		$(BUILD)/media/core_relay.o \
 		$(BUILD)/media/router.o $(BUILD)/media/codec_plan.o \
 		$(BUILD)/media/log_flow.o $(BUILD)/media/peer_bus.o \
 		$(BUILD)/media/bridge_util.o $(BUILD)/media/call_meta.o \

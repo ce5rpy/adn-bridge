@@ -10,6 +10,7 @@
 #include "adapters/peer_plugin.h"
 #include "codecs/registry.h"
 #include "media/core_echolink.h"
+#include "media/core_relay.h"
 #include "media/core_ysf_dmr.h"
 
 #include <string.h>
@@ -51,28 +52,35 @@ void media_core_set_bridge_dmrid(media_core_t *core, int dmrid)
     core->bridge_dmrid = dmrid;
 }
 
-/* The other enabled peer kind sharing this bus with src_kind — with exactly
- * two peer kinds enabled (today's only supported configs), this is the one
- * codec_pair_resolve needs to pick a pathway; see media_core_ingress. */
-static media_peer_kind_t core_other_enabled_kind(const media_core_t *core, media_peer_kind_t src_kind)
-{
-    int i;
+static const media_peer_kind_t CORE_ALL_KINDS[3] = {
+    MEDIA_PEER_DMR, MEDIA_PEER_YSF, MEDIA_PEER_ECHOLINK,
+};
 
-    if (!core->router)
-        return src_kind;
-    for (i = 0; i < core->router->n_peers; i++) {
-        if (!core->router->peers[i].enabled)
-            continue;
-        if (core->router->peers[i].kind != src_kind)
-            return core->router->peers[i].kind;
+/* >=2 enabled peers of `kind` — same-protocol relay only makes sense once a
+ * second destination of the source's own kind exists. */
+static int core_kind_has_multiple_enabled(const media_router_t *r, media_peer_kind_t kind)
+{
+    int i, n = 0;
+
+    if (!r)
+        return 0;
+    for (i = 0; i < r->n_peers; i++) {
+        if (r->peers[i].enabled && r->peers[i].kind == kind && ++n >= 2)
+            return 1;
     }
-    return src_kind;
+    return 0;
 }
 
+/* Genuinely N-way: for every peer kind sharing this bus (including src's own,
+ * "the diagonal"), resolve the pathway via codec_pair_resolve and run it if
+ * reachable — not just the single "other kind" a 2-kind layout has room for.
+ * Multiple families can fire for the same frame (e.g. a DMR source with both
+ * another DMR peer and a YSF peer enabled relays to one and ModeConv's to the
+ * other); they touch disjoint state so this is safe (see media/core_relay.c). */
 void media_core_ingress(media_core_t *core, int src_router_id, const media_bus_frame_t *frame)
 {
-    media_peer_kind_t src_kind, dst_kind;
-    codec_pair_path_t path;
+    media_peer_kind_t src_kind;
+    int i;
 
     if (!core || !frame || !core->router)
         return;
@@ -86,26 +94,38 @@ void media_core_ingress(media_core_t *core, int src_router_id, const media_bus_f
         return;
     }
 
-    /* Router ingress arbitration is a force-take inside each pathway's begin
-     * helper ("last keyed wins", half-duplex), not a blanket drop here. */
-    dst_kind = core_other_enabled_kind(core, src_kind);
-    path = codec_pair_resolve(peer_plugin_wire_codec(src_kind), peer_plugin_wire_codec(dst_kind));
+    for (i = 0; i < 3; i++) {
+        media_peer_kind_t dst_kind = CORE_ALL_KINDS[i];
+        codec_pair_path_t path;
+        int reachable = (dst_kind == src_kind)
+                         ? core_kind_has_multiple_enabled(core->router, dst_kind)
+                         : media_router_find_first(core->router, dst_kind) >= 0;
 
-    switch (path) {
-    case CODEC_PAIR_DIRECT: /* YSF<->DMR: ModeConv shortcut, no PCM hub */
-        if (src_kind == MEDIA_PEER_DMR)
-            core_ysf_dmr_ingress_dmr(core, src_router_id, frame);
-        else if (src_kind == MEDIA_PEER_YSF)
-            core_ysf_dmr_ingress_ysf(core, src_router_id, frame);
-        break;
-    case CODEC_PAIR_PCM: /* EchoLink<->DMR or EchoLink<->YSF: vocoder */
-        if (src_kind == MEDIA_PEER_DMR)
-            core_el_dmr_ingress_dmr(core, src_router_id, frame);
-        else if (src_kind == MEDIA_PEER_YSF)
-            core_el_ysf_ingress_ysf(core, src_router_id, frame);
-        break;
-    default:
-        break; /* CODEC_PAIR_RELAY/NONE: no pathway module implements these yet */
+        if (!reachable)
+            continue;
+        path = codec_pair_resolve(peer_plugin_wire_codec(src_kind), peer_plugin_wire_codec(dst_kind));
+        switch (path) {
+        case CODEC_PAIR_RELAY: /* same protocol both ends: wire-only fan-out */
+            if (src_kind == MEDIA_PEER_DMR)
+                core_relay_dmr_to_dmr(core, src_router_id, frame);
+            else if (src_kind == MEDIA_PEER_YSF)
+                core_relay_ysf_to_ysf(core, src_router_id, frame);
+            break;
+        case CODEC_PAIR_DIRECT: /* YSF<->DMR: ModeConv shortcut, no PCM hub */
+            if (src_kind == MEDIA_PEER_DMR)
+                core_ysf_dmr_ingress_dmr(core, src_router_id, frame);
+            else if (src_kind == MEDIA_PEER_YSF)
+                core_ysf_dmr_ingress_ysf(core, src_router_id, frame);
+            break;
+        case CODEC_PAIR_PCM: /* EchoLink<->DMR or EchoLink<->YSF: vocoder */
+            if (src_kind == MEDIA_PEER_DMR)
+                core_el_dmr_ingress_dmr(core, src_router_id, frame);
+            else if (src_kind == MEDIA_PEER_YSF)
+                core_el_ysf_ingress_ysf(core, src_router_id, frame);
+            break;
+        default:
+            break;
+        }
     }
 }
 
@@ -119,18 +139,26 @@ void media_core_tick(media_core_t *core)
     has_ysf = media_router_find_first(core->router, MEDIA_PEER_YSF) >= 0;
     has_el = media_router_find_first(core->router, MEDIA_PEER_ECHOLINK) >= 0;
 
-    if (has_dmr && has_ysf) {
+    /* DMR HBP keepalive is independent of whatever else shares the bus (a
+     * DMR-only or DMR-relay-only bus still needs it); core_el_tick also polls
+     * it when has_el (its own copy, see media/core_echolink.c), which is
+     * harmless to run alongside this — the second call in a tick is a no-op
+     * (dmr_was_connected/last_dmr_tx already updated by whichever ran first). */
+    if (has_dmr)
         core_ysf_dmr_poll_connect_ptt(core);
+    if (has_dmr && has_ysf)
         core_ysf_dmr_tick(core);
-    } else if (has_el) {
+    if (has_el)
         core_el_tick(core);
-    }
 }
 
 /* EchoLink PCM ingress does not go through media_core_ingress (it is polled
  * directly, not classified from a wire packet) — exposed so engine.c can call
  * it after polling the EL peer, mirroring bridge_el_process_el_audio/
- * bridge_el_process_el_to_ysf today. */
+ * bridge_el_process_el_to_ysf today. Same "run every applicable family"
+ * approach as media_core_ingress: DMR and YSF fan-out are not mutually
+ * exclusive in a 3-kind bus, and same-protocol EL<->EL relay is orthogonal
+ * to both. */
 void media_core_poll_el_pcm(media_core_t *core)
 {
     int has_dmr, has_ysf;
@@ -142,6 +170,8 @@ void media_core_poll_el_pcm(media_core_t *core)
 
     if (has_dmr)
         core_el_dmr_process_el_audio(core);
-    else if (has_ysf)
+    if (has_ysf)
         core_el_ysf_process_el_audio(core);
+    if (core_kind_has_multiple_enabled(core->router, MEDIA_PEER_ECHOLINK))
+        core_relay_el_to_el(core);
 }
