@@ -9,6 +9,7 @@
 #define ADN_MEDIA_PEER_BUS_H
 
 #include <stdint.h>
+#include <time.h>
 
 #include "config.h"
 #include "media/router.h"
@@ -32,6 +33,19 @@ typedef struct {
      * pathway at call-begin (see media/core_ysf_dmr.c, media/core_echolink.c). */
     uint8_t           dmr_tx_seq;
     uint32_t          dmr_tx_stream_id;
+    /* Per-destination connect-PTT (DMR-kind slots only): each DMR peer may
+     * have its own TG and its own clear_dynamic_tg config, so each needs an
+     * independent clear-then-activate sequence, not one shared TG fanned
+     * out to every destination. clear_dynamic_tg is copied from config at
+     * open time; the rest is session state advanced once per tick. */
+    int               clear_dynamic_tg;
+    int               dmr_was_connected;
+    int               cp_active;
+    int               cp_phase; /* 0=need VHEAD, 1=voice */
+    int               cp_voice_frames;
+    int               cp_tg;
+    int               cp_clearing; /* 1 = current stage is the TG 4000 clear burst */
+    struct timespec   cp_start;
 } media_peer_slot_t;
 
 typedef struct {

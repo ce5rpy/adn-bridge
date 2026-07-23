@@ -53,10 +53,10 @@ static void core_router_release_active(media_core_t *core)
         media_router_ingress_end(core->router, active);
 }
 
-static int core_dmr_tx_tg(const media_core_t *core, peer_dmr_t *dmr)
+static int core_dmr_tx_tg(const media_peer_slot_t *slot, peer_dmr_t *dmr)
 {
-    if (core->connect_ptt_active && core->connect_ptt_tg > 0)
-        return core->connect_ptt_tg;
+    if (slot->cp_active && slot->cp_tg > 0)
+        return slot->cp_tg;
     return dmr ? dmr->tg : 0;
 }
 
@@ -103,6 +103,26 @@ void core_ysf_dmr_merge_dmra(media_core_t *core, const media_bus_frame_t *frame)
 
 /* ---- egress: DMR<-YSF (fan-out to all DMR peers) ---- */
 
+static void core_dmr_tx_one(media_core_t *core, media_peer_slot_t *slot,
+                            uint8_t frame_type, const uint8_t *voice33)
+{
+    peer_dmr_t *dmr;
+    dmr_tx_args_t args;
+
+    if (!slot || !slot->open)
+        return;
+    dmr = &slot->u.dmr;
+
+    args.peer = dmr;
+    args.bridge_dmrid = dmr->dmrid;
+    args.talker_rf_id = (core->call.talker_id > 0) ? core->call.talker_id : dmr->dmrid;
+    args.tx_tg = core_dmr_tx_tg(slot, dmr);
+    args.seq = &slot->dmr_tx_seq;
+    args.stream_id = slot->dmr_tx_stream_id;
+    args.last_tx = &core->last_dmr_tx;
+    adapter_dmr_egress_dmrd(&args, frame_type, voice33);
+}
+
 typedef struct {
     media_core_t *core;
     uint8_t       frame_type;
@@ -113,24 +133,11 @@ static int core_fanout_dmrd_cb(int dst_id, media_peer_kind_t kind, void *vctx)
 {
     core_fanout_dmrd_ctx_t *ctx = vctx;
     media_peer_slot_t *slot;
-    peer_dmr_t *dmr;
-    dmr_tx_args_t args;
 
     if (kind != MEDIA_PEER_DMR)
         return 0;
     slot = media_peer_bus_slot_mut(ctx->core->bus, dst_id);
-    if (!slot || !slot->open)
-        return 0;
-    dmr = &slot->u.dmr;
-
-    args.peer = dmr;
-    args.bridge_dmrid = dmr->dmrid;
-    args.talker_rf_id = (ctx->core->call.talker_id > 0) ? ctx->core->call.talker_id : dmr->dmrid;
-    args.tx_tg = core_dmr_tx_tg(ctx->core, dmr);
-    args.seq = &slot->dmr_tx_seq;
-    args.stream_id = slot->dmr_tx_stream_id;
-    args.last_tx = &ctx->core->last_dmr_tx;
-    adapter_dmr_egress_dmrd(&args, ctx->frame_type, ctx->voice33);
+    core_dmr_tx_one(ctx->core, slot, ctx->frame_type, ctx->voice33);
     return 0;
 }
 
@@ -436,130 +443,160 @@ static int core_emit_ysf_from_conv(media_core_t *core)
     return 0;
 }
 
-/* ---- connect-PTT (DMR login rising edge: TG 4000 optional clear + activate) ---- */
+/* ---- connect-PTT (DMR login rising edge: TG 4000 optional clear + activate)
+ * — per DMR destination slot, since each may have its own TG and its own
+ * clear_dynamic_tg config (see media/core_echolink.c for the same fix and
+ * the bug it closes: one shared TG fanned out to every DMR destination). */
 
-static void core_connect_ptt_begin_stream(media_core_t *core, int tg, int clearing)
+static void core_connect_ptt_begin_stream(media_peer_slot_t *slot, int tg, int clearing)
 {
-    core->connect_ptt_active = 1;
-    core->connect_ptt_phase = 0;
-    core->connect_ptt_voice_frames = 0;
-    core->connect_ptt_tg = tg;
-    core->connect_ptt_clearing = clearing ? 1 : 0;
-    core->call.stream_id = bridge_new_stream_id();
-    core->dmr_seq = 0;
-    core_reset_dmr_tx_slots(core);
-    bridge_stamp_now(&core->connect_ptt_start);
-    bridge_stamp_now(&core->last_dmr_tx);
-    core->last_dmr_tx.tv_sec = 0; /* force first emit immediately */
-    LOG_DMR_INFO("DMR connect PTT start (TG %d, %d ms)%s\n",
-                 tg, CONNECT_PTT_MS, clearing ? " [clear dynamic]" : "");
+    slot->cp_active = 1;
+    slot->cp_phase = 0;
+    slot->cp_voice_frames = 0;
+    slot->cp_tg = tg;
+    slot->cp_clearing = clearing ? 1 : 0;
+    slot->dmr_tx_stream_id = bridge_new_stream_id();
+    slot->dmr_tx_seq = 0;
+    bridge_stamp_now(&slot->cp_start);
+    LOG_DMR_INFO("DMR connect PTT start (TG %d, %d ms)%s [%.10s]\n",
+                 tg, CONNECT_PTT_MS, clearing ? " [clear dynamic]" : "", slot->u.dmr.callsign);
 }
 
-static void core_connect_ptt_finish(media_core_t *core, peer_dmr_t *dmr)
+static void core_connect_ptt_finish(media_core_t *core, media_peer_slot_t *slot)
 {
     uint8_t slot_bit = core->dmr_slot_bit;
-    int ended_tg = core->connect_ptt_tg > 0 ? core->connect_ptt_tg : (dmr ? dmr->tg : 0);
-    int was_clearing = core->connect_ptt_clearing;
+    peer_dmr_t *dmr = &slot->u.dmr;
+    int ended_tg = slot->cp_tg > 0 ? slot->cp_tg : dmr->tg;
+    int was_clearing = slot->cp_clearing;
 
-    while ((core->connect_ptt_voice_frames % 6) != 0) {
-        uint8_t n = (uint8_t)(core->connect_ptt_voice_frames % 6);
-        core_send_dmrd(core, (uint8_t)(slot_bit | n), DMR_SILENCE_DATA);
-        core->connect_ptt_voice_frames++;
+    while ((slot->cp_voice_frames % 6) != 0) {
+        uint8_t n = (uint8_t)(slot->cp_voice_frames % 6);
+        core_dmr_tx_one(core, slot, (uint8_t)(slot_bit | n), DMR_SILENCE_DATA);
+        slot->cp_voice_frames++;
     }
-    core_send_dmrd(core, (uint8_t)(slot_bit | (DMRD_FT_DATA_SYNC << 4) | DMRD_DTYPE_VTERM),
-                   DMR_SILENCE_DATA);
-    LOG_DMR_INFO("DMR connect PTT end (TG %d, %d voice frames)\n",
-                 ended_tg, core->connect_ptt_voice_frames);
+    core_dmr_tx_one(core, slot, (uint8_t)(slot_bit | (DMRD_FT_DATA_SYNC << 4) | DMRD_DTYPE_VTERM),
+                    DMR_SILENCE_DATA);
+    LOG_DMR_INFO("DMR connect PTT end (TG %d, %d voice frames) [%.10s]\n",
+                 ended_tg, slot->cp_voice_frames, dmr->callsign);
 
-    if (was_clearing && dmr && dmr->tg > 0) {
-        core_connect_ptt_begin_stream(core, dmr->tg, 0);
+    if (was_clearing && dmr->tg > 0) {
+        core_connect_ptt_begin_stream(slot, dmr->tg, 0);
         return;
     }
-    core->connect_ptt_active = 0;
-    core->connect_ptt_phase = 0;
-    core->connect_ptt_voice_frames = 0;
-    core->connect_ptt_tg = 0;
-    core->connect_ptt_clearing = 0;
+    slot->cp_active = 0;
+    slot->cp_phase = 0;
+    slot->cp_voice_frames = 0;
+    slot->cp_tg = 0;
+    slot->cp_clearing = 0;
 }
 
 void core_ysf_dmr_abort_connect_ptt(media_core_t *core)
 {
-    if (!core->connect_ptt_active)
+    int i;
+
+    if (!core->bus)
         return;
-    if (core->connect_ptt_phase > 0) {
-        core->connect_ptt_clearing = 0;
-        core_connect_ptt_finish(core, media_peer_bus_primary_dmr(core->bus));
-    } else {
-        core->connect_ptt_active = 0;
-        core->connect_ptt_phase = 0;
-        core->connect_ptt_voice_frames = 0;
-        core->connect_ptt_tg = 0;
-        core->connect_ptt_clearing = 0;
+    for (i = 0; i < core->bus->n_slots; i++) {
+        media_peer_slot_t *slot = &core->bus->slots[i];
+
+        if (slot->kind != MEDIA_PEER_DMR || !slot->cp_active)
+            continue;
+        if (slot->cp_phase > 0) {
+            slot->cp_clearing = 0;
+            core_connect_ptt_finish(core, slot);
+        } else {
+            slot->cp_active = 0;
+            slot->cp_phase = 0;
+            slot->cp_voice_frames = 0;
+            slot->cp_tg = 0;
+            slot->cp_clearing = 0;
+        }
     }
 }
 
-static void core_start_connect_ptt(media_core_t *core, peer_dmr_t *dmr)
+static void core_start_connect_ptt(media_core_t *core, media_peer_slot_t *slot)
 {
-    if (core->phase != MEDIA_CALL_IDLE || core->connect_ptt_active)
+    peer_dmr_t *dmr = &slot->u.dmr;
+
+    if (core->phase != MEDIA_CALL_IDLE || slot->cp_active)
         return;
-    if (!dmr || dmr->tg <= 0)
+    if (dmr->tg <= 0)
         return;
-    if (core->clear_dynamic_tg)
-        core_connect_ptt_begin_stream(core, DMR_CLEAR_DYNAMIC_TG, 1);
+    if (slot->clear_dynamic_tg)
+        core_connect_ptt_begin_stream(slot, DMR_CLEAR_DYNAMIC_TG, 1);
     else
-        core_connect_ptt_begin_stream(core, dmr->tg, 0);
+        core_connect_ptt_begin_stream(slot, dmr->tg, 0);
 }
 
-static void core_emit_connect_ptt(media_core_t *core)
+static void core_emit_connect_ptt(media_core_t *core, media_peer_slot_t *slot)
 {
     uint8_t slot_bit = core->dmr_slot_bit;
     int i;
 
-    if (!core->connect_ptt_active)
+    if (!slot->cp_active)
         return;
 
-    if (core->connect_ptt_phase == 0) {
+    if (slot->cp_phase == 0) {
         for (i = 0; i < 3; i++)
-            core_send_dmrd(core, (uint8_t)(slot_bit | (DMRD_FT_DATA_SYNC << 4) | DMRD_DTYPE_VHEAD), NULL);
-        core->connect_ptt_phase = 1;
-        bridge_stamp_now(&core->connect_ptt_start);
+            core_dmr_tx_one(core, slot, (uint8_t)(slot_bit | (DMRD_FT_DATA_SYNC << 4) | DMRD_DTYPE_VHEAD), NULL);
+        slot->cp_phase = 1;
+        bridge_stamp_now(&slot->cp_start);
         return;
     }
-    if (bridge_ms_since(&core->connect_ptt_start) >= CONNECT_PTT_MS) {
-        core_connect_ptt_finish(core, media_peer_bus_primary_dmr(core->bus));
+    if (bridge_ms_since(&slot->cp_start) >= CONNECT_PTT_MS) {
+        core_connect_ptt_finish(core, slot);
         return;
     }
     {
-        uint8_t n = (uint8_t)(core->connect_ptt_voice_frames % 6);
+        uint8_t n = (uint8_t)(slot->cp_voice_frames % 6);
         uint8_t b15 = (uint8_t)(n == 0 ? (slot_bit | (DMRD_FT_VOICE_SYNC << 4)) : (slot_bit | n));
-        core_send_dmrd(core, b15, DMR_SILENCE_DATA);
-        core->connect_ptt_voice_frames++;
+        core_dmr_tx_one(core, slot, b15, DMR_SILENCE_DATA);
+        slot->cp_voice_frames++;
     }
 }
 
 void core_ysf_dmr_poll_connect_ptt(media_core_t *core)
 {
-    peer_dmr_t *dmr = media_peer_bus_primary_dmr(core->bus);
     peer_ysf_t *ysf = media_peer_bus_primary_ysf(core->bus);
-    int connected;
+    int i;
 
-    if (!dmr || !ysf)
-        return; /* only meaningful when this layout's two peers exist */
+    if (!ysf || !core->bus)
+        return; /* only meaningful when this layout's peers exist */
 
-    connected = peer_dmr_connected(dmr);
-    if (connected && !core->dmr_was_connected)
-        core_start_connect_ptt(core, dmr);
-    if (!connected) {
-        core->connect_ptt_active = 0;
-        core->connect_ptt_phase = 0;
-        core->connect_ptt_voice_frames = 0;
-        core->connect_ptt_tg = 0;
-        core->connect_ptt_clearing = 0;
+    for (i = 0; i < core->bus->n_slots; i++) {
+        media_peer_slot_t *slot = &core->bus->slots[i];
+        int connected;
+
+        if (slot->kind != MEDIA_PEER_DMR || !slot->open)
+            continue;
+        connected = peer_dmr_connected(&slot->u.dmr);
+        if (connected && !slot->dmr_was_connected)
+            core_start_connect_ptt(core, slot);
+        if (!connected) {
+            slot->cp_active = 0;
+            slot->cp_phase = 0;
+            slot->cp_voice_frames = 0;
+            slot->cp_tg = 0;
+            slot->cp_clearing = 0;
+        }
+        slot->dmr_was_connected = connected;
+
+        if (slot->cp_active && bridge_ms_elapsed(&core->last_dmr_tx, DMR_FRAME_MS))
+            core_emit_connect_ptt(core, slot);
     }
-    core->dmr_was_connected = connected;
+}
 
-    if (core->connect_ptt_active && bridge_ms_elapsed(&core->last_dmr_tx, DMR_FRAME_MS))
-        core_emit_connect_ptt(core);
+static int core_any_connect_ptt_active(const media_core_t *core)
+{
+    int i;
+
+    if (!core->bus)
+        return 0;
+    for (i = 0; i < core->bus->n_slots; i++) {
+        if (core->bus->slots[i].kind == MEDIA_PEER_DMR && core->bus->slots[i].cp_active)
+            return 1;
+    }
+    return 0;
 }
 
 /* ---- tick: pace ModeConv drain to the wire at DMR/YSF frame intervals ---- */
@@ -572,7 +609,7 @@ void core_ysf_dmr_tick(media_core_t *core)
     if (!dmr || !ysf || !peer_dmr_connected(dmr) || !peer_ysf_linked(ysf))
         return;
 
-    if (!core->connect_ptt_active && bridge_ms_elapsed(&core->last_dmr_tx, DMR_FRAME_MS))
+    if (!core_any_connect_ptt_active(core) && bridge_ms_elapsed(&core->last_dmr_tx, DMR_FRAME_MS))
         core_emit_dmr_from_conv(core);
 
     if (bridge_ms_elapsed(&core->last_ysf_tx, YSF_FRAME_MS))

@@ -83,15 +83,11 @@ typedef struct {
     int dmr_ending;
     int ysf_ending;
 
-    /* Connect-PTT (TG 4000 optional clear + activation TG). */
-    int dmr_was_connected;
-    int clear_dynamic_tg;
-    int connect_ptt_active;
-    int connect_ptt_phase;
-    int connect_ptt_voice_frames;
-    int connect_ptt_tg;
-    int connect_ptt_clearing;
-    struct timespec connect_ptt_start;
+    /* Connect-PTT state lives per-slot now (media_peer_slot_t.cp_* /
+     * clear_dynamic_tg / dmr_was_connected) — each DMR destination may have
+     * its own TG and its own clear_dynamic_tg config, so one shared TG fanned
+     * out to every destination was wrong with >1 DMR peer. See
+     * media/core_echolink.c and media/core_ysf_dmr.c. */
 
     /* DMRA sidechain (talker identity). */
     media_dmra_t dmra;
