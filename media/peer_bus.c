@@ -45,11 +45,6 @@ static media_peer_slot_t *bus_first_slot_kind(media_peer_bus_t *bus, media_peer_
     return NULL;
 }
 
-const media_peer_slot_t *media_peer_bus_slot(const media_peer_bus_t *bus, int router_id)
-{
-    return bus_find_slot((media_peer_bus_t *)bus, router_id);
-}
-
 media_peer_slot_t *media_peer_bus_slot_mut(media_peer_bus_t *bus, int router_id)
 {
     return bus_find_slot(bus, router_id);
@@ -85,7 +80,7 @@ peer_ysf_t *media_peer_bus_ysf(media_peer_bus_t *bus, int router_id)
     return &s->u.ysf;
 }
 
-peer_echolink_t *media_peer_bus_el(media_peer_bus_t *bus, int router_id)
+static peer_echolink_t *media_peer_bus_el(media_peer_bus_t *bus, int router_id)
 {
     media_peer_slot_t *s;
 

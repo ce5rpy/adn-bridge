@@ -11,6 +11,9 @@
 #include "codecs/registry.h"
 #include "config.h"
 
+static codec_pair_path_t media_codec_plan_pair_path(const media_router_t *router,
+                                                    int src_router_id, int dst_router_id);
+
 static media_peer_kind_t plan_peer_kind(adn_bridge_peer_type_t type)
 {
     switch (type) {
@@ -25,12 +28,12 @@ static media_peer_kind_t plan_peer_kind(adn_bridge_peer_type_t type)
     }
 }
 
-int media_codec_path_needs_vocoder(codec_pair_path_t path)
+static int media_codec_path_needs_vocoder(codec_pair_path_t path)
 {
     return path == CODEC_PAIR_PCM;
 }
 
-int media_codec_path_needs_modeconv(codec_pair_path_t path)
+static int media_codec_path_needs_modeconv(codec_pair_path_t path)
 {
     return path == CODEC_PAIR_DIRECT;
 }
@@ -109,8 +112,8 @@ int media_codec_plan_from_config(const adn_bridge_config_t *cfg, media_codec_pla
     return 0;
 }
 
-codec_pair_path_t media_codec_plan_pair_path(const media_router_t *router,
-                                               int src_router_id, int dst_router_id)
+static codec_pair_path_t media_codec_plan_pair_path(const media_router_t *router,
+                                                    int src_router_id, int dst_router_id)
 {
     codec_id_t src_codec;
     codec_id_t dst_codec;

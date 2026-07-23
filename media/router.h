@@ -42,9 +42,6 @@ int media_router_add_peer_cfg(media_router_t *r, media_peer_kind_t kind,
                                int cfg_index, int enabled);
 
 int media_router_peer_count(const media_router_t *r);
-int media_router_peer_kind(const media_router_t *r, int peer_id);
-int media_router_peer_cfg_index(const media_router_t *r, int peer_id);
-void media_router_set_peer_enabled(media_router_t *r, int peer_id, int enabled);
 
 /* First enabled router slot for kind, or -1. */
 int media_router_find_first(const media_router_t *r, media_peer_kind_t kind);

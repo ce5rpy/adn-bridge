@@ -18,7 +18,6 @@ static void test_init_defaults(void)
     media_core_t core;
 
     media_core_init(&core);
-    assert(core.ingress_router_id == -1);
     assert(core.leg_ysf_dmr.phase == MEDIA_CALL_IDLE);
     assert(core.leg_el.phase == MEDIA_CALL_IDLE);
     assert(core.dmr_slot_bit == 0x80);

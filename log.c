@@ -108,11 +108,6 @@ void log_set_channel_level(log_channel_t ch, log_level_t level)
     g_log_level[ch] = level;
 }
 
-log_level_t log_get_level(void)
-{
-    return g_log_level[LOG_CH_APP];
-}
-
 log_level_t log_get_channel_level(log_channel_t ch)
 {
     if ((int)ch < 0 || ch >= LOG_CH_COUNT)
@@ -131,7 +126,7 @@ const char *log_level_name(log_level_t level)
     }
 }
 
-const char *log_channel_name(log_channel_t ch)
+static const char *log_channel_name(log_channel_t ch)
 {
     switch (ch) {
     case LOG_CH_APP:      return "app";
@@ -169,37 +164,11 @@ log_level_t log_level_from_string(const char *s)
     return LOG_LEVEL_INFO;
 }
 
-int log_level_enabled(log_level_t level)
-{
-    return log_channel_enabled(LOG_CH_APP, level);
-}
-
 int log_channel_enabled(log_channel_t ch, log_level_t level)
 {
     if ((int)ch < 0 || ch >= LOG_CH_COUNT)
         return 0;
     return level >= g_log_level[ch];
-}
-
-void log_msg(log_level_t level, const char *fmt, ...)
-{
-    va_list ap;
-
-    va_start(ap, fmt);
-    /* Re-use channel path via vfprintf after header — call log_msg_ch style. */
-    if (log_channel_enabled(LOG_CH_APP, level)) {
-        struct timespec ts;
-        struct tm tm;
-        char tbuf[32];
-
-        clock_gettime(CLOCK_REALTIME, &ts);
-        localtime_r(&ts.tv_sec, &tm);
-        strftime(tbuf, sizeof(tbuf), "%Y-%m-%d %H:%M:%S", &tm);
-        fprintf(stderr, "%s,%03ld %s/app: ", tbuf, ts.tv_nsec / 1000000L,
-                log_level_name(level));
-        vfprintf(stderr, fmt, ap);
-    }
-    va_end(ap);
 }
 
 static void log_write_sink(FILE *fp, int timed, const char *tbuf, long ms,

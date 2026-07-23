@@ -18,11 +18,9 @@ typedef struct {
     adn_bridge_peer_type_t config_type;
     media_peer_kind_t     router_kind;
     codec_id_t            wire_codec;
-    int                   needs_hardware_vocoder;
 } peer_kind_plugin_t;
 
 const peer_kind_plugin_t *peer_plugin_for_config_type(adn_bridge_peer_type_t type);
-const peer_kind_plugin_t *peer_plugin_for_router_kind(media_peer_kind_t kind);
 codec_id_t peer_plugin_wire_codec(media_peer_kind_t kind);
 const char *peer_plugin_label(media_peer_kind_t kind);
 

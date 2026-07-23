@@ -14,19 +14,16 @@ static const peer_kind_plugin_t peer_plugins[] = {
         ADN_BRIDGE_PEER_TYPE_DMR,
         MEDIA_PEER_DMR,
         CODEC_DMR_AMBE,
-        0,
     },
     {
         ADN_BRIDGE_PEER_TYPE_YSF,
         MEDIA_PEER_YSF,
         CODEC_YSF_AMBE,
-        0,
     },
     {
         ADN_BRIDGE_PEER_TYPE_ECHOLINK,
         MEDIA_PEER_ECHOLINK,
         CODEC_PCM,
-        1,
     },
 };
 
@@ -46,7 +43,7 @@ const peer_kind_plugin_t *peer_plugin_for_config_type(adn_bridge_peer_type_t typ
     return peer_plugin_find_config(type);
 }
 
-const peer_kind_plugin_t *peer_plugin_for_router_kind(media_peer_kind_t kind)
+static const peer_kind_plugin_t *peer_plugin_for_router_kind(media_peer_kind_t kind)
 {
     size_t i;
 

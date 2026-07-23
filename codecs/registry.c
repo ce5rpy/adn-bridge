@@ -7,33 +7,13 @@
 
 #include "codecs/registry.h"
 
-#include <string.h>
+#include <stddef.h>
 
 static const char *const codec_names[CODEC_COUNT] = {
     [CODEC_PCM] = "pcm",
     [CODEC_DMR_AMBE] = "dmr_ambe",
     [CODEC_YSF_AMBE] = "ysf_ambe",
 };
-
-const char *codec_name(codec_id_t id)
-{
-    if (id < 0 || id >= CODEC_COUNT)
-        return NULL;
-    return codec_names[id];
-}
-
-codec_id_t codec_id_from_name(const char *name)
-{
-    int i;
-
-    if (!name || !name[0])
-        return CODEC_COUNT;
-    for (i = 0; i < CODEC_COUNT; i++) {
-        if (codec_names[i] && strcmp(name, codec_names[i]) == 0)
-            return (codec_id_t)i;
-    }
-    return CODEC_COUNT;
-}
 
 int codec_is_registered(codec_id_t id)
 {

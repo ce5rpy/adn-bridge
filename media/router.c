@@ -36,27 +36,6 @@ int media_router_add_peer(media_router_t *r, media_peer_kind_t kind)
     return media_router_add_peer_cfg(r, kind, MEDIA_ROUTER_CFG_NONE, 1);
 }
 
-int media_router_peer_kind(const media_router_t *r, int peer_id)
-{
-    if (!r || peer_id < 0 || peer_id >= r->n_peers)
-        return -1;
-    return (int)r->peers[peer_id].kind;
-}
-
-int media_router_peer_cfg_index(const media_router_t *r, int peer_id)
-{
-    if (!r || peer_id < 0 || peer_id >= r->n_peers)
-        return MEDIA_ROUTER_CFG_NONE;
-    return r->peers[peer_id].cfg_index;
-}
-
-void media_router_set_peer_enabled(media_router_t *r, int peer_id, int enabled)
-{
-    if (!r || peer_id < 0 || peer_id >= r->n_peers)
-        return;
-    r->peers[peer_id].enabled = enabled ? 1 : 0;
-}
-
 int media_router_find_first(const media_router_t *r, media_peer_kind_t kind)
 {
     int i;

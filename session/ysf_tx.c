@@ -18,7 +18,7 @@ static const uint8_t YSF_SYNC_BYTES[5] = {0xD4U, 0x71U, 0xC9U, 0x63U, 0x4DU};
 static const uint8_t YSF_DCH_DT1[10] = {1U, 34U, 97U, 95U, 43U, 3U, 17U, 0U, 0U, 0U};
 static const uint8_t YSF_DCH_DT2[10] = {0U, 0U, 0U, 0U, 108U, 32U, 28U, 32U, 3U, 8U};
 
-const char *ysf_tx_fi_name(uint8_t fi)
+static const char *ysf_tx_fi_name(uint8_t fi)
 {
     switch (fi) {
     case YSF_FI_HEADER:         return "HDR";
@@ -69,7 +69,7 @@ void ysf_tx_fill_csd(const bridge_call_meta_t *meta, uint8_t csd1[20], uint8_t c
     memcpy(csd1 + 10, meta->net_src, 10);
 }
 
-void ysf_tx_apply_dch_slot(uint8_t *payload, uint8_t fn, const bridge_call_meta_t *meta)
+static void ysf_tx_apply_dch_slot(uint8_t *payload, uint8_t fn, const bridge_call_meta_t *meta)
 {
     uint8_t dch[10];
     uint8_t rid[5];

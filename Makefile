@@ -29,7 +29,7 @@ C_SRCS = adn_bridge.c config.c log.c aliases.c talker_alias.c peer_dmr.c peer_ys
          adapters/peer_plugin.c \
          engine.c \
          session/dmr_wire.c session/dmr_tx.c session/ysf_tx.c \
-         codecs/registry.c codecs/pcm.c codecs/dmr_ambe.c \
+         codecs/registry.c \
          adapters/dmr.c adapters/ysf.c adapters/el.c
 CXX_SRCS = mmdvm/ModeConv.cpp mmdvm/Golay24128.cpp mmdvm/modeconv_wrap.cpp \
            mmdvm/YSFPayload.cpp mmdvm/YSFConvolution.cpp mmdvm/CRC.cpp \
@@ -105,7 +105,7 @@ $(BUILD)/tests/test_codecs.o: tests/test_codecs.c
 
 tests/test_codecs: adn-bridge $(BUILD)/tests/test_codecs.o
 	$(CXX) -o $@ $(BUILD)/tests/test_codecs.o \
-		$(BUILD)/codecs/registry.o $(BUILD)/codecs/pcm.o $(LDFLAGS)
+		$(BUILD)/codecs/registry.o $(LDFLAGS)
 
 $(BUILD)/tests/test_router.o: tests/test_router.c
 	@mkdir -p $(dir $@)

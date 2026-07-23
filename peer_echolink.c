@@ -1669,11 +1669,6 @@ void peer_el_tick(peer_echolink_t *p)
     }
 }
 
-int peer_el_linked(const peer_echolink_t *p)
-{
-    return p && p->linked;
-}
-
 int peer_el_poll(peer_echolink_t *p, int timeout_ms)
 {
     struct pollfd pf[2];
@@ -1832,11 +1827,6 @@ const char *peer_el_remote_talker(const peer_echolink_t *p)
     if (p->host[0])
         return p->host;
     return "";
-}
-
-int peer_el_remote_talker_explicit(const peer_echolink_t *p)
-{
-    return p && p->remote_talker_explicit && p->remote_talker[0];
 }
 
 void peer_el_clear_remote_talker(peer_echolink_t *p)

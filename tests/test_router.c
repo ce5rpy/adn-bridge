@@ -63,7 +63,7 @@ int main(void)
     if (fanout_dst_kind != MEDIA_PEER_YSF && fanout_dst_kind != MEDIA_PEER_ECHOLINK)
         return 11;
 
-    media_router_set_peer_enabled(&r, ysf, 0);
+    r.peers[ysf].enabled = 0;
     fanout_count = 0;
     if (media_router_fanout(&r, dmr, count_dest, NULL) != 1)
         return 12;
@@ -74,7 +74,7 @@ int main(void)
         return 14;
     if (media_router_find_first(&r, MEDIA_PEER_DMR) != dmr)
         return 15;
-    if (media_router_peer_cfg_index(&r, el) != MEDIA_ROUTER_CFG_NONE)
+    if (r.peers[el].cfg_index != MEDIA_ROUTER_CFG_NONE)
         return 16;
 
     printf("test_router: ok\n");

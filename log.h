@@ -67,15 +67,11 @@ void log_reopen_files(void);
 
 void log_set_level(log_level_t level); /* sets all channels (compat) */
 void log_set_channel_level(log_channel_t ch, log_level_t level);
-log_level_t log_get_level(void); /* APP channel */
 log_level_t log_get_channel_level(log_channel_t ch);
 const char *log_level_name(log_level_t level);
-const char *log_channel_name(log_channel_t ch);
 /* Parses DEBUG, INFO, WARNING, ERROR (case-insensitive). Returns INFO if unknown. */
 log_level_t log_level_from_string(const char *s);
-int log_level_enabled(log_level_t level); /* APP channel */
 int log_channel_enabled(log_channel_t ch, log_level_t level);
-void log_msg(log_level_t level, const char *fmt, ...);
 void log_msg_ch(log_channel_t ch, log_level_t level, const char *fmt, ...);
 
 #define LOG_CH_DEBUG(ch, ...)   do { if (log_channel_enabled((ch), LOG_LEVEL_DEBUG))   log_msg_ch((ch), LOG_LEVEL_DEBUG,   __VA_ARGS__); } while (0)

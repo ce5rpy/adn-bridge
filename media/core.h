@@ -112,8 +112,6 @@ typedef struct {
     modeconv_t *mc_ysf_dmr;
     modeconv_t *mc_el;
 
-    int ingress_router_id; /* router id of the peer currently keyed, or -1 */
-
     /* Per-pathway session state — see media_leg_ysf_dmr_t/media_leg_el_t. */
     media_leg_ysf_dmr_t leg_ysf_dmr;
     media_leg_el_t      leg_el;

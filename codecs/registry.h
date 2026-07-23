@@ -10,8 +10,6 @@
 
 #include "codecs/codec.h"
 
-const char *codec_name(codec_id_t id);
-codec_id_t codec_id_from_name(const char *name);
 int codec_is_registered(codec_id_t id);
 
 codec_pair_path_t codec_pair_resolve(codec_id_t src, codec_id_t dst);

@@ -24,6 +24,8 @@
 #define CONNECT_PTT_MS 500
 #define DMR_CLEAR_DYNAMIC_TG 4000
 
+static void core_ysf_dmr_abort_connect_ptt(media_core_t *core);
+
 /* Force-take: release whoever is active (if not us) then take. Mirrors
  * adapter_dmr_router_take/adapter_ysf_router_take — "last keyed wins"
  * half-duplex semantics, not a hard block (only 2 peers in this layout). */
@@ -488,7 +490,7 @@ static void core_connect_ptt_finish(media_core_t *core, media_peer_slot_t *slot)
     slot->cp_clearing = 0;
 }
 
-void core_ysf_dmr_abort_connect_ptt(media_core_t *core)
+static void core_ysf_dmr_abort_connect_ptt(media_core_t *core)
 {
     int i;
 

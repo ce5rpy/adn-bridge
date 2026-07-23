@@ -20,7 +20,6 @@ void media_core_init(media_core_t *core)
     if (!core)
         return;
     memset(core, 0, sizeof(*core));
-    core->ingress_router_id = -1;
     core->dmr_slot_bit = 0x80; /* TX always TS2 */
     core->el_pcm_gain = 1.0f;
     core->mc_ysf_dmr = modeconv_create();

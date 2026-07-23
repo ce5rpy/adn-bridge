@@ -65,13 +65,11 @@ int media_peer_bus_open_all(media_peer_bus_t *bus, const adn_bridge_config_t *cf
 void media_peer_bus_close_all(media_peer_bus_t *bus);
 void media_peer_bus_sigint_all(media_peer_bus_t *bus);
 
-const media_peer_slot_t *media_peer_bus_slot(const media_peer_bus_t *bus, int router_id);
 /* Mutable lookup for per-destination TX state (dmr_tx_seq/dmr_tx_stream_id). */
 media_peer_slot_t *media_peer_bus_slot_mut(media_peer_bus_t *bus, int router_id);
 
 peer_dmr_t *media_peer_bus_dmr(media_peer_bus_t *bus, int router_id);
 peer_ysf_t *media_peer_bus_ysf(media_peer_bus_t *bus, int router_id);
-peer_echolink_t *media_peer_bus_el(media_peer_bus_t *bus, int router_id);
 
 peer_dmr_t *media_peer_bus_primary_dmr(media_peer_bus_t *bus);
 peer_ysf_t *media_peer_bus_primary_ysf(media_peer_bus_t *bus);

@@ -18,7 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-void identity_dbg_label10(char out[11], const uint8_t raw[10])
+static void identity_dbg_label10(char out[11], const uint8_t raw[10])
 {
     int i;
 
@@ -27,7 +27,7 @@ void identity_dbg_label10(char out[11], const uint8_t raw[10])
     out[10] = '\0';
 }
 
-void identity_format_id_callsign10(char out[10], int id)
+static void identity_format_id_callsign10(char out[10], int id)
 {
     char tmp[12];
     int n;
@@ -40,7 +40,7 @@ void identity_format_id_callsign10(char out[10], int id)
     memcpy(out, tmp, (size_t)n);
 }
 
-void identity_format_tg_dst10(char out[10], int tg)
+static void identity_format_tg_dst10(char out[10], int tg)
 {
     char tmp[16];
     int n;
@@ -142,7 +142,7 @@ void identity_callsign_base10(const char src10[10], char out[16])
     }
 }
 
-void identity_callsign_base_src(const char *src, char out[16])
+static void identity_callsign_base_src(const char *src, char out[16])
 {
     char pad[10];
     int i;
@@ -218,7 +218,7 @@ int identity_lookup_alias_id(adn_bridge_aliases_t *aliases, const char base_cs[1
     return adn_bridge_alias_lookup_id(aliases, base_cs);
 }
 
-int identity_lookup_dmr_callsign(adn_bridge_aliases_t *aliases, int rf, char out[10])
+static int identity_lookup_dmr_callsign(adn_bridge_aliases_t *aliases, int rf, char out[10])
 {
     int i;
 
@@ -270,8 +270,8 @@ void identity_resolve_dmr_to_ysf(bridge_call_meta_t *meta, const identity_dmr_ct
     }
 }
 
-int identity_assign_ysf_talker(bridge_call_meta_t *meta, int *ysf_rf_id,
-                               const identity_ysf_ctx_t *ctx, const char *src)
+static int identity_assign_ysf_talker(bridge_call_meta_t *meta, int *ysf_rf_id,
+                                      const identity_ysf_ctx_t *ctx, const char *src)
 {
     char base[16];
     char talker[10];

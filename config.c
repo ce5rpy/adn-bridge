@@ -13,11 +13,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <limits.h>
-#include <libgen.h>
 
-void adn_bridge_config_init(adn_bridge_config_t *cfg)
+static void adn_bridge_config_init(adn_bridge_config_t *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
     cfg->log_level = LOG_LEVEL_INFO;
@@ -37,8 +34,8 @@ int adn_bridge_config_enabled_peer_count(const adn_bridge_config_t *cfg)
     return n;
 }
 
-int adn_bridge_config_count_peers(const adn_bridge_config_t *cfg,
-                                  adn_bridge_peer_type_t type, int enabled_only)
+static int adn_bridge_config_count_peers(const adn_bridge_config_t *cfg,
+                                         adn_bridge_peer_type_t type, int enabled_only)
 {
     int i, n = 0;
 
@@ -92,29 +89,6 @@ const char *adn_bridge_layout_name(const adn_bridge_config_t *cfg)
     if (!off)
         return "no peers";
     return buf;
-}
-
-int adn_bridge_config_default_path(const char *argv0, char *path, size_t pathlen)
-{
-    char exebuf[PATH_MAX];
-
-    if (access("adn-bridge.ini", R_OK) == 0) {
-        strncpy(path, "adn-bridge.ini", pathlen);
-        path[pathlen - 1] = '\0';
-        return 0;
-    }
-
-    if (argv0 && argv0[0]) {
-        strncpy(exebuf, argv0, sizeof(exebuf) - 1);
-        exebuf[sizeof(exebuf) - 1] = '\0';
-        snprintf(path, pathlen, "%s/adn-bridge.ini", dirname(exebuf));
-        if (access(path, R_OK) == 0)
-            return 0;
-    }
-
-    strncpy(path, "adn-bridge.ini", pathlen);
-    path[pathlen - 1] = '\0';
-    return -1;
 }
 
 static char *trim(char *s)

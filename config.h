@@ -99,17 +99,13 @@ typedef struct {
     adn_bridge_peer_t peers[ADN_BRIDGE_PEER_MAX];
 } adn_bridge_config_t;
 
-void adn_bridge_config_init(adn_bridge_config_t *cfg);
 int adn_bridge_config_enabled_peer_count(const adn_bridge_config_t *cfg);
-int adn_bridge_config_count_peers(const adn_bridge_config_t *cfg,
-                                  adn_bridge_peer_type_t type, int enabled_only);
 const adn_bridge_peer_t *adn_bridge_config_find_peer(const adn_bridge_config_t *cfg,
                                                      adn_bridge_peer_type_t type);
 
 /* Descriptive peer-mix string for logs, e.g. "2x dmr + 1x ysf + 1x echolink". */
 const char *adn_bridge_layout_name(const adn_bridge_config_t *cfg);
 
-int adn_bridge_config_default_path(const char *argv0, char *path, size_t pathlen);
 int adn_bridge_config_load(const char *path, adn_bridge_config_t *cfg, char *err, size_t errlen);
 int adn_bridge_config_valid(const adn_bridge_config_t *cfg, char *err, size_t errlen);
 void adn_bridge_config_apply_log_levels(const adn_bridge_config_t *cfg);
