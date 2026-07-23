@@ -12,6 +12,7 @@
 #include <time.h>
 
 #include "aliases.h"
+#include "config.h"
 #include "media/codec_plan.h"
 #include "media/frame.h"
 #include "media/peer_bus.h"
@@ -34,6 +35,7 @@ typedef struct {
 
 typedef struct {
     /* Infra (bound once at engine start). */
+    adn_bridge_layout_t       layout;
     media_router_t           *router;
     media_peer_bus_t         *bus;
     const media_codec_plan_t *plan;
@@ -67,6 +69,11 @@ typedef struct {
     int     el_ambe_count;
     uint8_t ysf_ambe_buf[5][7];
     int     ysf_ambe_count;
+    float   el_pcm_gain;      /* [peer.*] echolink gain — EL->DMR/YSF PCM scale */
+    uint32_t dmr_rx_stream_id; /* DMR->EL RX stream (dedupe VHEAD), separate from
+                                 * call.stream_id which is the EL->DMR TX stream */
+    int     bridge_dmrid; /* [peer.*] dmr dmrid — fallback RF id / alias miss, valid
+                            * even in EL<->YSF layout where no DMR peer exists */
 
     /* Timers: hang / pacing / cooldown / connect-PTT. */
     struct timespec last_dmr_tx;
@@ -93,12 +100,18 @@ typedef struct {
 } media_core_t;
 
 void media_core_init(media_core_t *core);
-void media_core_bind(media_core_t *core, media_router_t *router, media_peer_bus_t *bus,
-                     const media_codec_plan_t *plan, adn_bridge_aliases_t *aliases);
+void media_core_bind(media_core_t *core, adn_bridge_layout_t layout, media_router_t *router,
+                     media_peer_bus_t *bus, const media_codec_plan_t *plan,
+                     adn_bridge_aliases_t *aliases);
+/* Clamp like bridge_el_init: (0, 4] valid, else unity gain. */
+void media_core_set_el_gain(media_core_t *core, float gain);
+void media_core_set_bridge_dmrid(media_core_t *core, int dmrid);
 
 /* Fase 3 rellena el cuerpo real (transform + fan-out); por ahora sólo aplica
  * media_router_ingress_allowed y no transforma ni reenvía nada. */
 void media_core_ingress(media_core_t *core, int src_router_id, const media_bus_frame_t *frame);
 void media_core_tick(media_core_t *core);
+/* EL PCM is polled directly (not wire-classified) — call after adapter_el_poll_pcm. */
+void media_core_poll_el_pcm(media_core_t *core);
 
 #endif

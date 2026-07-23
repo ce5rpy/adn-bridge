@@ -36,7 +36,7 @@ static void test_bind_sets_use_vocoder(void)
     media_codec_plan_build(&r, &plan);
 
     media_core_init(&core);
-    media_core_bind(&core, &r, NULL, &plan, NULL);
+    media_core_bind(&core, ADN_BRIDGE_LAYOUT_EL_DMR, &r, NULL, &plan, NULL);
     assert(core.use_vocoder == 1);
 }
 
@@ -52,7 +52,7 @@ static void test_ingress_drops_when_blocked(void)
     ysf = media_router_add_peer(&r, MEDIA_PEER_YSF);
 
     media_core_init(&core);
-    media_core_bind(&core, &r, NULL, NULL, NULL);
+    media_core_bind(&core, ADN_BRIDGE_LAYOUT_YSF_DMR, &r, NULL, NULL, NULL);
 
     memset(&frame, 0, sizeof(frame));
     frame.kind = MEDIA_FRAME_VOICE;
@@ -105,7 +105,7 @@ static void test_dmr_call_begin_takes_ingress(void)
     setup_ysf_dmr_bus(&bus, &r, dmr_id, ysf_id);
 
     media_core_init(&core);
-    media_core_bind(&core, &r, &bus, NULL, NULL);
+    media_core_bind(&core, ADN_BRIDGE_LAYOUT_YSF_DMR, &r, &bus, NULL, NULL);
 
     memset(&frame, 0, sizeof(frame));
     frame.kind = MEDIA_FRAME_CALL_BEGIN;
@@ -147,7 +147,7 @@ static void test_shared_phase_no_cross_peer_preempt(void)
     setup_ysf_dmr_bus(&bus, &r, dmr_id, ysf_id);
 
     media_core_init(&core);
-    media_core_bind(&core, &r, &bus, NULL, NULL);
+    media_core_bind(&core, ADN_BRIDGE_LAYOUT_YSF_DMR, &r, &bus, NULL, NULL);
 
     memset(&frame, 0, sizeof(frame));
     frame.kind = MEDIA_FRAME_CALL_BEGIN;
@@ -168,6 +168,89 @@ static void test_shared_phase_no_cross_peer_preempt(void)
     assert(core.phase == MEDIA_CALL_TX_TO_PEER);
 }
 
+/* DMR call-begin in an EL<->DMR layout must take RX_FROM_PEER phase (the
+ * "peer -> EL" leg) — media/core_echolink.c: core_el_dmr_ingress_dmr. */
+static void test_el_dmr_call_begin_takes_rx_phase(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    media_bus_frame_t frame;
+    int el_id, dmr_id;
+
+    media_router_init(&r);
+    el_id = media_router_add_peer(&r, MEDIA_PEER_ECHOLINK);
+    dmr_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+
+    memset(&bus, 0, sizeof(bus));
+    bus.router = &r;
+    bus.n_slots = 2;
+    bus.slots[0].router_id = el_id;
+    bus.slots[0].kind = MEDIA_PEER_ECHOLINK;
+    bus.slots[0].open = 1;
+    bus.slots[1].router_id = dmr_id;
+    bus.slots[1].kind = MEDIA_PEER_DMR;
+    bus.slots[1].open = 1;
+    bus.slots[1].u.dmr.sock = -1;
+    bus.slots[1].u.dmr.dmrid = 7141001;
+    bus.slots[1].u.dmr.tg = 7141;
+
+    media_core_init(&core);
+    media_core_bind(&core, ADN_BRIDGE_LAYOUT_EL_DMR, &r, &bus, NULL, NULL);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.kind = MEDIA_FRAME_CALL_BEGIN;
+    frame.codec = CODEC_DMR_AMBE;
+    frame.meta.stream_id = 7;
+
+    media_core_ingress(&core, dmr_id, &frame);
+
+    assert(core.phase == MEDIA_CALL_RX_FROM_PEER);
+    assert(core.dmr_rx_stream_id == 7);
+    assert(media_router_active_ingress(&r) == dmr_id);
+}
+
+/* YSF call-begin in an EL<->YSF layout must take RX_FROM_PEER phase —
+ * media/core_echolink.c: core_el_ysf_ingress_ysf. */
+static void test_el_ysf_call_begin_takes_rx_phase(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    media_bus_frame_t frame;
+    int el_id, ysf_id;
+
+    media_router_init(&r);
+    el_id = media_router_add_peer(&r, MEDIA_PEER_ECHOLINK);
+    ysf_id = media_router_add_peer(&r, MEDIA_PEER_YSF);
+
+    memset(&bus, 0, sizeof(bus));
+    bus.router = &r;
+    bus.n_slots = 2;
+    bus.slots[0].router_id = el_id;
+    bus.slots[0].kind = MEDIA_PEER_ECHOLINK;
+    bus.slots[0].open = 1;
+    bus.slots[1].router_id = ysf_id;
+    bus.slots[1].kind = MEDIA_PEER_YSF;
+    bus.slots[1].open = 1;
+    bus.slots[1].u.ysf.sock = -1;
+
+    media_core_init(&core);
+    media_core_bind(&core, ADN_BRIDGE_LAYOUT_EL_YSF, &r, &bus, NULL, NULL);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.kind = MEDIA_FRAME_CALL_BEGIN;
+    frame.codec = CODEC_YSF_AMBE;
+    memset(frame.meta.netcall.net_src, ' ', 10);
+    memcpy(frame.meta.netcall.net_src, "N0CALL", 6);
+
+    media_core_ingress(&core, ysf_id, &frame);
+
+    assert(core.phase == MEDIA_CALL_RX_FROM_PEER);
+    assert(media_router_active_ingress(&r) == ysf_id);
+    assert(memcmp(core.call.netcall.net_src, "N0CALL", 6) == 0);
+}
+
 int main(void)
 {
     test_init_defaults();
@@ -175,6 +258,8 @@ int main(void)
     test_ingress_drops_when_blocked();
     test_dmr_call_begin_takes_ingress();
     test_shared_phase_no_cross_peer_preempt();
+    test_el_dmr_call_begin_takes_rx_phase();
+    test_el_ysf_call_begin_takes_rx_phase();
     printf("test_media_core: ok\n");
     return 0;
 }

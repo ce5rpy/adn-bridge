@@ -365,6 +365,9 @@ void adapter_ysf_on_wire(media_core_t *core, int src_router_id, peer_ysf_t *ysf,
     memset(&frame, 0, sizeof(frame));
     frame.codec = CODEC_YSF_AMBE;
     frame.wire_dtype = dt;
+    /* Raw wire src, 10 bytes — fallback identity for EL<->YSF late-join (no
+     * HEADER seen yet); HEADER below overrides with CSD-resolved identity. */
+    memcpy(frame.meta.netcall.net_src, pkt + 14, 10);
 
     if (fi == YSF_FI_HEADER) {
         identity_ysf_ctx_t ctx = { core->aliases, 0, NULL };
