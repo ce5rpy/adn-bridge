@@ -25,7 +25,6 @@
 #include <time.h>
 
 typedef struct {
-    adn_bridge_layout_t layout;
     media_router_t      router;
     media_peer_bus_t    bus;
     media_codec_plan_t  plan;
@@ -95,11 +94,6 @@ static int engine_start(engine_host_t *host, adn_bridge_config_t *cfg, engine_ct
     const adn_bridge_peer_t *dmr_p, *el_p;
     media_core_t *core = ctx->core;
 
-    ctx->layout = adn_bridge_config_layout(cfg);
-    if (ctx->layout == ADN_BRIDGE_LAYOUT_UNKNOWN) {
-        LOG_ERROR("engine: unsupported layout\n");
-        return -1;
-    }
     if (engine_load_router_bus(ctx, cfg) != 0)
         return -1;
 
@@ -127,7 +121,7 @@ static int engine_start(engine_host_t *host, adn_bridge_config_t *cfg, engine_ct
     }
 
     LOG_INFO("engine: %s (%d peers, ModeConv=%s, vocoder=%s)\n",
-             adn_bridge_layout_name(ctx->layout),
+             adn_bridge_layout_name(cfg),
              media_router_peer_count(&ctx->router),
              ctx->plan.needs_modeconv ? "yes" : "no",
              ctx->plan.needs_vocoder ? "yes" : "no");

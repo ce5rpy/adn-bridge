@@ -77,7 +77,7 @@ static void usage(const char *prog)
             "  %s -h | --help     show this help\n"
             "  %s -v | --version  print version\n"
             "\n"
-            "INI: [peer.*] stanzas (dmr + ysf, or echolink + dmr/ysf)\n"
+            "INI: [peer.*] stanzas, any mix of dmr/ysf/echolink (>=2 enabled)\n"
             "  templates: examples/*.example.ini → copy to config/\n",
             prog, prog, prog, prog);
 }
@@ -140,7 +140,7 @@ static const char *peer_type_label(adn_bridge_peer_type_t type)
 
 static const char *layout_label(const adn_bridge_config_t *cfg)
 {
-    return adn_bridge_layout_name(adn_bridge_config_layout(cfg));
+    return adn_bridge_layout_name(cfg);
 }
 
 static void print_peer_banner(const adn_bridge_peer_t *p)

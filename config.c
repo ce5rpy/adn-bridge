@@ -69,36 +69,29 @@ const adn_bridge_peer_t *adn_bridge_config_find_peer(const adn_bridge_config_t *
     return NULL;
 }
 
-adn_bridge_layout_t adn_bridge_config_layout(const adn_bridge_config_t *cfg)
+const char *adn_bridge_layout_name(const adn_bridge_config_t *cfg)
 {
-    int n_el, n_dmr, n_ysf;
+    static char buf[64];
+    int n_dmr, n_ysf, n_el;
+    size_t off = 0;
 
     if (!cfg)
-        return ADN_BRIDGE_LAYOUT_UNKNOWN;
-    n_el = adn_bridge_config_count_peers(cfg, ADN_BRIDGE_PEER_TYPE_ECHOLINK, 1);
+        return "unknown";
     n_dmr = adn_bridge_config_count_peers(cfg, ADN_BRIDGE_PEER_TYPE_DMR, 1);
     n_ysf = adn_bridge_config_count_peers(cfg, ADN_BRIDGE_PEER_TYPE_YSF, 1);
-    if (n_dmr && n_ysf && !n_el)
-        return ADN_BRIDGE_LAYOUT_YSF_DMR;
-    if (n_el && n_dmr && !n_ysf)
-        return ADN_BRIDGE_LAYOUT_EL_DMR;
-    if (n_el && n_ysf && !n_dmr)
-        return ADN_BRIDGE_LAYOUT_EL_YSF;
-    return ADN_BRIDGE_LAYOUT_UNKNOWN;
-}
-
-const char *adn_bridge_layout_name(adn_bridge_layout_t layout)
-{
-    switch (layout) {
-    case ADN_BRIDGE_LAYOUT_YSF_DMR:
-        return "YSF <-> DMR";
-    case ADN_BRIDGE_LAYOUT_EL_DMR:
-        return "EchoLink <-> DMR";
-    case ADN_BRIDGE_LAYOUT_EL_YSF:
-        return "EchoLink <-> YSF";
-    default:
-        return "unknown";
-    }
+    n_el = adn_bridge_config_count_peers(cfg, ADN_BRIDGE_PEER_TYPE_ECHOLINK, 1);
+    buf[0] = '\0';
+    if (n_dmr)
+        off += snprintf(buf + off, sizeof(buf) - off, "%dx dmr", n_dmr);
+    if (n_ysf)
+        off += snprintf(buf + off, sizeof(buf) - off, "%s%dx ysf",
+                         off ? " + " : "", n_ysf);
+    if (n_el)
+        off += snprintf(buf + off, sizeof(buf) - off, "%s%dx echolink",
+                         off ? " + " : "", n_el);
+    if (!off)
+        return "no peers";
+    return buf;
 }
 
 int adn_bridge_config_default_path(const char *argv0, char *path, size_t pathlen)
@@ -667,7 +660,6 @@ static int validate_el_vocoder_when_needed(const adn_bridge_config_t *cfg,
 int adn_bridge_config_valid(const adn_bridge_config_t *cfg, char *err, size_t errlen)
 {
     int i;
-    int n_el, n_dmr, n_ysf;
 
     if (!cfg->peer_count) {
         snprintf(err, errlen, "no [peer.*] stanzas defined");
@@ -695,25 +687,8 @@ int adn_bridge_config_valid(const adn_bridge_config_t *cfg, char *err, size_t er
             return -1;
     }
 
-    n_el = adn_bridge_config_count_peers(cfg, ADN_BRIDGE_PEER_TYPE_ECHOLINK, 1);
-    n_dmr = adn_bridge_config_count_peers(cfg, ADN_BRIDGE_PEER_TYPE_DMR, 1);
-    n_ysf = adn_bridge_config_count_peers(cfg, ADN_BRIDGE_PEER_TYPE_YSF, 1);
-
     if (validate_el_vocoder_when_needed(cfg, err, errlen) != 0)
         return -1;
 
-    switch (adn_bridge_config_layout(cfg)) {
-    case ADN_BRIDGE_LAYOUT_EL_DMR:
-    case ADN_BRIDGE_LAYOUT_EL_YSF:
-        return 0;
-    case ADN_BRIDGE_LAYOUT_YSF_DMR:
-        return 0;
-    default:
-        (void)n_el;
-        (void)n_dmr;
-        (void)n_ysf;
-        snprintf(err, errlen,
-                 "unsupported peer mix (need dmr+ysf, echolink+dmr, or echolink+ysf)");
-        return -1;
-    }
+    return 0;
 }

@@ -62,9 +62,7 @@ static int test_ysf_dmr_peers(void)
     ysf = adn_bridge_config_find_peer(&cfg, ADN_BRIDGE_PEER_TYPE_YSF);
     if (!dmr || !ysf)
         return 25;
-    if (adn_bridge_config_layout(&cfg) != ADN_BRIDGE_LAYOUT_YSF_DMR)
-        return 28;
-    if (strcmp(adn_bridge_layout_name(ADN_BRIDGE_LAYOUT_YSF_DMR), "YSF <-> DMR") != 0)
+    if (strcmp(adn_bridge_layout_name(&cfg), "1x dmr + 1x ysf") != 0)
         return 29;
     if (strcmp(dmr->name, "master") != 0 || dmr->u.dmr.tg != 1234)
         return 26;

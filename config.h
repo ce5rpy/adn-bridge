@@ -24,13 +24,6 @@ typedef enum {
     ADN_BRIDGE_PEER_TYPE_ECHOLINK,
 } adn_bridge_peer_type_t;
 
-typedef enum {
-    ADN_BRIDGE_LAYOUT_UNKNOWN = -1,
-    ADN_BRIDGE_LAYOUT_YSF_DMR = 0,
-    ADN_BRIDGE_LAYOUT_EL_DMR,
-    ADN_BRIDGE_LAYOUT_EL_YSF,
-} adn_bridge_layout_t;
-
 typedef struct {
     char host[128];
     int port;
@@ -100,8 +93,8 @@ int adn_bridge_config_count_peers(const adn_bridge_config_t *cfg,
 const adn_bridge_peer_t *adn_bridge_config_find_peer(const adn_bridge_config_t *cfg,
                                                      adn_bridge_peer_type_t type);
 
-adn_bridge_layout_t adn_bridge_config_layout(const adn_bridge_config_t *cfg);
-const char *adn_bridge_layout_name(adn_bridge_layout_t layout);
+/* Descriptive peer-mix string for logs, e.g. "2x dmr + 1x ysf + 1x echolink". */
+const char *adn_bridge_layout_name(const adn_bridge_config_t *cfg);
 
 int adn_bridge_config_default_path(const char *argv0, char *path, size_t pathlen);
 int adn_bridge_config_load(const char *path, adn_bridge_config_t *cfg, char *err, size_t errlen);
