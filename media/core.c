@@ -21,9 +21,10 @@ void media_core_init(media_core_t *core)
         return;
     memset(core, 0, sizeof(*core));
     core->ingress_router_id = -1;
-    core->phase = MEDIA_CALL_IDLE;
     core->dmr_slot_bit = 0x80; /* TX always TS2 */
     core->el_pcm_gain = 1.0f;
+    core->mc_ysf_dmr = modeconv_create();
+    core->mc_el = modeconv_create();
 }
 
 void media_core_bind(media_core_t *core, media_router_t *router, media_peer_bus_t *bus,

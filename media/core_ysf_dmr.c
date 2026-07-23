@@ -62,7 +62,7 @@ static int core_dmr_tx_tg(const media_peer_slot_t *slot, peer_dmr_t *dmr)
 
 /* Wire-correct multi-destination fan-out: each DMR destination connection
  * gets its own seq/stream, not one shared across all of them (Fase 5). Call
- * at every "new call toward DMR" point, mirroring core->dmr_seq/call.stream_id
+ * at every "new call toward DMR" point, mirroring core->leg_ysf_dmr.dmr_seq/call.stream_id
  * reset for the single-shared-field bookkeeping kept for logging. */
 static void core_reset_dmr_tx_slots(media_core_t *core)
 {
@@ -115,11 +115,11 @@ static void core_dmr_tx_one(media_core_t *core, media_peer_slot_t *slot,
 
     args.peer = dmr;
     args.bridge_dmrid = dmr->dmrid;
-    args.talker_rf_id = (core->call.talker_id > 0) ? core->call.talker_id : dmr->dmrid;
+    args.talker_rf_id = (core->leg_ysf_dmr.call.talker_id > 0) ? core->leg_ysf_dmr.call.talker_id : dmr->dmrid;
     args.tx_tg = core_dmr_tx_tg(slot, dmr);
     args.seq = &slot->dmr_tx_seq;
     args.stream_id = slot->dmr_tx_stream_id;
-    args.last_tx = &core->last_dmr_tx;
+    args.last_tx = &core->leg_ysf_dmr.last_dmr_tx;
     adapter_dmr_egress_dmrd(&args, frame_type, voice33);
 }
 
@@ -174,8 +174,8 @@ static int core_fanout_ysfd_cb(int dst_id, media_peer_kind_t kind, void *vctx)
     args = (ysf_tx_args_t){
         .peer = ysf,
         .repeater_callsign = ysf->callsign,
-        .meta = &ctx->core->call.netcall,
-        .last_tx = &ctx->core->last_ysf_tx,
+        .meta = &ctx->core->leg_ysf_dmr.call.netcall,
+        .last_tx = &ctx->core->leg_ysf_dmr.last_ysf_tx,
         .dgid_cfg = ysf->dgid,
     };
     adapter_ysf_egress_ysfd(&args, ctx->fi, ctx->ft, ctx->cm, ctx->fich_fn, ctx->net_cnt,
@@ -202,14 +202,14 @@ static void core_begin_dmr_to_ysf(media_core_t *core, int src_router_id,
 {
     if (!core_router_take(core, src_router_id))
         return;
-    core->phase = MEDIA_CALL_TX_TO_PEER;
-    core->call.stream_id = frame->meta.stream_id != 0 ? frame->meta.stream_id
+    core->leg_ysf_dmr.phase = MEDIA_CALL_TX_TO_PEER;
+    core->leg_ysf_dmr.call.stream_id = frame->meta.stream_id != 0 ? frame->meta.stream_id
                                                        : bridge_new_stream_id();
-    core->dmr_seq = frame->wire_seq;
-    core->dmr_voice_frames = 0;
-    core->dmr_tx_frames = 0;
-    core->ysf_cnt = 0;
-    modeconv_reset();
+    core->leg_ysf_dmr.dmr_seq = frame->wire_seq;
+    core->leg_ysf_dmr.dmr_voice_frames = 0;
+    core->leg_ysf_dmr.dmr_tx_frames = 0;
+    core->leg_ysf_dmr.ysf_cnt = 0;
+    modeconv_reset(core->mc_ysf_dmr);
 }
 
 /* Identity (alias DB lookup + logging) only makes sense on call-begin — not
@@ -224,8 +224,8 @@ static void core_ysf_dmr_resolve_identity(media_core_t *core, int src_router_id,
         core->dmra.text, core->dmra.rf,
     };
 
-    identity_resolve_dmr_to_ysf(&core->call.netcall, &ctx, frame->meta.talker_id, frame->wire_dst);
-    core->call.talker_id = frame->meta.talker_id;
+    identity_resolve_dmr_to_ysf(&core->leg_ysf_dmr.call.netcall, &ctx, frame->meta.talker_id, frame->wire_dst);
+    core->leg_ysf_dmr.call.talker_id = frame->meta.talker_id;
 }
 
 void core_ysf_dmr_ingress_dmr(media_core_t *core, int src_router_id, const media_bus_frame_t *frame)
@@ -233,41 +233,41 @@ void core_ysf_dmr_ingress_dmr(media_core_t *core, int src_router_id, const media
     switch (frame->kind) {
     case MEDIA_FRAME_CALL_BEGIN: {
         uint8_t dtype = DMRD_DTYPE_VHEAD;
-        int is_new_call = core->phase == MEDIA_CALL_IDLE
-                           || (frame->meta.stream_id != 0 && frame->meta.stream_id != core->call.stream_id);
+        int is_new_call = core->leg_ysf_dmr.phase == MEDIA_CALL_IDLE
+                           || (frame->meta.stream_id != 0 && frame->meta.stream_id != core->leg_ysf_dmr.call.stream_id);
 
         core_ysf_dmr_resolve_identity(core, src_router_id, frame);
         if (is_new_call) {
             core_begin_dmr_to_ysf(core, src_router_id, frame);
             LOG_DMR_INFO("%s call start (src %.10s)\n",
                          media_flow_label(MEDIA_PEER_DMR, MEDIA_PEER_YSF),
-                         core->call.netcall.net_src);
+                         core->leg_ysf_dmr.call.netcall.net_src);
         }
         /* YSF2DMR: putDMRHeader only on transition to VHEAD (m_dmrLastDT gate). */
-        if (dtype != core->dmr_last_dtype)
-            modeconv_put_dmr_header();
+        if (dtype != core->leg_ysf_dmr.dmr_last_dtype)
+            modeconv_put_dmr_header(core->mc_ysf_dmr);
         else
             LOG_DMR_DEBUG("%s ignore duplicate VHEAD (src %.10s)\n",
-                         media_flow_label(MEDIA_PEER_DMR, MEDIA_PEER_YSF), core->call.netcall.net_src);
-        core->dmr_last_dtype = dtype;
+                         media_flow_label(MEDIA_PEER_DMR, MEDIA_PEER_YSF), core->leg_ysf_dmr.call.netcall.net_src);
+        core->leg_ysf_dmr.dmr_last_dtype = dtype;
         return;
     }
     case MEDIA_FRAME_CALL_END:
-        if (core->phase != MEDIA_CALL_IDLE)
-            modeconv_put_dmr_eot();
-        core->dmr_last_dtype = DMRD_DTYPE_VTERM;
+        if (core->leg_ysf_dmr.phase != MEDIA_CALL_IDLE)
+            modeconv_put_dmr_eot(core->mc_ysf_dmr);
+        core->leg_ysf_dmr.dmr_last_dtype = DMRD_DTYPE_VTERM;
         return;
     case MEDIA_FRAME_VOICE:
-        if (core->phase == MEDIA_CALL_IDLE) {
+        if (core->leg_ysf_dmr.phase == MEDIA_CALL_IDLE) {
             core_ysf_dmr_resolve_identity(core, src_router_id, frame);
             core_begin_dmr_to_ysf(core, src_router_id, frame);
-            modeconv_put_dmr_header();
+            modeconv_put_dmr_header(core->mc_ysf_dmr);
             LOG_DMR_INFO("%s late entry (src %.10s)\n",
-                         media_flow_label(MEDIA_PEER_DMR, MEDIA_PEER_YSF), core->call.netcall.net_src);
+                         media_flow_label(MEDIA_PEER_DMR, MEDIA_PEER_YSF), core->leg_ysf_dmr.call.netcall.net_src);
         }
-        modeconv_put_dmr_voice(frame->payload.dmr_voice33);
-        core->dmr_voice_frames++;
-        core->dmr_last_dtype = frame->wire_dtype;
+        modeconv_put_dmr_voice(core->mc_ysf_dmr, frame->payload.dmr_voice33);
+        core->leg_ysf_dmr.dmr_voice_frames++;
+        core->leg_ysf_dmr.dmr_last_dtype = frame->wire_dtype;
         return;
     default:
         return;
@@ -278,7 +278,7 @@ void core_ysf_dmr_ingress_dmr(media_core_t *core, int src_router_id, const media
 static void core_emit_dmr_from_conv(media_core_t *core)
 {
     uint8_t voice[33];
-    unsigned int tag = modeconv_get_dmr(voice);
+    unsigned int tag = modeconv_get_dmr(core->mc_ysf_dmr, voice);
     uint8_t slot_bit = core->dmr_slot_bit;
 
     if (tag == MODECONV_TAG_NODATA)
@@ -291,33 +291,33 @@ static void core_emit_dmr_from_conv(media_core_t *core)
         return;
     }
     if (tag == MODECONV_TAG_EOT) {
-        while ((core->dmr_tx_frames % 6) != 0) {
-            uint8_t n = (uint8_t)(core->dmr_tx_frames % 6);
+        while ((core->leg_ysf_dmr.dmr_tx_frames % 6) != 0) {
+            uint8_t n = (uint8_t)(core->leg_ysf_dmr.dmr_tx_frames % 6);
             core_send_dmrd(core, (uint8_t)(slot_bit | n), DMR_SILENCE_DATA);
-            core->dmr_tx_frames++;
+            core->leg_ysf_dmr.dmr_tx_frames++;
         }
         core_send_dmrd(core, (uint8_t)(slot_bit | (DMRD_FT_DATA_SYNC << 4) | DMRD_DTYPE_VTERM), voice);
         LOG_DMR_INFO("%s call end (%d DMR frames out, talker %.10s)\n",
                      media_flow_label(MEDIA_PEER_YSF, MEDIA_PEER_DMR),
-                     core->dmr_tx_frames, core->call.netcall.net_src);
+                     core->leg_ysf_dmr.dmr_tx_frames, core->leg_ysf_dmr.call.netcall.net_src);
         core_router_release_active(core);
-        core->phase = MEDIA_CALL_IDLE;
-        core->dmr_voice_frames = 0;
-        core->dmr_tx_frames = 0;
-        core->ysf_voice_frames = 0;
-        core->call.talker_id = 0;
-        core->ysf_cnt = 0;
-        core->dmr_last_dtype = 0;
+        core->leg_ysf_dmr.phase = MEDIA_CALL_IDLE;
+        core->leg_ysf_dmr.dmr_voice_frames = 0;
+        core->leg_ysf_dmr.dmr_tx_frames = 0;
+        core->leg_ysf_dmr.ysf_voice_frames = 0;
+        core->leg_ysf_dmr.call.talker_id = 0;
+        core->leg_ysf_dmr.ysf_cnt = 0;
+        core->leg_ysf_dmr.dmr_last_dtype = 0;
         memset(&core->dmra, 0, sizeof(core->dmra));
-        bridge_call_meta_clear(&core->call.netcall);
-        modeconv_reset();
+        bridge_call_meta_clear(&core->leg_ysf_dmr.call.netcall);
+        modeconv_reset(core->mc_ysf_dmr);
         return;
     }
     if (tag == MODECONV_TAG_DATA) {
-        uint8_t n = (uint8_t)(core->dmr_tx_frames % 6);
+        uint8_t n = (uint8_t)(core->leg_ysf_dmr.dmr_tx_frames % 6);
         uint8_t b15 = (uint8_t)(n == 0 ? (slot_bit | (DMRD_FT_VOICE_SYNC << 4)) : (slot_bit | n));
         core_send_dmrd(core, b15, voice);
-        core->dmr_tx_frames++;
+        core->leg_ysf_dmr.dmr_tx_frames++;
     }
 }
 
@@ -327,42 +327,42 @@ static void core_begin_ysf_to_dmr(media_core_t *core, int src_router_id)
 {
     if (!core_router_take(core, src_router_id))
         return;
-    core->phase = MEDIA_CALL_TX_TO_PEER;
-    core->call.stream_id = bridge_new_stream_id();
-    core->dmr_seq = 0;
-    core->dmr_tx_frames = 0;
-    core->dmr_voice_frames = 0;
-    core->ysf_voice_frames = 0;
+    core->leg_ysf_dmr.phase = MEDIA_CALL_TX_TO_PEER;
+    core->leg_ysf_dmr.call.stream_id = bridge_new_stream_id();
+    core->leg_ysf_dmr.dmr_seq = 0;
+    core->leg_ysf_dmr.dmr_tx_frames = 0;
+    core->leg_ysf_dmr.dmr_voice_frames = 0;
+    core->leg_ysf_dmr.ysf_voice_frames = 0;
     core_reset_dmr_tx_slots(core);
-    modeconv_reset();
+    modeconv_reset(core->mc_ysf_dmr);
 }
 
 void core_ysf_dmr_ingress_ysf(media_core_t *core, int src_router_id, const media_bus_frame_t *frame)
 {
     switch (frame->kind) {
     case MEDIA_FRAME_CALL_BEGIN:
-        core->call.netcall = frame->meta.netcall;
-        core->call.talker_id = frame->meta.talker_id;
-        if (core->phase == MEDIA_CALL_IDLE) {
+        core->leg_ysf_dmr.call.netcall = frame->meta.netcall;
+        core->leg_ysf_dmr.call.talker_id = frame->meta.talker_id;
+        if (core->leg_ysf_dmr.phase == MEDIA_CALL_IDLE) {
             core_ysf_dmr_abort_connect_ptt(core);
             core_begin_ysf_to_dmr(core, src_router_id);
             LOG_DMR_INFO("%s call start (talker %.10s id %d)\n",
                          media_flow_label(MEDIA_PEER_YSF, MEDIA_PEER_DMR),
-                         core->call.netcall.net_src, core->call.talker_id);
+                         core->leg_ysf_dmr.call.netcall.net_src, core->leg_ysf_dmr.call.talker_id);
         }
-        modeconv_put_ysf_header();
+        modeconv_put_ysf_header(core->mc_ysf_dmr);
         return;
     case MEDIA_FRAME_CALL_END:
-        if (core->phase != MEDIA_CALL_IDLE) {
-            modeconv_put_ysf_eot();
+        if (core->leg_ysf_dmr.phase != MEDIA_CALL_IDLE) {
+            modeconv_put_ysf_eot(core->mc_ysf_dmr);
             LOG_DMR_INFO("%s terminator (%d voice frames in)\n",
-                         media_flow_label(MEDIA_PEER_YSF, MEDIA_PEER_DMR), core->ysf_voice_frames);
+                         media_flow_label(MEDIA_PEER_YSF, MEDIA_PEER_DMR), core->leg_ysf_dmr.ysf_voice_frames);
         }
         return;
     case MEDIA_FRAME_VOICE: {
         peer_dmr_t *dmr;
 
-        if (core->call.talker_id <= 0) {
+        if (core->leg_ysf_dmr.call.talker_id <= 0) {
             dmr = media_peer_bus_primary_dmr(core->bus);
             if (!dmr || dmr->dmrid <= 0) {
                 LOG_YSF_WARNING("YSF ignored VOICE: no talker id (missing HEADER?)\n");
@@ -372,15 +372,15 @@ void core_ysf_dmr_ingress_ysf(media_core_t *core, int src_router_id, const media
         if (frame->wire_dtype != YSF_DT_VD_MODE2)
             LOG_YSF_DEBUG("YSF VOICE dt=%u (HP3ICC; YSF2DMR expects dt=2, using repack+putYSF)\n",
                           (unsigned)frame->wire_dtype);
-        if (core->phase == MEDIA_CALL_IDLE) {
+        if (core->leg_ysf_dmr.phase == MEDIA_CALL_IDLE) {
             core_ysf_dmr_abort_connect_ptt(core);
             core_begin_ysf_to_dmr(core, src_router_id);
             LOG_DMR_INFO("%s call start (talker %.10s id %d)\n",
                          media_flow_label(MEDIA_PEER_YSF, MEDIA_PEER_DMR),
-                         core->call.netcall.net_src, core->call.talker_id);
+                         core->leg_ysf_dmr.call.netcall.net_src, core->leg_ysf_dmr.call.talker_id);
         }
-        modeconv_put_ysf_payload(frame->payload.ysf_payload120);
-        core->ysf_voice_frames++;
+        modeconv_put_ysf_payload(core->mc_ysf_dmr, frame->payload.ysf_payload120);
+        core->leg_ysf_dmr.ysf_voice_frames++;
         return;
     }
     default:
@@ -395,47 +395,47 @@ static int core_emit_ysf_from_conv(media_core_t *core)
     unsigned int tag;
 
     memset(payload, 0, sizeof(payload));
-    tag = modeconv_get_ysf(payload);
+    tag = modeconv_get_ysf(core->mc_ysf_dmr, payload);
     if (tag == MODECONV_TAG_NODATA)
         return 0;
 
     if (tag == MODECONV_TAG_HEADER) {
         uint8_t csd1[20], csd2[20];
 
-        core->ysf_cnt = 0;
-        ysf_tx_fill_csd(&core->call.netcall, csd1, csd2);
+        core->leg_ysf_dmr.ysf_cnt = 0;
+        ysf_tx_fill_csd(&core->leg_ysf_dmr.call.netcall, csd1, csd2);
         core_send_ysfd(core, YSF_FI_HEADER, YSF_FICH_FT, YSF_FICH_CM, 0, 0, NULL, csd1, csd2);
-        core->ysf_cnt = 1;
+        core->leg_ysf_dmr.ysf_cnt = 1;
         return 1;
     }
     if (tag == MODECONV_TAG_EOT) {
         uint8_t csd1[20], csd2[20];
 
-        ysf_tx_fill_csd(&core->call.netcall, csd1, csd2);
+        ysf_tx_fill_csd(&core->leg_ysf_dmr.call.netcall, csd1, csd2);
         core_send_ysfd(core, YSF_FI_TERMINATOR, YSF_FICH_FT, YSF_FICH_CM, 0,
-                       core->ysf_cnt, NULL, csd1, csd2);
+                       core->leg_ysf_dmr.ysf_cnt, NULL, csd1, csd2);
         LOG_DMR_INFO("%s call end (%d voice frames in)\n",
-                     media_flow_label(MEDIA_PEER_DMR, MEDIA_PEER_YSF), core->dmr_voice_frames);
+                     media_flow_label(MEDIA_PEER_DMR, MEDIA_PEER_YSF), core->leg_ysf_dmr.dmr_voice_frames);
         core_router_release_active(core);
-        core->phase = MEDIA_CALL_IDLE;
-        core->dmr_voice_frames = 0;
-        core->dmr_tx_frames = 0;
-        core->ysf_voice_frames = 0;
-        core->call.talker_id = 0;
-        core->ysf_cnt = 0;
-        core->dmr_last_dtype = 0;
+        core->leg_ysf_dmr.phase = MEDIA_CALL_IDLE;
+        core->leg_ysf_dmr.dmr_voice_frames = 0;
+        core->leg_ysf_dmr.dmr_tx_frames = 0;
+        core->leg_ysf_dmr.ysf_voice_frames = 0;
+        core->leg_ysf_dmr.call.talker_id = 0;
+        core->leg_ysf_dmr.ysf_cnt = 0;
+        core->leg_ysf_dmr.dmr_last_dtype = 0;
         memset(&core->dmra, 0, sizeof(core->dmra));
-        bridge_call_meta_clear(&core->call.netcall);
-        modeconv_reset();
+        bridge_call_meta_clear(&core->leg_ysf_dmr.call.netcall);
+        modeconv_reset(core->mc_ysf_dmr);
         return 1;
     }
     if (tag == MODECONV_TAG_DATA) {
-        uint8_t fn = (uint8_t)((core->ysf_cnt - 1U) % (YSF_FICH_FT + 1U));
-        uint8_t net = (uint8_t)((core->ysf_cnt & 0x7FU) << 1);
+        uint8_t fn = (uint8_t)((core->leg_ysf_dmr.ysf_cnt - 1U) % (YSF_FICH_FT + 1U));
+        uint8_t net = (uint8_t)((core->leg_ysf_dmr.ysf_cnt & 0x7FU) << 1);
 
         core_send_ysfd(core, YSF_FI_COMMUNICATIONS, YSF_FICH_FT, YSF_FICH_CM, fn, net,
                        payload, NULL, NULL);
-        core->ysf_cnt++;
+        core->leg_ysf_dmr.ysf_cnt++;
         return 1;
     }
     return 0;
@@ -516,7 +516,7 @@ static void core_start_connect_ptt(media_core_t *core, media_peer_slot_t *slot)
 {
     peer_dmr_t *dmr = &slot->u.dmr;
 
-    if (core->phase != MEDIA_CALL_IDLE || slot->cp_active)
+    if (core->leg_ysf_dmr.phase != MEDIA_CALL_IDLE || slot->cp_active)
         return;
     if (dmr->tg <= 0)
         return;
@@ -580,7 +580,7 @@ void core_ysf_dmr_poll_connect_ptt(media_core_t *core)
         }
         slot->dmr_was_connected = connected;
 
-        if (slot->cp_active && bridge_ms_elapsed(&core->last_dmr_tx, DMR_FRAME_MS))
+        if (slot->cp_active && bridge_ms_elapsed(&core->leg_ysf_dmr.last_dmr_tx, DMR_FRAME_MS))
             core_emit_connect_ptt(core, slot);
     }
 }
@@ -608,9 +608,9 @@ void core_ysf_dmr_tick(media_core_t *core)
     if (!dmr || !ysf || !peer_dmr_connected(dmr) || !peer_ysf_linked(ysf))
         return;
 
-    if (!core_any_connect_ptt_active(core) && bridge_ms_elapsed(&core->last_dmr_tx, DMR_FRAME_MS))
+    if (!core_any_connect_ptt_active(core) && bridge_ms_elapsed(&core->leg_ysf_dmr.last_dmr_tx, DMR_FRAME_MS))
         core_emit_dmr_from_conv(core);
 
-    if (bridge_ms_elapsed(&core->last_ysf_tx, YSF_FRAME_MS))
+    if (bridge_ms_elapsed(&core->leg_ysf_dmr.last_ysf_tx, YSF_FRAME_MS))
         (void)core_emit_ysf_from_conv(core);
 }

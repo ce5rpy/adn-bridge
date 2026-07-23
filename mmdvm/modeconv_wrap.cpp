@@ -21,71 +21,87 @@
 #include "ModeConv.h"
 #include <new>
 
-static CModeConv g_conv;
+struct modeconv_s {
+    CModeConv conv;
+};
 
-extern "C" void modeconv_init(void)
+extern "C" modeconv_t *modeconv_create(void)
 {
+    return new modeconv_s();
 }
 
-extern "C" void modeconv_reset(void)
+extern "C" void modeconv_reset(modeconv_t *m)
 {
-    /* CRingBuffer has no copy assignment; g_conv = CModeConv() would
+    if (!m)
+        return;
+    /* CRingBuffer has no copy assignment; m->conv = CModeConv() would
      * shallow-copy buffer pointers and double-free on the temporary dtor. */
-    g_conv.~CModeConv();
-    new (&g_conv) CModeConv();
+    m->conv.~CModeConv();
+    new (&m->conv) CModeConv();
 }
 
-extern "C" void modeconv_put_dmr_voice(const uint8_t *frame33)
+extern "C" void modeconv_put_dmr_voice(modeconv_t *m, const uint8_t *frame33)
 {
-    g_conv.putDMR(const_cast<unsigned char *>(frame33));
+    if (m)
+        m->conv.putDMR(const_cast<unsigned char *>(frame33));
 }
 
-extern "C" void modeconv_put_dmr_header(void)
+extern "C" void modeconv_put_dmr_header(modeconv_t *m)
 {
-    g_conv.putDMRHeader();
+    if (m)
+        m->conv.putDMRHeader();
 }
 
-extern "C" void modeconv_put_dmr_eot(void)
+extern "C" void modeconv_put_dmr_eot(modeconv_t *m)
 {
-    g_conv.putDMREOT();
+    if (m)
+        m->conv.putDMREOT();
 }
 
-extern "C" void modeconv_put_ysf_payload(const uint8_t *ysf120)
+extern "C" void modeconv_put_ysf_payload(modeconv_t *m, const uint8_t *ysf120)
 {
-    g_conv.putYSF(const_cast<unsigned char *>(ysf120));
+    if (m)
+        m->conv.putYSF(const_cast<unsigned char *>(ysf120));
 }
 
-extern "C" void modeconv_put_ysf_header(void)
+extern "C" void modeconv_put_ysf_header(modeconv_t *m)
 {
-    g_conv.putYSFHeader();
+    if (m)
+        m->conv.putYSFHeader();
 }
 
-extern "C" void modeconv_put_ysf_eot(void)
+extern "C" void modeconv_put_ysf_eot(modeconv_t *m)
 {
-    g_conv.putYSFEOT();
+    if (m)
+        m->conv.putYSFEOT();
 }
 
-extern "C" unsigned int modeconv_get_dmr(uint8_t *voice33)
+extern "C" unsigned int modeconv_get_dmr(modeconv_t *m, uint8_t *voice33)
 {
-    return g_conv.getDMR(voice33);
+    return m ? m->conv.getDMR(voice33) : MODECONV_TAG_NODATA;
 }
 
-extern "C" unsigned int modeconv_get_ysf(uint8_t *ysf120)
+extern "C" unsigned int modeconv_get_ysf(modeconv_t *m, uint8_t *ysf120)
 {
-    return g_conv.getYSF(ysf120);
+    return m ? m->conv.getYSF(ysf120) : MODECONV_TAG_NODATA;
 }
 
-extern "C" void modeconv_put_ambe7(const uint8_t ambe7[7])
+extern "C" void modeconv_put_ambe7(modeconv_t *m, const uint8_t ambe7[7])
 {
-    g_conv.putAMBE7(ambe7);
+    if (m)
+        m->conv.putAMBE7(ambe7);
 }
 
-extern "C" void modeconv_put_ambe7_ysf(const uint8_t ambe7[7])
+extern "C" void modeconv_put_ambe7_ysf(modeconv_t *m, const uint8_t ambe7[7])
 {
-    g_conv.putAMBE7YSF(ambe7);
+    if (m)
+        m->conv.putAMBE7YSF(ambe7);
 }
 
+/* Stateless (pure bit extraction, no CModeConv member touched) — one shared
+ * instance is safe across every caller, unlike the ring-buffer API above. */
 extern "C" void modeconv_dmr33_to_ambe(const uint8_t dmr33[33], uint8_t ambe[3][7])
 {
-    g_conv.dmr33ToAMBE(dmr33, ambe);
+    static CModeConv stateless;
+    stateless.dmr33ToAMBE(dmr33, ambe);
 }

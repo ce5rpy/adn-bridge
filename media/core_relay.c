@@ -85,7 +85,7 @@ static void core_relay_dmr_tx_one(media_core_t *core, media_peer_slot_t *slot,
     args.tx_tg = core_relay_dmr_tx_tg(slot, dmr);
     args.seq = &slot->dmr_tx_seq;
     args.stream_id = slot->dmr_tx_stream_id;
-    args.last_tx = &core->last_dmr_tx;
+    args.last_tx = &core->relay_last_dmr_tx;
     adapter_dmr_egress_dmrd(&args, frame_type, voice33);
 }
 
@@ -199,7 +199,7 @@ static int core_relay_ysfd_cb(int dst_id, media_peer_kind_t kind, void *vctx)
         .peer = ysf,
         .repeater_callsign = ysf->callsign,
         .meta = &ctx->netcall,
-        .last_tx = &ctx->core->last_ysf_tx,
+        .last_tx = &ctx->core->relay_last_ysf_tx,
         .dgid_cfg = ysf->dgid,
     };
     adapter_ysf_egress_ysfd(&args, ctx->fi, ctx->ft, ctx->cm, ctx->fich_fn, ctx->net_cnt,

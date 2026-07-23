@@ -19,7 +19,8 @@ static void test_init_defaults(void)
 
     media_core_init(&core);
     assert(core.ingress_router_id == -1);
-    assert(core.phase == MEDIA_CALL_IDLE);
+    assert(core.leg_ysf_dmr.phase == MEDIA_CALL_IDLE);
+    assert(core.leg_el.phase == MEDIA_CALL_IDLE);
     assert(core.dmr_slot_bit == 0x80);
     assert(core.use_vocoder == 0);
 }
@@ -118,11 +119,11 @@ static void test_dmr_call_begin_takes_ingress(void)
 
     media_core_ingress(&core, dmr_id, &frame);
 
-    assert(core.phase == MEDIA_CALL_TX_TO_PEER);
+    assert(core.leg_ysf_dmr.phase == MEDIA_CALL_TX_TO_PEER);
     assert(media_router_active_ingress(&r) == dmr_id);
-    assert(core.call.stream_id == 42);
-    assert(core.dmr_seq == 5);
-    assert(core.call.talker_id == 7141001);
+    assert(core.leg_ysf_dmr.call.stream_id == 42);
+    assert(core.leg_ysf_dmr.dmr_seq == 5);
+    assert(core.leg_ysf_dmr.call.talker_id == 7141001);
 }
 
 /*
@@ -165,7 +166,7 @@ static void test_shared_phase_no_cross_peer_preempt(void)
 
     /* Router ingress untouched — DMR is still the "active" peer of record. */
     assert(media_router_active_ingress(&r) == dmr_id);
-    assert(core.phase == MEDIA_CALL_TX_TO_PEER);
+    assert(core.leg_ysf_dmr.phase == MEDIA_CALL_TX_TO_PEER);
 }
 
 /* DMR call-begin in an EL<->DMR layout must take RX_FROM_PEER phase (the
@@ -205,8 +206,8 @@ static void test_el_dmr_call_begin_takes_rx_phase(void)
 
     media_core_ingress(&core, dmr_id, &frame);
 
-    assert(core.phase == MEDIA_CALL_RX_FROM_PEER);
-    assert(core.dmr_rx_stream_id == 7);
+    assert(core.leg_el.phase == MEDIA_CALL_RX_FROM_PEER);
+    assert(core.leg_el.dmr_rx_stream_id == 7);
     assert(media_router_active_ingress(&r) == dmr_id);
 }
 
@@ -246,9 +247,9 @@ static void test_el_ysf_call_begin_takes_rx_phase(void)
 
     media_core_ingress(&core, ysf_id, &frame);
 
-    assert(core.phase == MEDIA_CALL_RX_FROM_PEER);
+    assert(core.leg_el.phase == MEDIA_CALL_RX_FROM_PEER);
     assert(media_router_active_ingress(&r) == ysf_id);
-    assert(memcmp(core.call.netcall.net_src, "N0CALL", 6) == 0);
+    assert(memcmp(core.leg_el.call.netcall.net_src, "N0CALL", 6) == 0);
 }
 
 /* Fase 5: fan-out to >1 DMR destination must give each connection its own
