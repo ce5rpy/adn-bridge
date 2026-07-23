@@ -33,17 +33,16 @@
 #define DMR_HBP_CONNECTING   1
 #define DMR_HBP_CONNECTED    2
 
-extern struct sockaddr_in host1;
-extern int udp1;
+/* Shared scratch only — safe because engine.c drives one peer at a time,
+ * synchronously, never interleaved (no threads). Per-peer session state
+ * (login phase, connect status, dmrid, password, socket, server address)
+ * lives in peer_dmr_t and is passed explicitly below; it must never move
+ * back into globals here, or logging in >1 DMR peer breaks (each peer's
+ * handshake would stomp the others' state — see peer_dmr.c history). */
 extern uint8_t buf[DMR_HBP_BUFSIZE];
-extern char callsign[10];
-extern int dmrid;
-extern int host1_tg;
-extern char *host1_pw;
-extern int host1_connect_status;
-extern time_t pong_time1;
 
-int get_dmrid(int host_num, int for_traffic);
-int process_connect(int connect_status, char *buf, int h);
+int get_dmrid(int dmrid);
+int process_connect(int connect_status, char *buf, int h, int sock,
+                    const struct sockaddr_in *peer, const char *password, int dmrid);
 
 #endif

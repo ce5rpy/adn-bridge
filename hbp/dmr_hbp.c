@@ -161,11 +161,7 @@ const uint32_t ENCODING_TABLE_1676[] =
 #define F2(A,B,C) ( ( A & B ) | ( C & ( A | B ) ) )
 #define F1(E,F,G) ( G ^ ( E & ( F ^ G ) ) )
 
-struct sockaddr_in   host1;
-int                 udp1;
 uint8_t             buf[BUFSIZE];
-char                callsign[10U];
-int                 dmrid;
 uint32_t            sha256_state[8U];
 uint32_t            sha256_total[2];
 uint32_t            sha256_buffer[32U];
@@ -176,21 +172,12 @@ bool                emb_raw[128U];
 bool                emb_data[72U];
 int                 rx_srcid;
 int                 tx_tgid;
-int                 host1_tg;
-char                *host1_pw;
-
-int host1_connect_status = DISCONNECTED;
-
-/* narspt-style pong time: update when MSTPONG received, use to time out */
-time_t pong_time1 = 0;
 
 static const unsigned char fillbuf[64] = { 0x80, 0 };
 
-int get_dmrid(int host_num, int for_traffic) {
+int get_dmrid(int dmrid) {
     int id_to_use = dmrid;
 
-    (void)host_num;
-    (void)for_traffic;
 #if defined(USE_7DIGIT_ID_PEER1)
     if (dmrid > 9999999)
         id_to_use = dmrid / 100;  // 9 -> 7 digits
@@ -700,11 +687,13 @@ void get_emb_data(uint8_t* data, uint8_t lcss)
     data[19U] = (data[19U] & 0x0FU) | ((DMREMB[1U] << 4U) & 0xF0U);
 }
 
-int process_connect(int connect_status, char *buf, int h)
+int process_connect(int connect_status, char *buf, int h, int sock,
+                    const struct sockaddr_in *peer, const char *password, int dmrid)
 {
     char in[100];
     char out[400];
     int len;
+    int id;
 
     (void)h;
     memset(in, 0, 100);
@@ -713,18 +702,19 @@ int process_connect(int connect_status, char *buf, int h)
     switch(connect_status){
     case CONNECTING:
         /* RPTK (auth): sha256(random seed + password) */
+        id = get_dmrid(dmrid);
         memcpy(in, &buf[6], 4);
         memcpy(out, "RPTK", 4);
-        out[4] = (get_dmrid(1, 0) >> 24) & 0xff;
-        out[5] = (get_dmrid(1, 0) >> 16) & 0xff;
-        out[6] = (get_dmrid(1, 0) >> 8) & 0xff;
-        out[7] = (get_dmrid(1, 0) >> 0) & 0xff;
-        memcpy(&in[4], host1_pw, strlen(host1_pw));
+        out[4] = (id >> 24) & 0xff;
+        out[5] = (id >> 16) & 0xff;
+        out[6] = (id >> 8) & 0xff;
+        out[7] = (id >> 0) & 0xff;
+        memcpy(&in[4], password, strlen(password));
         sha256_generate((unsigned char *)in,
-                        (unsigned int)(strlen(host1_pw) + sizeof(uint32_t)),
+                        (unsigned int)(strlen(password) + sizeof(uint32_t)),
                         (unsigned char *)&out[8]);
         len = 40;
-        sendto(udp1, out, len, 0, (const struct sockaddr *)&host1, sizeof(host1));
+        sendto(sock, out, len, 0, (const struct sockaddr *)peer, sizeof(*peer));
         break;
 
     case CONNECTED:
