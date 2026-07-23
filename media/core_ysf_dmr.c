@@ -176,7 +176,6 @@ static int core_fanout_ysfd_cb(int dst_id, media_peer_kind_t kind, void *vctx)
         .repeater_callsign = ysf->callsign,
         .meta = &ctx->core->call.netcall,
         .last_tx = &ctx->core->last_ysf_tx,
-        .ysf_fn = &ctx->core->ysf_fn,
         .dgid_cfg = ysf->dgid,
     };
     adapter_ysf_egress_ysfd(&args, ctx->fi, ctx->ft, ctx->cm, ctx->fich_fn, ctx->net_cnt,
@@ -209,7 +208,6 @@ static void core_begin_dmr_to_ysf(media_core_t *core, int src_router_id,
     core->dmr_seq = frame->wire_seq;
     core->dmr_voice_frames = 0;
     core->dmr_tx_frames = 0;
-    core->ysf_fn = 0;
     core->ysf_cnt = 0;
     modeconv_reset();
 }

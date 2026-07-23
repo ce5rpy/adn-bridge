@@ -56,7 +56,6 @@ typedef struct {
     int     dmr_tx_frames;
 
     /* YSF TX framing. */
-    uint8_t ysf_fn;
     uint8_t ysf_cnt;
     int     ysf_voice_frames;
 

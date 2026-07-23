@@ -150,8 +150,6 @@ int ysf_tx_send(ysf_tx_args_t *args, uint8_t fi, uint8_t ft, uint8_t cm,
     }
 
     peer_ysf_send_ysfd(args->peer, frame, 155);
-    if (args->ysf_fn)
-        *args->ysf_fn = (uint8_t)(*args->ysf_fn + 2);
     bridge_stamp_now(args->last_tx);
 
     {

@@ -745,7 +745,6 @@ static int core_el_tx_ysfd(media_core_t *core, peer_ysf_t *ysf, uint8_t fi, uint
         .repeater_callsign = ysf->callsign,
         .meta = &core->call.netcall,
         .last_tx = &core->last_ysf_tx,
-        .ysf_fn = NULL,
         .dgid_cfg = ysf->dgid,
     };
     return adapter_ysf_egress_ysfd(&args, fi, ft, cm, fich_fn, net_cnt, payload120, csd1, csd2);

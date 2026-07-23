@@ -27,7 +27,6 @@ typedef struct {
     const char *repeater_callsign; /* peer->callsign, 10 chars */
     const bridge_call_meta_t *meta;
     struct timespec *last_tx;
-    uint8_t *ysf_fn;
     unsigned dgid_cfg;
 } ysf_tx_args_t;
 
