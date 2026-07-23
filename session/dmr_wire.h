@@ -28,4 +28,11 @@ const char *dmrd_class_label(const uint8_t *pkt, int len);
 int dmr_id_rf24(int dmrid);
 void dmr_id_to_bytes3(int dmrid, uint8_t out[3]);
 
+/* Homebrew control opcode at the start of a UDP payload. */
+const char *hbp_cmd_label(const uint8_t *pkt, int len);
+/* 4-byte big-endian radio ID immediately after opcode, when len allows. */
+int hbp_wire_tail_id(const uint8_t *pkt, int len, const char *cmd, uint32_t *out_id);
+/* Lowercase hex dump (truncates with "..." when capped). */
+void hbp_wire_hex(const uint8_t *pkt, int len, char *out, int out_cap);
+
 #endif

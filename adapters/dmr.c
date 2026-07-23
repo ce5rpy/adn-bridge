@@ -46,7 +46,17 @@ void adapter_dmr_on_wire(media_core_t *core, int src_router_id, peer_dmr_t *dmr,
     }
 
     if (len != 55 || memcmp(pkt, "DMRD", 4) != 0) {
-        LOG_DMR_DEBUG("DMR RX ignore len=%d (expected DMRD 55)\n", len);
+        const char *cmd = hbp_cmd_label(pkt, len);
+        char hex[140];
+        uint32_t tail_id = 0;
+
+        hbp_wire_hex(pkt, len, hex, sizeof(hex));
+        if (hbp_wire_tail_id(pkt, len, cmd, &tail_id)) {
+            LOG_DMR_DEBUG("DMR RX %s len=%d id=%u hex=%s (ignored)\n",
+                          cmd, len, tail_id, hex);
+        } else {
+            LOG_DMR_DEBUG("DMR RX %s len=%d hex=%s (ignored)\n", cmd, len, hex);
+        }
         return;
     }
 

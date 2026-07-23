@@ -34,6 +34,18 @@ static void test_dmr_wire(void)
     dmr_id_to_bytes3(1234567, rf);
     assert(rf[0] == 0x12 && rf[1] == 0xD6 && rf[2] == 0x87);
     assert(dmr_id_rf24(123456789) == 1234567);
+
+    {
+        uint8_t pong[11] = {'M', 'S', 'T', 'P', 'O', 'N', 'G', 0x00, 0x0b, 0x24, 0x3a};
+        uint32_t id = 0;
+        char hex[32];
+
+        assert(strcmp(hbp_cmd_label(pong, 11), "MSTPONG") == 0);
+        assert(hbp_wire_tail_id(pong, 11, "MSTPONG", &id));
+        assert(id == 730170U);
+        hbp_wire_hex(pong, 11, hex, sizeof(hex));
+        assert(strcmp(hex, "4d5354504f4e47000b243a") == 0);
+    }
 }
 
 static void test_identity_callsign(void)
