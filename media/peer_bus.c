@@ -50,6 +50,11 @@ const media_peer_slot_t *media_peer_bus_slot(const media_peer_bus_t *bus, int ro
     return bus_find_slot((media_peer_bus_t *)bus, router_id);
 }
 
+media_peer_slot_t *media_peer_bus_slot_mut(media_peer_bus_t *bus, int router_id)
+{
+    return bus_find_slot(bus, router_id);
+}
+
 peer_dmr_t *media_peer_bus_dmr(media_peer_bus_t *bus, int router_id)
 {
     media_peer_slot_t *s;

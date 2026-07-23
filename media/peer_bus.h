@@ -8,6 +8,8 @@
 #ifndef ADN_MEDIA_PEER_BUS_H
 #define ADN_MEDIA_PEER_BUS_H
 
+#include <stdint.h>
+
 #include "config.h"
 #include "media/router.h"
 #include "peer_dmr.h"
@@ -24,6 +26,12 @@ typedef struct {
         peer_ysf_t        ysf;
         peer_echolink_t   el;
     } u;
+    /* Per-destination DMR TX framing (DMR-kind slots only) — wire-correct
+     * multi-DMR fan-out needs a distinct seq/stream per destination
+     * connection, not one shared across all of them. Reset by the core
+     * pathway at call-begin (see media/core_ysf_dmr.c, media/core_echolink.c). */
+    uint8_t           dmr_tx_seq;
+    uint32_t          dmr_tx_stream_id;
 } media_peer_slot_t;
 
 typedef struct {
@@ -39,6 +47,8 @@ void media_peer_bus_close_all(media_peer_bus_t *bus);
 void media_peer_bus_sigint_all(media_peer_bus_t *bus);
 
 const media_peer_slot_t *media_peer_bus_slot(const media_peer_bus_t *bus, int router_id);
+/* Mutable lookup for per-destination TX state (dmr_tx_seq/dmr_tx_stream_id). */
+media_peer_slot_t *media_peer_bus_slot_mut(media_peer_bus_t *bus, int router_id);
 
 peer_dmr_t *media_peer_bus_dmr(media_peer_bus_t *bus, int router_id);
 peer_ysf_t *media_peer_bus_ysf(media_peer_bus_t *bus, int router_id);

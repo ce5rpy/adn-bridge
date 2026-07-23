@@ -225,20 +225,40 @@ static void core_el_set_ysf_talker_name(media_core_t *core, peer_echolink_t *el)
  * EchoLink <-> DMR
  * ===================================================================== */
 
-static void core_el_dmr_tx_dmrd(media_core_t *core, peer_dmr_t *dmr,
+/* Wire-correct multi-destination fan-out: each DMR destination connection
+ * gets its own seq/stream, not one shared across all of them (Fase 5). */
+static void core_reset_dmr_tx_slots(media_core_t *core)
+{
+    int i;
+
+    if (!core->bus)
+        return;
+    for (i = 0; i < core->bus->n_slots; i++) {
+        media_peer_slot_t *slot = &core->bus->slots[i];
+
+        if (slot->kind != MEDIA_PEER_DMR)
+            continue;
+        slot->dmr_tx_seq = 0;
+        slot->dmr_tx_stream_id = bridge_new_stream_id();
+    }
+}
+
+static void core_el_dmr_tx_dmrd(media_core_t *core, media_peer_slot_t *slot,
                                 uint8_t frame_type, const uint8_t *voice33)
 {
     dmr_tx_args_t args;
+    peer_dmr_t *dmr;
 
-    if (!dmr)
+    if (!slot || !slot->open)
         return;
+    dmr = &slot->u.dmr;
     args.peer = dmr;
     args.bridge_dmrid = dmr->dmrid;
     args.talker_rf_id = core_el_rf_id_or_bridge(core, dmr);
     args.tx_tg = (core->connect_ptt_active && core->connect_ptt_tg > 0)
                  ? core->connect_ptt_tg : dmr->tg;
-    args.seq = &core->dmr_seq;
-    args.stream_id = core->call.stream_id;
+    args.seq = &slot->dmr_tx_seq;
+    args.stream_id = slot->dmr_tx_stream_id;
     args.last_tx = &core->last_dmr_tx;
     dmr_tx_send(&args, frame_type, voice33);
 }
@@ -252,14 +272,14 @@ typedef struct {
 static int core_el_fanout_dmrd_cb(int dst_id, media_peer_kind_t kind, void *vctx)
 {
     core_el_fanout_dmrd_ctx_t *ctx = vctx;
-    peer_dmr_t *dmr;
+    media_peer_slot_t *slot;
 
     if (kind != MEDIA_PEER_DMR)
         return 0;
-    dmr = media_peer_bus_dmr(ctx->core->bus, dst_id);
-    if (!dmr)
+    slot = media_peer_bus_slot_mut(ctx->core->bus, dst_id);
+    if (!slot)
         return 0;
-    core_el_dmr_tx_dmrd(ctx->core, dmr, ctx->frame_type, ctx->voice33);
+    core_el_dmr_tx_dmrd(ctx->core, slot, ctx->frame_type, ctx->voice33);
     return 0;
 }
 
@@ -287,6 +307,7 @@ static void core_el_dmr_emit_voice(media_core_t *core, const uint8_t voice33[33]
         core->call.stream_id = bridge_new_stream_id();
         core->dmr_seq = 0;
         core->dmr_voice_frames = 0;
+        core_reset_dmr_tx_slots(core);
         modeconv_reset();
         core_el_resolve_talker_for_dmr(core, el);
         /* One VHEAD only: identical repeats are counted as loss (dup CRC /
@@ -550,6 +571,7 @@ static void core_el_connect_ptt_begin_stream(media_core_t *core, int tg, int cle
     core->connect_ptt_clearing = clearing ? 1 : 0;
     core->call.stream_id = bridge_new_stream_id();
     core->dmr_seq = 0;
+    core_reset_dmr_tx_slots(core);
     bridge_stamp_now(&core->connect_ptt_start);
     bridge_stamp_now(&core->last_dmr_tx);
     core->last_dmr_tx.tv_sec = 0;

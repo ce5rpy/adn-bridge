@@ -251,6 +251,65 @@ static void test_el_ysf_call_begin_takes_rx_phase(void)
     assert(memcmp(core.call.netcall.net_src, "N0CALL", 6) == 0);
 }
 
+/* Fase 5: fan-out to >1 DMR destination must give each connection its own
+ * seq/stream, not one shared across all of them (media_peer_slot_t.dmr_tx_*,
+ * reset by core_reset_dmr_tx_slots in core_ysf_dmr.c/core_echolink.c). */
+static void test_multi_dmr_fanout_gets_distinct_tx_state(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    media_bus_frame_t frame;
+    int ysf_id, dmr1_id, dmr2_id;
+    media_peer_slot_t *s1, *s2;
+
+    media_router_init(&r);
+    ysf_id = media_router_add_peer(&r, MEDIA_PEER_YSF);
+    dmr1_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+    dmr2_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+
+    memset(&bus, 0, sizeof(bus));
+    bus.router = &r;
+    bus.n_slots = 3;
+    bus.slots[0].router_id = ysf_id;
+    bus.slots[0].kind = MEDIA_PEER_YSF;
+    bus.slots[0].open = 1;
+    bus.slots[0].u.ysf.sock = -1;
+    bus.slots[1].router_id = dmr1_id;
+    bus.slots[1].kind = MEDIA_PEER_DMR;
+    bus.slots[1].open = 1;
+    bus.slots[1].u.dmr.sock = -1;
+    bus.slots[1].u.dmr.dmrid = 7141001;
+    bus.slots[1].u.dmr.tg = 7141;
+    bus.slots[2].router_id = dmr2_id;
+    bus.slots[2].kind = MEDIA_PEER_DMR;
+    bus.slots[2].open = 1;
+    bus.slots[2].u.dmr.sock = -1;
+    bus.slots[2].u.dmr.dmrid = 7141002;
+    bus.slots[2].u.dmr.tg = 7142;
+
+    media_core_init(&core);
+    media_core_bind(&core, ADN_BRIDGE_LAYOUT_YSF_DMR, &r, &bus, NULL, NULL);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.kind = MEDIA_FRAME_CALL_BEGIN;
+    frame.codec = CODEC_YSF_AMBE;
+    frame.meta.talker_id = 7141001;
+    memset(frame.meta.netcall.net_src, ' ', 10);
+    memcpy(frame.meta.netcall.net_src, "TESTCALL", 8);
+
+    media_core_ingress(&core, ysf_id, &frame);
+
+    s1 = media_peer_bus_slot_mut(&bus, dmr1_id);
+    s2 = media_peer_bus_slot_mut(&bus, dmr2_id);
+    assert(s1 && s2);
+    assert(s1->dmr_tx_seq == 0 && s2->dmr_tx_seq == 0);
+    assert(s1->dmr_tx_stream_id != 0 && s2->dmr_tx_stream_id != 0);
+    /* Each destination gets its own bridge_new_stream_id() call — sharing
+     * one field across destinations is exactly the bug Fase 5 fixes. */
+    assert(s1->dmr_tx_stream_id != s2->dmr_tx_stream_id);
+}
+
 int main(void)
 {
     test_init_defaults();
@@ -260,6 +319,7 @@ int main(void)
     test_shared_phase_no_cross_peer_preempt();
     test_el_dmr_call_begin_takes_rx_phase();
     test_el_ysf_call_begin_takes_rx_phase();
+    test_multi_dmr_fanout_gets_distinct_tx_state();
     printf("test_media_core: ok\n");
     return 0;
 }
