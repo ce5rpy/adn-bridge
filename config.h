@@ -79,8 +79,21 @@ typedef struct {
     } u;
 } adn_bridge_peer_t;
 
+/* [log] handlers=/file= — see docs/bridge.md's [log] section. handlers_set
+ * distinguishes "omitted" (auto-detect console vs console-timed) from an
+ * explicit `handlers = null` (both sinks off). */
+typedef struct {
+    int  handlers_set;
+    int  console;
+    int  console_timed;
+    int  file;
+    int  file_timed;
+    char file_path[256];
+} adn_bridge_log_output_t;
+
 typedef struct {
     log_level_t log_level;
+    adn_bridge_log_output_t log_output;
     adn_bridge_aliases_cfg_t aliases;
     int peer_count;
     adn_bridge_peer_t peers[ADN_BRIDGE_PEER_MAX];
@@ -100,5 +113,8 @@ int adn_bridge_config_default_path(const char *argv0, char *path, size_t pathlen
 int adn_bridge_config_load(const char *path, adn_bridge_config_t *cfg, char *err, size_t errlen);
 int adn_bridge_config_valid(const adn_bridge_config_t *cfg, char *err, size_t errlen);
 void adn_bridge_config_apply_log_levels(const adn_bridge_config_t *cfg);
+/* Resolves [log] handlers=/file= (or auto-detects when handlers= is omitted)
+ * and calls log_init(). Call once, after adn_bridge_config_apply_log_levels. */
+void adn_bridge_config_apply_log_output(const adn_bridge_config_t *cfg);
 
 #endif

@@ -183,6 +183,49 @@ static void set_float(float *dst, const char *val)
     *dst = v;
 }
 
+/* CSV tokens: console, console-timed, file, file-timed, null. Combinable
+ * (e.g. "console,file-timed"); unknown tokens warn once and are ignored. */
+static void parse_log_handlers(adn_bridge_log_output_t *lo, const char *val)
+{
+    char buf[128];
+    char *tok, *save = NULL;
+
+    if (!val || !*val)
+        return;
+    strncpy(buf, val, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    lo->handlers_set = 1;
+    lo->console = 0;
+    lo->console_timed = 0;
+    lo->file = 0;
+    lo->file_timed = 0;
+
+    for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+        char *t = trim(tok);
+        size_t i;
+
+        for (i = 0; t[i]; i++)
+            t[i] = (char)tolower((unsigned char)t[i]);
+
+        if (strcmp(t, "console") == 0) {
+            lo->console = 1;
+        } else if (strcmp(t, "console-timed") == 0) {
+            lo->console = 1;
+            lo->console_timed = 1;
+        } else if (strcmp(t, "file") == 0) {
+            lo->file = 1;
+        } else if (strcmp(t, "file-timed") == 0) {
+            lo->file = 1;
+            lo->file_timed = 1;
+        } else if (strcmp(t, "null") == 0) {
+            /* explicit all-off — already zeroed above */
+        } else if (t[0]) {
+            LOG_WARNING("[log] unknown handlers token '%s', ignoring\n", t);
+        }
+    }
+}
+
 static void parse_directory_servers(adn_bridge_peer_el_t *el, const char *val)
 {
     char buf[512];
@@ -423,6 +466,10 @@ static int apply_key(adn_bridge_config_t *cfg, const char *section, const char *
     if (strcmp(section, "log") == 0) {
         if (strcmp(key, "level") == 0)
             cfg->log_level = log_level_from_string(val);
+        else if (strcmp(key, "handlers") == 0)
+            parse_log_handlers(&cfg->log_output, val);
+        else if (strcmp(key, "file") == 0)
+            set_str(cfg->log_output.file_path, sizeof(cfg->log_output.file_path), val);
         return 0;
     }
     return 0;
@@ -496,6 +543,30 @@ void adn_bridge_config_apply_log_levels(const adn_bridge_config_t *cfg)
         else if (p->type == ADN_BRIDGE_PEER_TYPE_ECHOLINK)
             log_set_channel_level(LOG_CH_ECHOLINK, lv);
     }
+}
+
+void adn_bridge_config_apply_log_output(const adn_bridge_config_t *cfg)
+{
+    const adn_bridge_log_output_t *lo = &cfg->log_output;
+    log_output_cfg_t out;
+
+    memset(&out, 0, sizeof(out));
+    if (lo->handlers_set) {
+        out.console = lo->console;
+        out.console_timed = lo->console_timed;
+        out.file = lo->file;
+        out.file_timed = lo->file_timed;
+    } else {
+        out.console = 1;
+        out.console_timed = log_auto_detect_console_timed();
+    }
+    if (out.file && !lo->file_path[0]) {
+        LOG_ERROR("[log] file handler requested but file= not set; disabling file sink\n");
+        out.file = 0;
+    } else if (out.file) {
+        set_str(out.file_path, sizeof(out.file_path), lo->file_path);
+    }
+    log_init(&out);
 }
 
 int adn_bridge_config_load(const char *path, adn_bridge_config_t *cfg, char *err, size_t errlen)
