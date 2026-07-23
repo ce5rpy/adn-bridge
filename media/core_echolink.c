@@ -35,6 +35,8 @@
 #define DMR_RX_HANG_MS 1500
 #define YSF_RX_HANG_MS 1500
 
+static int core_el_any_connect_ptt_active(const media_core_t *core);
+
 /* ---- shared helpers ---- */
 
 static int pcm_rms16(const int16_t *pcm, int n)
@@ -419,6 +421,16 @@ void core_el_dmr_process_el_audio(media_core_t *core)
         return;
     if (core->leg_el.phase == MEDIA_CALL_RX_FROM_PEER || core->leg_el.dmr_ending)
         return; /* DMR has the slot, or paced teardown in progress */
+    /* core_el_dmr_pace_tx stops draining core->mc_el's ring buffer during a
+     * connect-PTT burst; if we kept pushing AMBE in while that drain is
+     * stalled, the buffer fills and overflows (silently desyncing ModeConv's
+     * internal frame counter from the ring buffer's real contents, which
+     * then misreports spurious underflows long after — a real bug seen in
+     * production, inherited unchanged from v0.3.1's bridge_el.c). EL's own
+     * jitter buffer (peer_echolink_t.pcm_in, 2s capacity) comfortably
+     * absorbs skipping reads for one ~500ms CONNECT_PTT_MS window. */
+    if (core_el_any_connect_ptt_active(core))
+        return;
 
     while ((n = adapter_el_read_pcm(el, pcm, 160)) > 0) {
         int i;

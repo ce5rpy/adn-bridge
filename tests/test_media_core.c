@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "media/core.h"
+#include "media/core_echolink.h"
 #include "media/peer_bus.h"
 #include "media/router.h"
 
@@ -208,6 +209,60 @@ static void test_el_dmr_call_begin_takes_rx_phase(void)
     assert(core.leg_el.phase == MEDIA_CALL_RX_FROM_PEER);
     assert(core.leg_el.dmr_rx_stream_id == 7);
     assert(media_router_active_ingress(&r) == dmr_id);
+}
+
+/* A connect-PTT burst on a DMR slot must pause EL->DMR AMBE encoding too
+ * (core_el_dmr_process_el_audio), not just the ModeConv drain
+ * (core_el_dmr_pace_tx) — otherwise core->mc_el's ring buffer fills while
+ * draining is paused, desyncing ModeConv's internal frame counter from the
+ * buffer's real contents (a real bug hit in production, inherited unchanged
+ * from v0.3.1's bridge_el.c: both process_el_audio functions lacked this
+ * gate that pace_tx always had). */
+static void test_el_dmr_process_el_audio_pauses_during_connect_ptt(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    media_codec_plan_t plan;
+    media_peer_slot_t *dmr_slot;
+    int el_id, dmr_id;
+    int i;
+
+    media_router_init(&r);
+    el_id = media_router_add_peer(&r, MEDIA_PEER_ECHOLINK);
+    dmr_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+    media_codec_plan_build(&r, &plan);
+
+    memset(&bus, 0, sizeof(bus));
+    bus.router = &r;
+    bus.n_slots = 2;
+    bus.slots[0].router_id = el_id;
+    bus.slots[0].kind = MEDIA_PEER_ECHOLINK;
+    bus.slots[0].open = 1;
+    bus.slots[1].router_id = dmr_id;
+    bus.slots[1].kind = MEDIA_PEER_DMR;
+    bus.slots[1].open = 1;
+    bus.slots[1].u.dmr.sock = -1;
+    bus.slots[1].u.dmr.dmrid = 7141001;
+    bus.slots[1].u.dmr.tg = 7141;
+    bus.slots[1].u.dmr.status = PEER_DMR_CONNECTED;
+
+    media_core_init(&core);
+    media_core_bind(&core, &r, &bus, &plan, NULL);
+    assert(core.use_vocoder == 1); /* EL+DMR always needs the PCM hub */
+
+    /* Pretend 160 samples of EL RTP audio already arrived. */
+    for (i = 0; i < 160; i++)
+        bus.slots[0].u.el.pcm_in[i] = 100;
+    bus.slots[0].u.el.pcm_in_count = 160;
+
+    dmr_slot = media_peer_bus_slot_mut(&bus, dmr_id);
+    dmr_slot->cp_active = 1; /* connect-PTT burst in progress on this DMR peer */
+
+    core_el_dmr_process_el_audio(&core);
+
+    /* Paused: nothing drained from EL's own jitter buffer. */
+    assert(bus.slots[0].u.el.pcm_in_count == 160);
 }
 
 /* YSF call-begin in an EL<->YSF layout must take RX_FROM_PEER phase —
@@ -442,6 +497,7 @@ int main(void)
     test_dmr_call_begin_takes_ingress();
     test_shared_phase_no_cross_peer_preempt();
     test_el_dmr_call_begin_takes_rx_phase();
+    test_el_dmr_process_el_audio_pauses_during_connect_ptt();
     test_el_ysf_call_begin_takes_rx_phase();
     test_multi_dmr_fanout_gets_distinct_tx_state();
     test_dmr_relay_two_peers();
