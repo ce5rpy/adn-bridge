@@ -257,10 +257,61 @@ log_level = DEBUG
 log_level = DEBUG
 ```
 
-Formato de línea:
+Formato de línea — siempre `LEVEL/canal: mensaje`, con un timestamp opcional
+al inicio:
 
 ```text
+INFO/echolink: echolink: linked to *REDCHILE* (RTCP SDES)
 2026-07-17 14:33:59,754 INFO/echolink: echolink: linked to *REDCHILE* (RTCP SDES)
+```
+
+### Salidas (`handlers=`)
+
+`[log]` también acepta `handlers=` (lista separada por comas) para elegir
+adónde van las líneas y si llevan timestamp:
+
+| Token | Destino | Timestamp |
+|-------|---------|-----------|
+| `console` | stderr | no |
+| `console-timed` | stderr | sí |
+| `file` | ruta de `file=` | no |
+| `file-timed` | ruta de `file=` | sí |
+| `null` | — | (silencia ambas salidas) |
+
+```ini
+[log]
+level = INFO
+handlers = console,file-timed
+file = /var/log/adn-bridge/adn-bridge.log
+```
+
+**Si se omite `handlers=`**, adn-bridge auto-detecta: sin timestamp cuando
+`stderr` es el journal de systemd (`JOURNAL_STREAM` seteado — journalctl ya
+marca cada línea, así que el timestamp propio sería redundante), con
+timestamp cuando `stderr` es una terminal interactiva. Corriendo bajo systemd
+no hace falta configurar nada; corriendo manualmente
+(`./adn-bridge -c config.ini`) igual se ve el timestamp. Si redirigís stderr
+a un archivo vos mismo sin terminal (`./adn-bridge ... >> out.log 2>&1`), eso
+no es ni journal ni TTY, así que la auto-detección elige sin timestamp — poné
+`handlers = console-timed` explícito si lo querés en ese caso.
+
+**Rotación de logs**: con un handler `file`/`file-timed` configurado, mandale
+`SIGHUP` al proceso para que reabra el archivo en la misma ruta (sin
+reiniciar, sin perder líneas) — esto es lo que debe hacer un script
+`postrotate` de logrotate:
+
+```text
+/var/log/adn-bridge/*.log {
+    weekly
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+    postrotate
+        systemctl kill -s HUP adn-bridge@redchile.service
+    endscript
+}
 ```
 
 Con systemd: `journalctl -u adn-bridge@instancia -f`.
