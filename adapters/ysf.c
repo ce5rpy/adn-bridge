@@ -84,3 +84,10 @@ void adapter_ysf_on_wire(media_core_t *core, int src_router_id, peer_ysf_t *ysf,
     LOG_YSF_WARNING("YSF unhandled fi=%u ft=%u cm=%u dt=%u\n",
                     (unsigned)fi, (unsigned)ft, (unsigned)cm, (unsigned)dt);
 }
+
+int adapter_ysf_egress_ysfd(ysf_tx_args_t *args, uint8_t fi, uint8_t ft, uint8_t cm,
+                            uint8_t fich_fn, uint8_t net_cnt, const uint8_t *payload120,
+                            const uint8_t csd1[20], const uint8_t csd2[20])
+{
+    return ysf_tx_send(args, fi, ft, cm, fich_fn, net_cnt, payload120, csd1, csd2);
+}

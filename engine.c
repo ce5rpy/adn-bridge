@@ -107,7 +107,7 @@ static int engine_start(engine_host_t *host, adn_bridge_config_t *cfg, engine_ct
     el_p = adn_bridge_config_find_peer(cfg, ADN_BRIDGE_PEER_TYPE_ECHOLINK);
 
     media_core_init(core);
-    media_core_bind(core, ctx->layout, &ctx->router, &ctx->bus, &ctx->plan, *host->aliases);
+    media_core_bind(core, &ctx->router, &ctx->bus, &ctx->plan, *host->aliases);
     media_core_set_bridge_dmrid(core, dmr_p ? dmr_p->u.dmr.dmrid : 0);
     core->clear_dynamic_tg = dmr_p ? dmr_p->u.dmr.clear_dynamic_tg : 0;
     if (el_p)

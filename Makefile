@@ -30,7 +30,7 @@ C_SRCS = adn_bridge.c config.c log.c aliases.c talker_alias.c peer_dmr.c peer_ys
          engine.c \
          session/dmr_wire.c session/dmr_tx.c session/ysf_tx.c \
          codecs/registry.c codecs/pcm.c codecs/dmr_ambe.c codecs/ysf_ambe.c \
-         codecs/pair_modeconv.c adapters/dmr.c adapters/ysf.c
+         codecs/pair_modeconv.c adapters/dmr.c adapters/ysf.c adapters/el.c
 CXX_SRCS = mmdvm/ModeConv.cpp mmdvm/Golay24128.cpp mmdvm/modeconv_wrap.cpp \
            mmdvm/YSFPayload.cpp mmdvm/YSFConvolution.cpp mmdvm/CRC.cpp \
            mmdvm/Utils.cpp mmdvm/ysfpayload_wrap.cpp
@@ -140,7 +140,8 @@ tests/test_media_core: adn-bridge $(BUILD)/tests/test_media_core.o
 		$(BUILD)/media/log_flow.o $(BUILD)/media/peer_bus.o \
 		$(BUILD)/media/bridge_util.o $(BUILD)/media/call_meta.o \
 		$(BUILD)/media/identity.o \
-		$(BUILD)/adapters/peer_plugin.o $(BUILD)/codecs/registry.o \
+		$(BUILD)/adapters/peer_plugin.o $(BUILD)/adapters/dmr.o $(BUILD)/adapters/ysf.o \
+		$(BUILD)/adapters/el.o $(BUILD)/codecs/registry.o \
 		$(BUILD)/session/dmr_wire.o $(BUILD)/session/dmr_tx.o $(BUILD)/session/ysf_tx.o \
 		$(BUILD)/peer_dmr.o $(BUILD)/peer_ysf.o $(BUILD)/peer_echolink.o $(BUILD)/el_proxy.o \
 		$(BUILD)/vocoder_remote.o $(BUILD)/talker_alias.o \

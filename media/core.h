@@ -12,7 +12,6 @@
 #include <time.h>
 
 #include "aliases.h"
-#include "config.h"
 #include "media/codec_plan.h"
 #include "media/frame.h"
 #include "media/peer_bus.h"
@@ -35,7 +34,6 @@ typedef struct {
 
 typedef struct {
     /* Infra (bound once at engine start). */
-    adn_bridge_layout_t       layout;
     media_router_t           *router;
     media_peer_bus_t         *bus;
     const media_codec_plan_t *plan;
@@ -100,18 +98,17 @@ typedef struct {
 } media_core_t;
 
 void media_core_init(media_core_t *core);
-void media_core_bind(media_core_t *core, adn_bridge_layout_t layout, media_router_t *router,
-                     media_peer_bus_t *bus, const media_codec_plan_t *plan,
-                     adn_bridge_aliases_t *aliases);
+void media_core_bind(media_core_t *core, media_router_t *router, media_peer_bus_t *bus,
+                     const media_codec_plan_t *plan, adn_bridge_aliases_t *aliases);
 /* Clamp like bridge_el_init: (0, 4] valid, else unity gain. */
 void media_core_set_el_gain(media_core_t *core, float gain);
 void media_core_set_bridge_dmrid(media_core_t *core, int dmrid);
 
-/* Fase 3 rellena el cuerpo real (transform + fan-out); por ahora sólo aplica
- * media_router_ingress_allowed y no transforma ni reenvía nada. */
+/* Dispatch to the right pathway module by resolving src/dst codec via router +
+ * codec_pair_resolve — no ADN_BRIDGE_LAYOUT_* switch (media/core.c). */
 void media_core_ingress(media_core_t *core, int src_router_id, const media_bus_frame_t *frame);
 void media_core_tick(media_core_t *core);
-/* EL PCM is polled directly (not wire-classified) — call after adapter_el_poll_pcm. */
+/* EL PCM is polled directly (not wire-classified) — call after polling the EL peer. */
 void media_core_poll_el_pcm(media_core_t *core);
 
 #endif

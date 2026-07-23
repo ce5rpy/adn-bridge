@@ -18,8 +18,9 @@ void core_el_dmr_process_el_audio(media_core_t *core);
 void core_el_ysf_ingress_ysf(media_core_t *core, int src_router_id, const media_bus_frame_t *frame);
 void core_el_ysf_process_el_audio(media_core_t *core);
 
-/* Paces ModeConv/DMR TX, EL hangtime, DMR/YSF RX hangtime — dispatches on
- * core->layout internally (mirrors bridge_el_tick's link_kind branches). */
+/* Paces ModeConv/DMR TX, EL hangtime, DMR/YSF RX hangtime — derives which
+ * pairing is active from the router's enabled peer kinds, not a stored
+ * layout enum (mirrors bridge_el_tick's link_kind branches, generalized). */
 void core_el_tick(media_core_t *core);
 
 #endif

@@ -7,14 +7,15 @@
 
 #include "media/core_echolink.h"
 
+#include "adapters/dmr.h"
+#include "adapters/el.h"
+#include "adapters/ysf.h"
 #include "log.h"
 #include "media/bridge_util.h"
 #include "media/identity.h"
 #include "media/log_flow.h"
 #include "mmdvm/modeconv_wrap.h"
-#include "session/dmr_tx.h"
 #include "session/dmr_wire.h"
-#include "session/ysf_tx.h"
 #include "ysf_fich.h"
 
 #include <math.h>
@@ -260,7 +261,7 @@ static void core_el_dmr_tx_dmrd(media_core_t *core, media_peer_slot_t *slot,
     args.seq = &slot->dmr_tx_seq;
     args.stream_id = slot->dmr_tx_stream_id;
     args.last_tx = &core->last_dmr_tx;
-    dmr_tx_send(&args, frame_type, voice33);
+    adapter_dmr_egress_dmrd(&args, frame_type, voice33);
 }
 
 typedef struct {
@@ -420,7 +421,7 @@ void core_el_dmr_process_el_audio(media_core_t *core)
     if (core->phase == MEDIA_CALL_RX_FROM_PEER || core->dmr_ending)
         return; /* DMR has the slot, or paced teardown in progress */
 
-    while ((n = peer_el_read_pcm(el, pcm, 160)) > 0) {
+    while ((n = adapter_el_read_pcm(el, pcm, 160)) > 0) {
         int i;
         int rms;
         int in_cooldown;
@@ -460,7 +461,7 @@ void core_el_dmr_process_el_audio(media_core_t *core)
                 LOG_DMR_WARNING("%s vocoder encode failed\n",
                                 media_flow_label(MEDIA_PEER_ECHOLINK, MEDIA_PEER_DMR));
             if (enc_fail_streak >= 3) {
-                while (peer_el_read_pcm(el, pcm, 160) > 0)
+                while (adapter_el_read_pcm(el, pcm, 160) > 0)
                     ;
                 core->pcm_el_acc_n = 0;
                 core->el_ambe_count = 0;
@@ -550,7 +551,7 @@ void core_el_dmr_ingress_dmr(media_core_t *core, int src_router_id, const media_
                 continue;
             }
             if (el)
-                peer_el_write_pcm(el, pcm, 160);
+                adapter_el_egress_pcm(el, pcm);
         }
         return;
     default:
@@ -723,7 +724,7 @@ static int core_el_tx_ysfd(media_core_t *core, peer_ysf_t *ysf, uint8_t fi, uint
         .ysf_fn = NULL,
         .dgid_cfg = ysf->dgid,
     };
-    return ysf_tx_send(&args, fi, ft, cm, fich_fn, net_cnt, payload120, csd1, csd2);
+    return adapter_ysf_egress_ysfd(&args, fi, ft, cm, fich_fn, net_cnt, payload120, csd1, csd2);
 }
 
 typedef struct {
@@ -894,7 +895,7 @@ static void core_el_drain_ysf_to_el_pcm(media_core_t *core, peer_echolink_t *el)
                 continue;
             }
             if (el)
-                peer_el_write_pcm(el, pcm, 160);
+                adapter_el_egress_pcm(el, pcm);
         }
     }
 }
@@ -916,7 +917,7 @@ void core_el_ysf_process_el_audio(media_core_t *core)
     if (core->phase == MEDIA_CALL_TX_TO_PEER)
         core_el_ysf_reheader_if_talker_changed(core, el);
 
-    while ((n = peer_el_read_pcm(el, pcm, 160)) > 0) {
+    while ((n = adapter_el_read_pcm(el, pcm, 160)) > 0) {
         int i;
         int rms;
         int in_cooldown;
@@ -958,7 +959,7 @@ void core_el_ysf_process_el_audio(media_core_t *core)
                 LOG_YSF_WARNING("%s vocoder encode failed\n",
                                 media_flow_label(MEDIA_PEER_ECHOLINK, MEDIA_PEER_YSF));
             if (enc_fail_streak >= 3) {
-                while (peer_el_read_pcm(el, pcm, 160) > 0)
+                while (adapter_el_read_pcm(el, pcm, 160) > 0)
                     ;
                 core->pcm_el_acc_n = 0;
                 core->ysf_ambe_count = 0;
@@ -1076,8 +1077,10 @@ void core_el_tick(media_core_t *core)
 {
     peer_dmr_t *dmr;
     peer_echolink_t *el = media_peer_bus_primary_el(core->bus);
+    int pairs_with_dmr = core->router && media_router_find_first(core->router, MEDIA_PEER_DMR) >= 0;
+    int pairs_with_ysf = core->router && media_router_find_first(core->router, MEDIA_PEER_YSF) >= 0;
 
-    if (core->layout == ADN_BRIDGE_LAYOUT_EL_DMR) {
+    if (pairs_with_dmr) {
         core_el_dmr_poll_connect_ptt(core);
         dmr = media_peer_bus_primary_dmr(core->bus);
         if (dmr && peer_dmr_connected(dmr)) {
@@ -1089,23 +1092,23 @@ void core_el_tick(media_core_t *core)
     }
 
     /* EL->YSF: one YSFD every 90 ms (identical pacing to DMR->YSF). */
-    if (core->layout == ADN_BRIDGE_LAYOUT_EL_YSF && core->phase == MEDIA_CALL_TX_TO_PEER
+    if (pairs_with_ysf && core->phase == MEDIA_CALL_TX_TO_PEER
         && bridge_ms_elapsed(&core->last_ysf_tx, YSF_FRAME_MS))
         (void)core_el_emit_ysf_from_conv(core);
 
     /* End EL->DMR/YSF when inbound EL PCM stops (silence still holds while RTP). */
     if (core->phase == MEDIA_CALL_TX_TO_PEER && !core->dmr_ending && !core->ysf_ending
         && bridge_ms_since(&core->last_el_speech) >= EL_HANG_MS) {
-        if (core->layout == ADN_BRIDGE_LAYOUT_EL_DMR)
+        if (pairs_with_dmr)
             core_el_dmr_begin_end(core);
-        else if (core->layout == ADN_BRIDGE_LAYOUT_EL_YSF)
+        else if (pairs_with_ysf)
             core_el_end_ysf_call(core);
     }
 
     /* DMR/YSF->EL: if the stream dies without VTERM/EOT, release the
      * half-duplex lock so EL TX can run again. */
     if (core->phase == MEDIA_CALL_RX_FROM_PEER) {
-        if (core->layout == ADN_BRIDGE_LAYOUT_EL_DMR
+        if (pairs_with_dmr
             && bridge_ms_since(&core->last_dmr_rx) >= DMR_RX_HANG_MS) {
             if (el)
                 peer_el_flush_pcm(el);
@@ -1116,7 +1119,7 @@ void core_el_tick(media_core_t *core)
             core->phase = MEDIA_CALL_IDLE;
             core->dmr_voice_frames = 0;
             core->dmr_rx_stream_id = 0;
-        } else if (core->layout == ADN_BRIDGE_LAYOUT_EL_YSF
+        } else if (pairs_with_ysf
                    && bridge_ms_since(&core->last_dmr_rx) >= YSF_RX_HANG_MS) {
             if (el) {
                 peer_el_flush_pcm(el);

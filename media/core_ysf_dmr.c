@@ -7,13 +7,13 @@
 
 #include "media/core_ysf_dmr.h"
 
+#include "adapters/dmr.h"
+#include "adapters/ysf.h"
 #include "log.h"
 #include "media/bridge_util.h"
 #include "media/log_flow.h"
 #include "mmdvm/modeconv_wrap.h"
-#include "session/dmr_tx.h"
 #include "session/dmr_wire.h"
-#include "session/ysf_tx.h"
 #include "talker_alias.h"
 
 #include <string.h>
@@ -129,7 +129,7 @@ static int core_fanout_dmrd_cb(int dst_id, media_peer_kind_t kind, void *vctx)
     args.seq = &slot->dmr_tx_seq;
     args.stream_id = slot->dmr_tx_stream_id;
     args.last_tx = &ctx->core->last_dmr_tx;
-    dmr_tx_send(&args, ctx->frame_type, ctx->voice33);
+    adapter_dmr_egress_dmrd(&args, ctx->frame_type, ctx->voice33);
     return 0;
 }
 
@@ -171,8 +171,8 @@ static int core_fanout_ysfd_cb(int dst_id, media_peer_kind_t kind, void *vctx)
         .ysf_fn = &ctx->core->ysf_fn,
         .dgid_cfg = ysf->dgid,
     };
-    ysf_tx_send(&args, ctx->fi, ctx->ft, ctx->cm, ctx->fich_fn, ctx->net_cnt,
-                ctx->payload120, ctx->csd1, ctx->csd2);
+    adapter_ysf_egress_ysfd(&args, ctx->fi, ctx->ft, ctx->cm, ctx->fich_fn, ctx->net_cnt,
+                            ctx->payload120, ctx->csd1, ctx->csd2);
     return 0;
 }
 

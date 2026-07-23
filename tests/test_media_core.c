@@ -36,7 +36,7 @@ static void test_bind_sets_use_vocoder(void)
     media_codec_plan_build(&r, &plan);
 
     media_core_init(&core);
-    media_core_bind(&core, ADN_BRIDGE_LAYOUT_EL_DMR, &r, NULL, &plan, NULL);
+    media_core_bind(&core, &r, NULL, &plan, NULL);
     assert(core.use_vocoder == 1);
 }
 
@@ -52,7 +52,7 @@ static void test_ingress_drops_when_blocked(void)
     ysf = media_router_add_peer(&r, MEDIA_PEER_YSF);
 
     media_core_init(&core);
-    media_core_bind(&core, ADN_BRIDGE_LAYOUT_YSF_DMR, &r, NULL, NULL, NULL);
+    media_core_bind(&core, &r, NULL, NULL, NULL);
 
     memset(&frame, 0, sizeof(frame));
     frame.kind = MEDIA_FRAME_VOICE;
@@ -105,7 +105,7 @@ static void test_dmr_call_begin_takes_ingress(void)
     setup_ysf_dmr_bus(&bus, &r, dmr_id, ysf_id);
 
     media_core_init(&core);
-    media_core_bind(&core, ADN_BRIDGE_LAYOUT_YSF_DMR, &r, &bus, NULL, NULL);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
 
     memset(&frame, 0, sizeof(frame));
     frame.kind = MEDIA_FRAME_CALL_BEGIN;
@@ -147,7 +147,7 @@ static void test_shared_phase_no_cross_peer_preempt(void)
     setup_ysf_dmr_bus(&bus, &r, dmr_id, ysf_id);
 
     media_core_init(&core);
-    media_core_bind(&core, ADN_BRIDGE_LAYOUT_YSF_DMR, &r, &bus, NULL, NULL);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
 
     memset(&frame, 0, sizeof(frame));
     frame.kind = MEDIA_FRAME_CALL_BEGIN;
@@ -196,7 +196,7 @@ static void test_el_dmr_call_begin_takes_rx_phase(void)
     bus.slots[1].u.dmr.tg = 7141;
 
     media_core_init(&core);
-    media_core_bind(&core, ADN_BRIDGE_LAYOUT_EL_DMR, &r, &bus, NULL, NULL);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
 
     memset(&frame, 0, sizeof(frame));
     frame.kind = MEDIA_FRAME_CALL_BEGIN;
@@ -236,7 +236,7 @@ static void test_el_ysf_call_begin_takes_rx_phase(void)
     bus.slots[1].u.ysf.sock = -1;
 
     media_core_init(&core);
-    media_core_bind(&core, ADN_BRIDGE_LAYOUT_EL_YSF, &r, &bus, NULL, NULL);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
 
     memset(&frame, 0, sizeof(frame));
     frame.kind = MEDIA_FRAME_CALL_BEGIN;
@@ -289,7 +289,7 @@ static void test_multi_dmr_fanout_gets_distinct_tx_state(void)
     bus.slots[2].u.dmr.tg = 7142;
 
     media_core_init(&core);
-    media_core_bind(&core, ADN_BRIDGE_LAYOUT_YSF_DMR, &r, &bus, NULL, NULL);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
 
     memset(&frame, 0, sizeof(frame));
     frame.kind = MEDIA_FRAME_CALL_BEGIN;

@@ -9,6 +9,7 @@
 #include "log.h"
 #include "media/bridge_util.h"
 #include "media/identity.h"
+#include "session/dmr_tx.h"
 #include "session/dmr_wire.h"
 #include "talker_alias.h"
 
@@ -88,4 +89,10 @@ void adapter_dmr_on_wire(media_core_t *core, int src_router_id, peer_dmr_t *dmr,
     }
 
     media_core_ingress(core, src_router_id, &frame);
+}
+
+void adapter_dmr_egress_dmrd(const dmr_tx_args_t *args, uint8_t frame_type,
+                             const uint8_t *voice33)
+{
+    dmr_tx_send(args, frame_type, voice33);
 }
