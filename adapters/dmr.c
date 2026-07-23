@@ -447,3 +447,73 @@ void adapter_dmr_on_dmrd_ysf(adn_bridge_t *b, const uint8_t *pkt, int len)
     }
 }
 
+/* ---- Wire adapter: parse only, hand off to media_core ---- */
+
+void adapter_dmr_on_wire(media_core_t *core, int src_router_id, peer_dmr_t *dmr,
+                        const uint8_t *pkt, int len)
+{
+    media_bus_frame_t frame;
+    int rf, dst;
+
+    if (len == DMRA_PACKET_LEN && memcmp(pkt, "DMRA", 4) == 0) {
+        int block_id;
+        uint8_t payload7[7];
+
+        if (!dmra_parse_packet(pkt, len, &rf, &block_id, payload7))
+            return;
+        memset(&frame, 0, sizeof(frame));
+        frame.kind = MEDIA_FRAME_SIDECHAIN;
+        frame.codec = CODEC_DMR_AMBE;
+        frame.payload.dmra.rf = rf;
+        frame.payload.dmra.block_id = block_id;
+        memcpy(frame.payload.dmra.block7, payload7, 7);
+        media_core_ingress(core, src_router_id, &frame);
+        return;
+    }
+
+    if (len != 55 || memcmp(pkt, "DMRD", 4) != 0) {
+        LOG_DMR_DEBUG("DMR RX ignore len=%d (expected DMRD 55)\n", len);
+        return;
+    }
+
+    rf = (pkt[5] << 16) | (pkt[6] << 8) | pkt[7];
+    dst = (pkt[8] << 16) | (pkt[9] << 8) | pkt[10];
+
+    memset(&frame, 0, sizeof(frame));
+    frame.codec = CODEC_DMR_AMBE;
+    frame.meta.stream_id = *(const uint32_t *)(pkt + 16);
+    frame.meta.talker_id = rf;
+    frame.wire_seq = pkt[4];
+
+    {
+        identity_dmr_ctx_t ctx = {
+            core->aliases, dmr ? dmr->dmrid : 0, dmr ? dmr->callsign : NULL,
+            core->dmra.text, core->dmra.rf,
+        };
+        identity_resolve_dmr_to_ysf(&frame.meta.netcall, &ctx, rf, dst);
+    }
+
+    if (dmrd_is_header(pkt, len)) {
+        frame.kind = MEDIA_FRAME_CALL_BEGIN;
+        frame.wire_dtype = DMRD_DTYPE_VHEAD;
+    } else if (dmrd_is_terminator(pkt, len)) {
+        frame.kind = MEDIA_FRAME_CALL_END;
+        frame.wire_dtype = DMRD_DTYPE_VTERM;
+    } else if (dmrd_is_voice(pkt, len)) {
+        frame.kind = MEDIA_FRAME_VOICE;
+        frame.wire_dtype = adapter_dmrd_b15_dtype(pkt);
+        memcpy(frame.payload.dmr_voice33, pkt + 20, 33);
+    } else {
+        static int other_log;
+        if (bridge_dbg_periodic(&other_log)) {
+            uint8_t ft, dtype;
+            dmrd_parse_b15(pkt[15], &ft, &dtype);
+            LOG_DMR_WARNING("DMR RX unclassified b15=0x%02x (ft=%u dtype=%u)\n",
+                            pkt[15], (unsigned)ft, (unsigned)dtype);
+        }
+        return;
+    }
+
+    media_core_ingress(core, src_router_id, &frame);
+}
+
