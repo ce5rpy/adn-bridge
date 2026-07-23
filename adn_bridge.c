@@ -23,12 +23,11 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "bridge.h"
-#include "bridge_el.h"
 #include "config.h"
 #include "engine.h"
 #include "log.h"
 #include "aliases.h"
+#include "media/core.h"
 #include "peer_dmr.h"
 #include "peer_ysf.h"
 #include "peer_echolink.h"
@@ -37,8 +36,7 @@
 
 #define ADN_BRIDGE_VERSION "0.3.1"
 
-static adn_bridge_t bridge;
-static bridge_el_t bridge_el;
+static media_core_t core;
 static adn_bridge_aliases_t *g_aliases;
 static volatile sig_atomic_t keep_running = 1;
 /* Only set flags in the handler — never sendto/log (unsafe with blocking EL dir TCP). */
@@ -182,8 +180,7 @@ int main(int argc, char **argv)
     char err[256];
     int rc;
 
-    memset(&bridge, 0, sizeof(bridge));
-    memset(&bridge_el, 0, sizeof(bridge_el));
+    memset(&core, 0, sizeof(core));
 
     log_set_level(LOG_LEVEL_INFO);
 
@@ -240,13 +237,12 @@ int main(int argc, char **argv)
             .aliases = &g_aliases,
         };
 
-        rc = engine_run(&host, &cfg, &bridge, &bridge_el);
+        rc = engine_run(&host, &cfg, &core);
     }
 
     LOG_INFO("shutting down adn-bridge\n");
     alarm(0);
-    bridge.aliases = NULL;
-    bridge_el.aliases = NULL;
+    core.aliases = NULL;
     adn_bridge_aliases_free(g_aliases);
     g_aliases = NULL;
 

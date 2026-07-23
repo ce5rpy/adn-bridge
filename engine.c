@@ -7,10 +7,12 @@
 
 #include "engine.h"
 
-#include "bridge.h"
+#include "adapters/dmr.h"
+#include "adapters/ysf.h"
 #include "config.h"
 #include "log.h"
 #include "media/codec_plan.h"
+#include "media/core.h"
 #include "media/peer_bus.h"
 #include "media/router.h"
 #include "peer_dmr.h"
@@ -24,14 +26,11 @@
 
 typedef struct {
     adn_bridge_layout_t layout;
-    media_router_t router;
-    media_peer_bus_t bus;
-    media_codec_plan_t plan;
-    adn_bridge_t *b;
-    bridge_el_t *bel;
-    int el_use_dmr;
-    int el_use_ysf;
-    int vocoder_open;
+    media_router_t      router;
+    media_peer_bus_t    bus;
+    media_codec_plan_t  plan;
+    media_core_t       *core;
+    int                 vocoder_open;
 } engine_ctx_t;
 
 static engine_ctx_t *g_alarm_ctx;
@@ -50,8 +49,7 @@ static media_peer_kind_t engine_peer_kind(adn_bridge_peer_type_t type)
     }
 }
 
-static int engine_router_load_from_config(media_router_t *r,
-                                          const adn_bridge_config_t *cfg)
+static int engine_router_load_from_config(media_router_t *r, const adn_bridge_config_t *cfg)
 {
     int i, id;
     media_peer_kind_t kind;
@@ -79,16 +77,8 @@ static int engine_load_router_bus(engine_ctx_t *ctx, adn_bridge_config_t *cfg)
     return 0;
 }
 
-static void engine_bind_router(engine_ctx_t *ctx)
-{
-    if (ctx->layout == ADN_BRIDGE_LAYOUT_YSF_DMR)
-        bridge_bind_router(ctx->b, &ctx->router);
-    else
-        bridge_el_bind_router(ctx->bel, &ctx->router);
-}
-
 static void engine_poll_aliases(adn_bridge_config_t *cfg, engine_host_t *host,
-                                time_t *last_poll, adn_bridge_aliases_t **bel_aliases)
+                                time_t *last_poll, adn_bridge_aliases_t **core_aliases)
 {
     time_t now = time(NULL);
 
@@ -96,129 +86,63 @@ static void engine_poll_aliases(adn_bridge_config_t *cfg, engine_host_t *host,
         || now - *last_poll < 60)
         return;
     *last_poll = now;
-    if (adn_bridge_aliases_maybe_refresh(&cfg->aliases, host->aliases) > 0 && bel_aliases)
-        *bel_aliases = *host->aliases;
+    if (adn_bridge_aliases_maybe_refresh(&cfg->aliases, host->aliases) > 0 && core_aliases)
+        *core_aliases = *host->aliases;
 }
 
-static int engine_start_ysf_dmr(engine_host_t *host, adn_bridge_config_t *cfg,
-                                  engine_ctx_t *ctx)
+static int engine_start(engine_host_t *host, adn_bridge_config_t *cfg, engine_ctx_t *ctx)
 {
-    const adn_bridge_peer_t *dmr_p;
-    const adn_bridge_peer_dmr_t *dmr;
-    adn_bridge_t *b = ctx->b;
+    const adn_bridge_peer_t *dmr_p, *el_p;
+    media_core_t *core = ctx->core;
 
-    dmr_p = adn_bridge_config_find_peer(cfg, ADN_BRIDGE_PEER_TYPE_DMR);
-    if (!dmr_p)
+    ctx->layout = adn_bridge_config_layout(cfg);
+    if (ctx->layout == ADN_BRIDGE_LAYOUT_UNKNOWN) {
+        LOG_ERROR("engine: unsupported layout\n");
         return -1;
-    dmr = &dmr_p->u.dmr;
-
+    }
     if (engine_load_router_bus(ctx, cfg) != 0)
         return -1;
 
-    bridge_init(b, dmr->options, *host->aliases, dmr->dmrid, dmr->clear_dynamic_tg);
-    bridge_attach_bus(b, &ctx->bus);
-    engine_bind_router(ctx);
-
-    if (media_peer_bus_open_all(&ctx->bus, cfg) != 0)
-        return -1;
-
-    LOG_INFO("engine: YSF<->DMR (%d peers, ModeConv=%s, vocoder=%s)\n",
-             media_router_peer_count(&ctx->router),
-             ctx->plan.needs_modeconv ? "yes" : "no",
-             ctx->plan.needs_vocoder ? "yes" : "no");
-    return 0;
-}
-
-static int engine_start_echolink(engine_host_t *host, adn_bridge_config_t *cfg,
-                                   engine_ctx_t *ctx)
-{
-    const adn_bridge_peer_t *el_p;
-    const adn_bridge_peer_t *dmr_p;
-    const adn_bridge_peer_t *ysf_p;
-    const adn_bridge_peer_el_t *el;
-    bridge_el_t *bel = ctx->bel;
-    int link_kind;
-
+    dmr_p = adn_bridge_config_find_peer(cfg, ADN_BRIDGE_PEER_TYPE_DMR);
     el_p = adn_bridge_config_find_peer(cfg, ADN_BRIDGE_PEER_TYPE_ECHOLINK);
-    dmr_p = adn_bridge_config_find_peer(cfg, ADN_BRIDGE_PEER_TYPE_DMR);
-    ysf_p = adn_bridge_config_find_peer(cfg, ADN_BRIDGE_PEER_TYPE_YSF);
-    if (!el_p)
-        return -1;
 
-    el = &el_p->u.el;
-    ctx->el_use_dmr = (dmr_p != NULL);
-    ctx->el_use_ysf = (ysf_p != NULL);
-    link_kind = ctx->el_use_dmr ? BRIDGE_EL_LINK_DMR : BRIDGE_EL_LINK_YSF;
-
-    if (engine_load_router_bus(ctx, cfg) != 0)
-        return -1;
-
-    bridge_el_init(bel, link_kind,
-                   dmr_p ? dmr_p->u.dmr.options : "",
-                   *host->aliases,
-                   dmr_p ? dmr_p->u.dmr.dmrid : 0,
-                   el->gain,
-                   dmr_p ? dmr_p->u.dmr.clear_dynamic_tg : 0);
-    bridge_el_attach_bus(bel, &ctx->bus);
-    bridge_el_apply_codec_plan(bel, &ctx->plan);
-    engine_bind_router(ctx);
+    media_core_init(core);
+    media_core_bind(core, ctx->layout, &ctx->router, &ctx->bus, &ctx->plan, *host->aliases);
+    media_core_set_bridge_dmrid(core, dmr_p ? dmr_p->u.dmr.dmrid : 0);
+    core->clear_dynamic_tg = dmr_p ? dmr_p->u.dmr.clear_dynamic_tg : 0;
+    if (el_p)
+        media_core_set_el_gain(core, el_p->u.el.gain);
 
     if (ctx->plan.needs_vocoder) {
-        if (!el->vocoder_host[0] || el->vocoder_port <= 0)
+        if (!el_p || !el_p->u.el.vocoder_host[0] || el_p->u.el.vocoder_port <= 0)
             return -1;
-        if (vocoder_open(&bel->voc, el->vocoder_host, el->vocoder_port) < 0)
+        if (vocoder_open(&core->voc, el_p->u.el.vocoder_host, el_p->u.el.vocoder_port) < 0)
             return -1;
         ctx->vocoder_open = 1;
     }
 
     if (media_peer_bus_open_all(&ctx->bus, cfg) != 0) {
         if (ctx->vocoder_open)
-            vocoder_close(&bel->voc);
+            vocoder_close(&core->voc);
         return -1;
     }
 
-    if (ctx->el_use_dmr) {
-        LOG_INFO("engine: EchoLink<->DMR (%d peers, vocoder=%s)\n",
-                 media_router_peer_count(&ctx->router),
-                 ctx->plan.needs_vocoder ? el->vocoder_host : "no");
-    } else {
-        LOG_INFO("engine: EchoLink<->YSF (%d peers, vocoder=%s)\n",
-                 media_router_peer_count(&ctx->router),
-                 ctx->plan.needs_vocoder ? el->vocoder_host : "no");
-    }
+    LOG_INFO("engine: %s (%d peers, ModeConv=%s, vocoder=%s)\n",
+             adn_bridge_layout_name(ctx->layout),
+             media_router_peer_count(&ctx->router),
+             ctx->plan.needs_modeconv ? "yes" : "no",
+             ctx->plan.needs_vocoder ? "yes" : "no");
     return 0;
-}
-
-static int engine_start(engine_host_t *host, adn_bridge_config_t *cfg,
-                        engine_ctx_t *ctx)
-{
-    if (ctx->layout == ADN_BRIDGE_LAYOUT_YSF_DMR)
-        return engine_start_ysf_dmr(host, cfg, ctx);
-    if (ctx->layout == ADN_BRIDGE_LAYOUT_EL_DMR
-        || ctx->layout == ADN_BRIDGE_LAYOUT_EL_YSF)
-        return engine_start_echolink(host, cfg, ctx);
-    LOG_ERROR("engine: unsupported layout\n");
-    return -1;
 }
 
 static void engine_stop(engine_ctx_t *ctx)
 {
     media_peer_bus_sigint_all(&ctx->bus);
     media_peer_bus_close_all(&ctx->bus);
-
-    if (ctx->layout == ADN_BRIDGE_LAYOUT_YSF_DMR) {
-        bridge_bind_router(ctx->b, NULL);
-        bridge_attach_bus(ctx->b, NULL);
-        return;
-    }
-
-    if (ctx->layout == ADN_BRIDGE_LAYOUT_EL_DMR
-        || ctx->layout == ADN_BRIDGE_LAYOUT_EL_YSF) {
-        if (ctx->vocoder_open)
-            vocoder_close(&ctx->bel->voc);
-        bridge_el_bind_router(ctx->bel, NULL);
-        bridge_el_attach_bus(ctx->bel, NULL);
-    }
+    if (ctx->vocoder_open)
+        vocoder_close(&ctx->core->voc);
+    ctx->core->router = NULL;
+    ctx->core->bus = NULL;
 }
 
 static void engine_poll_dmr_slot(engine_ctx_t *ctx, media_peer_slot_t *slot)
@@ -230,15 +154,7 @@ static void engine_poll_dmr_slot(engine_ctx_t *ctx, media_peer_slot_t *slot)
     len = peer_dmr_poll(dmr, 5, &from_dmr);
     if (!from_dmr || len <= 0)
         return;
-
-    if (ctx->layout == ADN_BRIDGE_LAYOUT_YSF_DMR) {
-        if (len == 55 && memcmp(dmr->buf, "DMRD", 4) == 0)
-            bridge_on_dmrd_slot(ctx->b, slot->router_id, dmr, dmr->buf, len);
-        else if (len == DMRA_PACKET_LEN && memcmp(dmr->buf, "DMRA", 4) == 0)
-            bridge_on_dmra_slot(ctx->b, slot->router_id, dmr, dmr->buf, len);
-    } else if (ctx->el_use_dmr && len == 55 && memcmp(dmr->buf, "DMRD", 4) == 0) {
-        bridge_el_on_dmrd_slot(ctx->bel, slot->router_id, dmr, dmr->buf, len);
-    }
+    adapter_dmr_on_wire(ctx->core, slot->router_id, dmr, dmr->buf, len);
 }
 
 static void engine_poll_ysf_slot(engine_ctx_t *ctx, media_peer_slot_t *slot)
@@ -250,21 +166,15 @@ static void engine_poll_ysf_slot(engine_ctx_t *ctx, media_peer_slot_t *slot)
     len = peer_ysf_poll(ysf, 5, &from_ysf);
     if (!from_ysf || len != 155)
         return;
-
-    if (ctx->layout == ADN_BRIDGE_LAYOUT_YSF_DMR)
-        bridge_on_ysfd_slot(ctx->b, slot->router_id, ysf, ysf->buf, len);
-    else if (ctx->el_use_ysf)
-        bridge_el_on_ysfd_slot(ctx->bel, slot->router_id, ysf, ysf->buf, len);
+    adapter_ysf_on_wire(ctx->core, slot->router_id, ysf, ysf->buf, len);
 }
 
-static void engine_poll_el_slot(engine_ctx_t *ctx, media_peer_slot_t *slot)
+static void engine_poll_el_slot(media_peer_slot_t *slot)
 {
     peer_echolink_t *el = &slot->u.el;
 
     peer_el_tick(el);
     peer_el_poll(el, 5);
-    if (ctx->bel)
-        ctx->bel->el = el;
 }
 
 static void engine_poll_bus(engine_ctx_t *ctx)
@@ -284,7 +194,7 @@ static void engine_poll_bus(engine_ctx_t *ctx)
             engine_poll_ysf_slot(ctx, slot);
             break;
         case MEDIA_PEER_ECHOLINK:
-            engine_poll_el_slot(ctx, slot);
+            engine_poll_el_slot(slot);
             break;
         default:
             break;
@@ -292,39 +202,13 @@ static void engine_poll_bus(engine_ctx_t *ctx)
     }
 }
 
-static void engine_step_ysf_dmr(engine_host_t *host, adn_bridge_config_t *cfg,
-                                engine_ctx_t *ctx, time_t *last_alias_poll)
-{
-    adn_bridge_t *b = ctx->b;
-
-    engine_poll_bus(ctx);
-    engine_poll_aliases(cfg, host, last_alias_poll, &b->aliases);
-    bridge_tick(b);
-}
-
-static void engine_step_echolink(engine_host_t *host, adn_bridge_config_t *cfg,
-                                 engine_ctx_t *ctx, time_t *last_alias_poll)
-{
-    bridge_el_t *bel = ctx->bel;
-
-    engine_poll_bus(ctx);
-    engine_poll_aliases(cfg, host, last_alias_poll, &bel->aliases);
-
-    if (ctx->el_use_dmr)
-        bridge_el_process_el_audio(bel);
-    else
-        bridge_el_process_el_to_ysf(bel);
-
-    bridge_el_tick(bel);
-}
-
 static void engine_step(engine_host_t *host, adn_bridge_config_t *cfg,
                         engine_ctx_t *ctx, time_t *last_alias_poll)
 {
-    if (ctx->layout == ADN_BRIDGE_LAYOUT_YSF_DMR)
-        engine_step_ysf_dmr(host, cfg, ctx, last_alias_poll);
-    else
-        engine_step_echolink(host, cfg, ctx, last_alias_poll);
+    engine_poll_bus(ctx);
+    engine_poll_aliases(cfg, host, last_alias_poll, &ctx->core->aliases);
+    media_core_poll_el_pcm(ctx->core);
+    media_core_tick(ctx->core);
 }
 
 void engine_service_peer_alarms(void)
@@ -353,16 +237,13 @@ void engine_service_peer_alarms(void)
     }
 }
 
-int engine_run(engine_host_t *host, adn_bridge_config_t *cfg,
-               adn_bridge_t *b, bridge_el_t *bel)
+int engine_run(engine_host_t *host, adn_bridge_config_t *cfg, media_core_t *core)
 {
     engine_ctx_t ctx;
     time_t last_alias_poll = time(NULL);
 
     memset(&ctx, 0, sizeof(ctx));
-    ctx.layout = adn_bridge_config_layout(cfg);
-    ctx.b = b;
-    ctx.bel = bel;
+    ctx.core = core;
 
     if (engine_start(host, cfg, &ctx) != 0)
         return 1;

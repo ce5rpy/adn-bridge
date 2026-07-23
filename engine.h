@@ -10,10 +10,9 @@
 
 #include <signal.h>
 
-#include "bridge.h"
-#include "bridge_el.h"
-#include "config.h"
 #include "aliases.h"
+#include "config.h"
+#include "media/core.h"
 
 typedef struct {
     volatile sig_atomic_t *keep_running;
@@ -22,8 +21,7 @@ typedef struct {
 } engine_host_t;
 
 /* Start peers from [peer.*] layout, run until *keep_running clears, then shutdown. */
-int engine_run(engine_host_t *host, adn_bridge_config_t *cfg,
-               adn_bridge_t *b, bridge_el_t *bel);
+int engine_run(engine_host_t *host, adn_bridge_config_t *cfg, media_core_t *core);
 
 /* Iterate open bus peers for SIGALRM keepalives (set during engine_run). */
 void engine_service_peer_alarms(void);
