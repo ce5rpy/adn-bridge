@@ -4,6 +4,9 @@ tests/test_wire
 tests/test_codecs
 tests/test_router
 tests/test_config_peers
+tests/test_codec_plan
+tests/test_media_core
+tests/test_log
 tests/*.d
 data/
 debug/

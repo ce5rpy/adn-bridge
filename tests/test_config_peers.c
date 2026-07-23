@@ -250,6 +250,80 @@ static int test_reject_vocoder_on_dmr_peer(void)
     return 0;
 }
 
+static int test_log_handlers_parsing(void)
+{
+    const char *ini =
+        "[peer.fusion]\n"
+        "type = ysf\n"
+        "enabled = true\n"
+        "host = y.example\n"
+        "port = 42000\n"
+        "callsign = N0CALL\n"
+        "dgid = 1\n"
+        "[peer.master]\n"
+        "type = dmr\n"
+        "enabled = true\n"
+        "callsign = N0CALL\n"
+        "dmrid = 1\n"
+        "host = m.example\n"
+        "port = 62031\n"
+        "tg = 1\n"
+        "password = x\n"
+        "[log]\n"
+        "level = DEBUG\n"
+        "handlers = console,file-timed\n"
+        "file = /tmp/adn-test-log-output.log\n";
+    adn_bridge_config_t cfg;
+    char err[128];
+
+    if (write_ini("/tmp/adn-test-log-handlers.ini", ini) != 0)
+        return 90;
+    if (adn_bridge_config_load("/tmp/adn-test-log-handlers.ini", &cfg, err, sizeof(err)) != 0)
+        return 91;
+    if (!cfg.log_output.handlers_set)
+        return 92;
+    if (!cfg.log_output.console || cfg.log_output.console_timed)
+        return 93; /* console (untimed) requested */
+    if (!cfg.log_output.file || !cfg.log_output.file_timed)
+        return 94; /* file-timed requested */
+    if (strcmp(cfg.log_output.file_path, "/tmp/adn-test-log-output.log") != 0)
+        return 95;
+    return 0;
+}
+
+static int test_log_handlers_null(void)
+{
+    const char *ini =
+        "[peer.fusion]\n"
+        "type = ysf\n"
+        "enabled = true\n"
+        "host = y.example\n"
+        "port = 42000\n"
+        "callsign = N0CALL\n"
+        "dgid = 1\n"
+        "[peer.master]\n"
+        "type = dmr\n"
+        "enabled = true\n"
+        "callsign = N0CALL\n"
+        "dmrid = 1\n"
+        "host = m.example\n"
+        "port = 62031\n"
+        "tg = 1\n"
+        "password = x\n"
+        "[log]\n"
+        "handlers = null\n";
+    adn_bridge_config_t cfg;
+    char err[128];
+
+    if (write_ini("/tmp/adn-test-log-null.ini", ini) != 0)
+        return 96;
+    if (adn_bridge_config_load("/tmp/adn-test-log-null.ini", &cfg, err, sizeof(err)) != 0)
+        return 97;
+    if (!cfg.log_output.handlers_set || cfg.log_output.console || cfg.log_output.file)
+        return 98;
+    return 0;
+}
+
 int main(void)
 {
     int rc;
@@ -288,6 +362,16 @@ int main(void)
     if (rc != 0) {
         fprintf(stderr, "test_config_peers: vocoder on dmr reject failed (%d)\n", rc);
         return 7;
+    }
+    rc = test_log_handlers_parsing();
+    if (rc != 0) {
+        fprintf(stderr, "test_config_peers: log handlers parsing failed (%d)\n", rc);
+        return 8;
+    }
+    rc = test_log_handlers_null();
+    if (rc != 0) {
+        fprintf(stderr, "test_config_peers: log handlers null failed (%d)\n", rc);
+        return 9;
     }
 
     printf("test_config_peers: ok\n");
