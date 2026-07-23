@@ -41,7 +41,9 @@ static adn_bridge_aliases_t *g_aliases;
 static volatile sig_atomic_t keep_running = 1;
 /* Only set flags in the handler — never sendto/log (unsafe with blocking EL dir TCP). */
 static volatile sig_atomic_t alarm_pending = 0;
-/* SIGHUP: logrotate-style reopen of the file sink, no restart (no INI reload). */
+/* SIGUSR2: logrotate-style reopen of the file sink, no restart (no INI
+ * reload — SIGHUP is left free for that, unlike adn-server's use of SIGHUP
+ * for config reload). */
 static volatile sig_atomic_t log_reopen_pending = 0;
 
 static void on_signal(int sig)
@@ -52,7 +54,7 @@ static void on_signal(int sig)
         alarm_pending = 1;
         alarm(5);
     }
-    if (sig == SIGHUP)
+    if (sig == SIGUSR2)
         log_reopen_pending = 1;
 }
 
@@ -61,7 +63,7 @@ static void service_alarm(void)
     if (log_reopen_pending) {
         log_reopen_pending = 0;
         log_reopen_files();
-        LOG_INFO("log: file sink reopened (SIGHUP)\n");
+        LOG_INFO("log: file sink reopened (SIGUSR2)\n");
     }
     if (!alarm_pending)
         return;
@@ -238,7 +240,7 @@ int main(int argc, char **argv)
 
     signal(SIGINT, on_signal);
     signal(SIGALRM, on_signal);
-    signal(SIGHUP, on_signal);
+    signal(SIGUSR2, on_signal);
     alarm(5);
 
     {

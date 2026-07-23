@@ -295,7 +295,7 @@ TTY, so auto-detect picks no-timestamp — set `handlers = console-timed`
 explicitly if you want one in that case.
 
 **Log rotation**: with a `file`/`file-timed` handler configured, send
-`SIGHUP` to reopen the file at the same path (no restart, no dropped log
+`SIGUSR2` to reopen the file at the same path (no restart, no dropped log
 lines) — this is what a logrotate `postrotate` script should do:
 
 ```text
@@ -307,7 +307,7 @@ lines) — this is what a logrotate `postrotate` script should do:
     missingok
     notifempty
     postrotate
-        systemctl kill -s HUP adn-bridge@redchile.service
+        systemctl kill -s USR2 adn-bridge@redchile.service
     endscript
 }
 ```

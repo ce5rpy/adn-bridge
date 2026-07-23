@@ -296,7 +296,7 @@ no es ni journal ni TTY, así que la auto-detección elige sin timestamp — pon
 `handlers = console-timed` explícito si lo querés en ese caso.
 
 **Rotación de logs**: con un handler `file`/`file-timed` configurado, mandale
-`SIGHUP` al proceso para que reabra el archivo en la misma ruta (sin
+`SIGUSR2` al proceso para que reabra el archivo en la misma ruta (sin
 reiniciar, sin perder líneas) — esto es lo que debe hacer un script
 `postrotate` de logrotate:
 
@@ -309,7 +309,7 @@ reiniciar, sin perder líneas) — esto es lo que debe hacer un script
     missingok
     notifempty
     postrotate
-        systemctl kill -s HUP adn-bridge@redchile.service
+        systemctl kill -s USR2 adn-bridge@redchile.service
     endscript
 }
 ```

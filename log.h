@@ -60,7 +60,7 @@ int log_auto_detect_console_timed(void);
  * behavior), so any log call before main() calls this — config load errors,
  * mainly — still reaches stderr with a timestamp. */
 void log_init(const log_output_cfg_t *out);
-/* SIGHUP-style logrotate support: close and reopen the file sink at its
+/* SIGUSR2-style logrotate support: close and reopen the file sink at its
  * configured path (without restarting the process). No-op if the file sink
  * isn't enabled. */
 void log_reopen_files(void);

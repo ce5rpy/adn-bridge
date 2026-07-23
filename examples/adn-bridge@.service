@@ -12,8 +12,8 @@
 # [log] in the INI: `handlers = console` avoids a duplicate timestamp in
 # journalctl (systemd already stamps each line); omit `handlers` entirely to
 # auto-detect the same thing. For `handlers = file-timed` + `file = ...`,
-# rotate with logrotate's postrotate sending SIGHUP (no restart needed):
-#   systemctl kill -s HUP adn-bridge@redchile.service
+# rotate with logrotate's postrotate sending SIGUSR2 (no restart needed):
+#   systemctl kill -s USR2 adn-bridge@redchile.service
 
 [Unit]
 Description=adn-bridge bridge (%i)
