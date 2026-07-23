@@ -550,7 +550,7 @@ void core_el_dmr_ingress_dmr(media_core_t *core, int src_router_id, const media_
                 continue;
             }
             if (el)
-                adapter_el_egress_pcm(el, pcm);
+                adapter_el_egress_pcm(el, pcm, 160);
         }
         return;
     default:
@@ -918,7 +918,7 @@ static void core_el_drain_ysf_to_el_pcm(media_core_t *core, peer_echolink_t *el)
                 continue;
             }
             if (el)
-                adapter_el_egress_pcm(el, pcm);
+                adapter_el_egress_pcm(el, pcm, 160);
         }
     }
 }

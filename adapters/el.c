@@ -12,7 +12,7 @@ int adapter_el_read_pcm(peer_echolink_t *el, int16_t *pcm, int max_samples)
     return peer_el_read_pcm(el, pcm, max_samples);
 }
 
-int adapter_el_egress_pcm(peer_echolink_t *el, const int16_t pcm[160])
+int adapter_el_egress_pcm(peer_echolink_t *el, const int16_t *pcm, int samples)
 {
-    return peer_el_write_pcm(el, pcm, 160);
+    return peer_el_write_pcm(el, pcm, samples);
 }

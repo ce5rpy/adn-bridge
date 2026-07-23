@@ -88,6 +88,12 @@ typedef struct {
      * out to every destination was wrong with >1 DMR peer. See
      * media/core_echolink.c and media/core_ysf_dmr.c. */
 
+    /* Same-protocol relay (media/core_relay.c) — EL<->EL hang timer only;
+     * DMR/YSF relay track "who's active" via the router's shared
+     * active_ingress instead of a phase field, so relay composes safely
+     * alongside a concurrent DMR<->YSF or EchoLink<->* call in a 3+-kind bus. */
+    struct timespec last_el_relay_speech;
+
     /* DMRA sidechain (talker identity). */
     media_dmra_t dmra;
 } media_core_t;

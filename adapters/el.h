@@ -14,7 +14,7 @@
 
 /* Read up to max_samples of inbound PCM (8 kHz s16 LE). Returns samples read. */
 int adapter_el_read_pcm(peer_echolink_t *el, int16_t *pcm, int max_samples);
-/* Queue 160 samples of PCM for TX to the EL peer. */
-int adapter_el_egress_pcm(peer_echolink_t *el, const int16_t pcm[160]);
+/* Queue `samples` of PCM for TX to the EL peer. */
+int adapter_el_egress_pcm(peer_echolink_t *el, const int16_t *pcm, int samples);
 
 #endif

@@ -46,6 +46,11 @@ typedef struct {
     int               cp_tg;
     int               cp_clearing; /* 1 = current stage is the TG 4000 clear burst */
     struct timespec   cp_start;
+    /* Per-source YSF relay framing (YSF-kind slots only, media/core_relay.c):
+     * FICH fn/net_cnt cycling for a same-protocol YSF<->YSF relay call, kept
+     * separate from media_core_t.ysf_cnt (the cross-kind ModeConv paths'
+     * counter) so a relay call can run without disturbing those. */
+    uint8_t           ysf_relay_cnt;
 } media_peer_slot_t;
 
 typedef struct {

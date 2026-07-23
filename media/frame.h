@@ -39,6 +39,14 @@ typedef struct {
      * DMR dst/TG for identity net_dst formatting) — not part of the universal
      * contract, just carried through unparsed. */
     uint8_t            wire_dtype;
+    uint8_t            wire_dmr_ft;  /* DMR b15 FT bits (VOICE frames only) —
+                                       * needed alongside wire_dtype to relay a
+                                       * DMR voice33 payload unmodified: embedded
+                                       * LC continuation bits are baked into the
+                                       * payload at a position keyed by (ft,
+                                       * dtype), so a same-type DMR relay must
+                                       * reuse the source's exact b15 nibbles,
+                                       * not regenerate its own. */
     uint8_t            wire_seq;
     int32_t            wire_dst;
     union {

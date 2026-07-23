@@ -14,14 +14,6 @@
 
 #include <string.h>
 
-static uint8_t adapter_dmrd_b15_dtype(const uint8_t *pkt)
-{
-    uint8_t ft, dtype;
-
-    dmrd_parse_b15(pkt[15], &ft, &dtype);
-    return dtype;
-}
-
 void adapter_dmr_on_wire(media_core_t *core, int src_router_id, peer_dmr_t *dmr,
                         const uint8_t *pkt, int len)
 {
@@ -78,8 +70,12 @@ void adapter_dmr_on_wire(media_core_t *core, int src_router_id, peer_dmr_t *dmr,
         frame.kind = MEDIA_FRAME_CALL_END;
         frame.wire_dtype = DMRD_DTYPE_VTERM;
     } else if (dmrd_is_voice(pkt, len)) {
+        uint8_t ft, dtype;
+
+        dmrd_parse_b15(pkt[15], &ft, &dtype);
         frame.kind = MEDIA_FRAME_VOICE;
-        frame.wire_dtype = adapter_dmrd_b15_dtype(pkt);
+        frame.wire_dtype = dtype;
+        frame.wire_dmr_ft = ft;
         memcpy(frame.payload.dmr_voice33, pkt + 20, 33);
     } else {
         static int other_log;
