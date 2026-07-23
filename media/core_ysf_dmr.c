@@ -11,6 +11,7 @@
 #include "adapters/ysf.h"
 #include "log.h"
 #include "media/bridge_util.h"
+#include "media/identity.h"
 #include "media/log_flow.h"
 #include "mmdvm/modeconv_wrap.h"
 #include "session/dmr_wire.h"
@@ -206,17 +207,32 @@ static void core_begin_dmr_to_ysf(media_core_t *core, int src_router_id,
     modeconv_reset();
 }
 
+/* Identity (alias DB lookup + logging) only makes sense on call-begin — not
+ * on every voice frame, which was wasted work and confusing "dmr->ysf" log
+ * spam even in layouts with no YSF peer at all. */
+static void core_ysf_dmr_resolve_identity(media_core_t *core, int src_router_id,
+                                          const media_bus_frame_t *frame)
+{
+    peer_dmr_t *dmr = media_peer_bus_dmr(core->bus, src_router_id);
+    identity_dmr_ctx_t ctx = {
+        core->aliases, dmr ? dmr->dmrid : 0, dmr ? dmr->callsign : NULL,
+        core->dmra.text, core->dmra.rf,
+    };
+
+    identity_resolve_dmr_to_ysf(&core->call.netcall, &ctx, frame->meta.talker_id, frame->wire_dst);
+    core->call.talker_id = frame->meta.talker_id;
+}
+
 void core_ysf_dmr_ingress_dmr(media_core_t *core, int src_router_id, const media_bus_frame_t *frame)
 {
-    core->call.netcall = frame->meta.netcall;
-    core->call.talker_id = frame->meta.talker_id;
-
     switch (frame->kind) {
     case MEDIA_FRAME_CALL_BEGIN: {
         uint8_t dtype = DMRD_DTYPE_VHEAD;
+        int is_new_call = core->phase == MEDIA_CALL_IDLE
+                           || (frame->meta.stream_id != 0 && frame->meta.stream_id != core->call.stream_id);
 
-        if (core->phase == MEDIA_CALL_IDLE
-            || (frame->meta.stream_id != 0 && frame->meta.stream_id != core->call.stream_id)) {
+        core_ysf_dmr_resolve_identity(core, src_router_id, frame);
+        if (is_new_call) {
             core_begin_dmr_to_ysf(core, src_router_id, frame);
             LOG_DMR_INFO("%s call start (src %.10s)\n",
                          media_flow_label(MEDIA_PEER_DMR, MEDIA_PEER_YSF),
@@ -238,6 +254,7 @@ void core_ysf_dmr_ingress_dmr(media_core_t *core, int src_router_id, const media
         return;
     case MEDIA_FRAME_VOICE:
         if (core->phase == MEDIA_CALL_IDLE) {
+            core_ysf_dmr_resolve_identity(core, src_router_id, frame);
             core_begin_dmr_to_ysf(core, src_router_id, frame);
             modeconv_put_dmr_header();
             LOG_DMR_INFO("%s late entry (src %.10s)\n",

@@ -8,7 +8,6 @@
 
 #include "log.h"
 #include "media/bridge_util.h"
-#include "media/identity.h"
 #include "session/dmr_tx.h"
 #include "session/dmr_wire.h"
 #include "talker_alias.h"
@@ -28,6 +27,8 @@ void adapter_dmr_on_wire(media_core_t *core, int src_router_id, peer_dmr_t *dmr,
 {
     media_bus_frame_t frame;
     int rf, dst;
+
+    (void)dmr; /* identity resolution moved to core — only needed on call-begin */
 
     if (len == DMRA_PACKET_LEN && memcmp(pkt, "DMRA", 4) == 0) {
         int block_id;
@@ -66,16 +67,9 @@ void adapter_dmr_on_wire(media_core_t *core, int src_router_id, peer_dmr_t *dmr,
     memset(&frame, 0, sizeof(frame));
     frame.codec = CODEC_DMR_AMBE;
     frame.meta.stream_id = *(const uint32_t *)(pkt + 16);
-    frame.meta.talker_id = rf;
+    frame.meta.talker_id = rf; /* raw rf; core resolves identity only on call-begin */
     frame.wire_seq = pkt[4];
-
-    {
-        identity_dmr_ctx_t ctx = {
-            core->aliases, dmr ? dmr->dmrid : 0, dmr ? dmr->callsign : NULL,
-            core->dmra.text, core->dmra.rf,
-        };
-        identity_resolve_dmr_to_ysf(&frame.meta.netcall, &ctx, rf, dst);
-    }
+    frame.wire_dst = dst;
 
     if (dmrd_is_header(pkt, len)) {
         frame.kind = MEDIA_FRAME_CALL_BEGIN;
