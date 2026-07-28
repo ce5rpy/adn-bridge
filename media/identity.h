@@ -21,6 +21,8 @@ void identity_wire_call_to_cstr(char out[16], const char src[10]);
 int identity_callsign10_to_dmrid(const uint8_t cs[10]);
 
 int identity_lookup_alias_id(adn_bridge_aliases_t *aliases, const char base_cs[16]);
+int identity_lookup_dmr_callsign(adn_bridge_aliases_t *aliases, int rf, char out[10]);
+void identity_dmr_display_callsign(adn_bridge_aliases_t *aliases, int rf, char out[16]);
 
 typedef struct {
     adn_bridge_aliases_t *aliases;

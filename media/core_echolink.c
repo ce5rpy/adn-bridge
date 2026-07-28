@@ -214,14 +214,18 @@ static void core_el_set_ysf_talker_name(media_core_t *core, peer_echolink_t *el)
 {
     char talker[16];
     char name[32];
+    char label[32];
 
     identity_wire_call_to_cstr(talker, core->leg_el.call.netcall.net_src);
     if (!talker[0]) {
         peer_el_set_talker_name(el, NULL);
+        peer_el_set_relay_label(el, "YSF");
         return;
     }
     snprintf(name, sizeof(name), "%.10s (%.12s)", el->callsign, talker);
     peer_el_set_talker_name(el, name);
+    snprintf(label, sizeof(label), "YSF %.12s", talker);
+    peer_el_set_relay_label(el, label);
 }
 
 /* =====================================================================
@@ -513,8 +517,10 @@ void core_el_dmr_ingress_dmr(media_core_t *core, int src_router_id, const media_
         if (core->leg_el.phase == MEDIA_CALL_TX_TO_PEER)
             core_el_dmr_end_call(core);
         if (core->leg_el.phase == MEDIA_CALL_RX_FROM_PEER) {
-            if (el)
+            if (el) {
                 peer_el_flush_pcm(el);
+                peer_el_set_relay_label(el, NULL);
+            }
             LOG_DMR_INFO("%s call end (%d voice frames in, el_rtp_tx=%u) — replaced by new stream\n",
                          media_flow_label(MEDIA_PEER_DMR, MEDIA_PEER_ECHOLINK),
                          core->leg_el.dmr_voice_frames, el ? el->rtp_tx_packets : 0);
@@ -525,16 +531,25 @@ void core_el_dmr_ingress_dmr(media_core_t *core, int src_router_id, const media_
         core->leg_el.phase = MEDIA_CALL_RX_FROM_PEER;
         core->leg_el.dmr_rx_stream_id = sid;
         core->leg_el.dmr_voice_frames = 0;
-        if (el)
+        if (el) {
+            char cs[16];
+            char label[32];
+
             el->rtp_tx_packets = 0;
+            identity_dmr_display_callsign(core->aliases, frame->meta.talker_id, cs);
+            snprintf(label, sizeof(label), cs[0] ? "DMR %s" : "DMR", cs);
+            peer_el_set_relay_label(el, label);
+        }
         bridge_stamp_now(&core->leg_el.last_dmr_rx);
         LOG_DMR_INFO("%s call start\n", media_flow_label(MEDIA_PEER_DMR, MEDIA_PEER_ECHOLINK));
         return;
     }
     case MEDIA_FRAME_CALL_END:
         if (core->leg_el.phase == MEDIA_CALL_RX_FROM_PEER) {
-            if (el)
+            if (el) {
                 peer_el_flush_pcm(el);
+                peer_el_set_relay_label(el, NULL);
+            }
             LOG_DMR_INFO("%s call end (%d voice frames in, el_rtp_tx=%u)\n",
                          media_flow_label(MEDIA_PEER_DMR, MEDIA_PEER_ECHOLINK),
                          core->leg_el.dmr_voice_frames, el ? el->rtp_tx_packets : 0);
@@ -1033,6 +1048,7 @@ void core_el_ysf_ingress_ysf(media_core_t *core, int src_router_id, const media_
             if (el) {
                 peer_el_flush_pcm(el);
                 peer_el_set_talker_name(el, NULL);
+                peer_el_set_relay_label(el, NULL);
             }
             LOG_YSF_INFO("%s call end (%d voice frames in, el_rtp_tx=%u) — replaced by new stream\n",
                          media_flow_label(MEDIA_PEER_YSF, MEDIA_PEER_ECHOLINK),
@@ -1063,6 +1079,7 @@ void core_el_ysf_ingress_ysf(media_core_t *core, int src_router_id, const media_
             if (el) {
                 peer_el_flush_pcm(el);
                 peer_el_set_talker_name(el, NULL);
+                peer_el_set_relay_label(el, NULL);
             }
             LOG_YSF_INFO("%s call end (%d voice frames in, el_rtp_tx=%u)\n",
                          media_flow_label(MEDIA_PEER_YSF, MEDIA_PEER_ECHOLINK),

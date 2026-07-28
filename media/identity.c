@@ -218,7 +218,7 @@ int identity_lookup_alias_id(adn_bridge_aliases_t *aliases, const char base_cs[1
     return adn_bridge_alias_lookup_id(aliases, base_cs);
 }
 
-static int identity_lookup_dmr_callsign(adn_bridge_aliases_t *aliases, int rf, char out[10])
+int identity_lookup_dmr_callsign(adn_bridge_aliases_t *aliases, int rf, char out[10])
 {
     int i;
 
@@ -235,6 +235,22 @@ static int identity_lookup_dmr_callsign(adn_bridge_aliases_t *aliases, int rf, c
         }
     }
     return 0;
+}
+
+/* Best-effort display callsign for a DMR radio ID: subscriber DB lookup,
+ * else the numeric ID itself (same fallback as identity_resolve_dmr_to_ysf),
+ * trimmed to a clean C string. For UI/roster labels, not wire framing. */
+void identity_dmr_display_callsign(adn_bridge_aliases_t *aliases, int rf, char out[16])
+{
+    char cs10[10];
+
+    if (rf <= 0) {
+        out[0] = '\0';
+        return;
+    }
+    if (!identity_lookup_dmr_callsign(aliases, rf, cs10))
+        identity_format_id_callsign10(cs10, rf);
+    identity_wire_call_to_cstr(out, cs10);
 }
 
 void identity_resolve_dmr_to_ysf(bridge_call_meta_t *meta, const identity_dmr_ctx_t *ctx,
