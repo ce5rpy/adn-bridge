@@ -2288,6 +2288,18 @@ const char *peer_el_remote_talker(const peer_echolink_t *p)
 {
     if (!p)
         return "";
+    /* talk_src tracks whichever EL source (outbound peer or an inbound
+     * app/conference connection) is currently the arbitrated talker --
+     * remote_talker/remote_cname below only ever reflect the outbound
+     * peer's own SDES, so an inbound talker must be checked first or
+     * DMR/YSF loses the caller's identity while an inbound station is
+     * the one actually talking. */
+    if (p->talk_src > 0) {
+        int i = p->talk_src - 1;
+
+        if (i >= 0 && i < EL_MAX_INBOUND && p->inbound[i].used && p->inbound[i].cname[0])
+            return p->inbound[i].cname;
+    }
     if (p->remote_talker[0])
         return p->remote_talker;
     if (p->remote_cname[0])
