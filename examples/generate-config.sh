@@ -200,6 +200,7 @@ EL_CALL=""; EL_PASS=""; EL_BIND=""; EL_HOST=""; EL_QTH=""; EL_EMAIL=""
 EL_DIR="$EL_DIR_DEFAULT"; EL_LOGIN="360"; EL_LIST="600"; EL_GAIN="1.0"
 USE_PROXY=0; EL_PROXY=""; EL_PROXY_PORT="8100"; EL_PROXY_PASS="PUBLIC"
 VOC_HOST="127.0.0.1"; VOC_PORT="2460"
+EL_MAX_INBOUND="1"; EL_ALLOWED=""; EL_BLOCKED=""; EL_WELCOME=""
 if [[ "$NEED_EL" -eq 1 ]]; then
   echo
   echo "=== [peer.*] EchoLink ==="
@@ -211,6 +212,15 @@ if [[ "$NEED_EL" -eq 1 ]]; then
   ask EL_HOST "Peer to link (node or CONF)" "Peer a enlazar (nodo o CONF)" "${EL_HOST_DEFAULT}"
   ask EL_QTH "QTH (optional)" "QTH (opcional)" ""
   ask EL_EMAIL "Email for directory login (optional)" "Email para login al directorio (opcional)" ""
+  echo
+  echo "$(msg '=== Inbound EchoLink connections (e.g. the app) ===' \
+              '=== Conexiones EchoLink entrantes (ej. la app) ===')"
+  ask EL_MAX_INBOUND "Max simultaneous inbound connections (0 disables)" "Max conexiones entrantes simultaneas (0 deshabilita)" "1"
+  if [[ "$EL_MAX_INBOUND" != "0" ]]; then
+    ask EL_ALLOWED "Allowed inbound callsigns (comma-separated, required)" "Indicativos entrantes permitidos (separados por coma, requerido)" "$EL_CALL"
+    ask EL_BLOCKED "Blocked callsigns (optional, always wins)" "Indicativos bloqueados (opcional, siempre gana)" ""
+    ask EL_WELCOME "Welcome text shown to inbound stations (optional, \\n = line break)" "Texto de bienvenida para entrantes (opcional, \\n = salto de linea)" ""
+  fi
   if [[ "$MODE" == "echolink-ysf" ]]; then
     EL_GAIN="0.5"
   else
@@ -301,6 +311,10 @@ AL_CK_URL="$ADN_CHECKSUM_URL"
       echo "bind_addr = $EL_BIND"
     fi
     echo "host = $EL_HOST"
+    echo "max_inbound = $EL_MAX_INBOUND"
+    [[ -n "$EL_ALLOWED" ]] && echo "allowed_callsigns = $EL_ALLOWED"
+    [[ -n "$EL_BLOCKED" ]] && echo "blocked_callsigns = $EL_BLOCKED"
+    [[ -n "$EL_WELCOME" ]] && echo "welcome_text = $EL_WELCOME"
     echo "vocoder_host = $VOC_HOST"
     echo "vocoder_port = $VOC_PORT"
     echo "vocoder_log_level = $LOG_LEVEL"
