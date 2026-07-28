@@ -39,6 +39,19 @@
 #define PEER_EL_DIR_OK       1
 #define PEER_EL_CONNECTED    2
 
+/* Inbound EchoLink connections accepted besides the configured outbound
+ * host= (e.g. app users calling in). Hard cap; the configured max_inbound
+ * (adn_bridge_peer_el_t) is clamped to this at open time. */
+#define EL_MAX_INBOUND 4
+
+typedef struct {
+    int used;
+    struct sockaddr_in addr;  /* source IP; RTP/RTCP both from this address, fixed ports 5198/5199 */
+    char cname[32];
+    time_t last_rtcp;         /* last SDES received from this station */
+    time_t last_rtp;          /* last RTP received from this station (talker arbitration) */
+} el_inbound_t;
+
 typedef struct {
     int rtp_sock;
     int rtcp_sock;
@@ -56,6 +69,11 @@ typedef struct {
     char email[64];
     /* SDES NAME while bridging a remote talker (YSF/DMR→EL); empty = use callsign */
     char talker_name[32];
+    /* Which bridge leg (DMR/YSF/...) is currently relaying audio INTO
+     * EchoLink, for the roster's "->" indicator. Independent of talker_name
+     * above (that's the outbound peer's SDES NAME) -- this only affects the
+     * "connected users" list shown to inbound stations. */
+    char relay_label[32];
     /* Inbound SDES: peer station (CNAME) and active talker (NAME or CNAME/host). */
     char remote_cname[32];
     char remote_talker[32];
@@ -66,6 +84,20 @@ typedef struct {
     int status; /* PEER_EL_* */
     int linked; /* RTCP SDES seen from peer */
     int peer_resolved; /* peer_rtp filled from directory lookup */
+    /* Inbound connections (besides the configured outbound peer above). */
+    el_inbound_t inbound[EL_MAX_INBOUND];
+    int max_inbound;                                   /* copied from config; 0 = disabled */
+    char allowed_callsigns[ADN_BRIDGE_EL_ALLOW_MAX][16];
+    int allowed_callsign_count;
+    /* Checked first; always wins even if also in allowed_callsigns. */
+    char blocked_callsigns[ADN_BRIDGE_EL_ALLOW_MAX][16];
+    int blocked_callsign_count;
+    char welcome_text[512]; /* appended to the roster blob; '\r'-separated lines */
+    /* Talker arbitration across all sources (outbound peer + inbound[]):
+     * -1 = none, 0 = outbound peer, i+1 = inbound[i]. Prevents two
+     * simultaneously-talking EchoLink sources from garbling pcm_in. */
+    int talk_src;
+    time_t talk_last;
     int login_interval;         /* tlb LoginInterval */
     int station_list_interval;  /* tlb StationListInterval */
     uint16_t rtp_seq;
@@ -119,6 +151,10 @@ void peer_el_flush_pcm(peer_echolink_t *p);
 void peer_el_drop_pcm_in(peer_echolink_t *p);
 /* Set/clear SDES NAME for remote talker display (NULL/"" clears). Sends SDES. */
 void peer_el_set_talker_name(peer_echolink_t *p, const char *name);
+/* Set/clear which bridge leg is currently relaying into EchoLink (NULL/""
+ * clears); broadcasts the "connected users" roster to inbound stations if
+ * this changes the previous value. */
+void peer_el_set_relay_label(peer_echolink_t *p, const char *label);
 /* Best remote identity for EL→DMR/YSF (talker, else CNAME, else host). */
 const char *peer_el_remote_talker(const peer_echolink_t *p);
 /* After EL→DMR/YSF hangtime: drop sticky user talker so the next QSO starts clean. */

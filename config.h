@@ -17,6 +17,7 @@
 #define ADN_BRIDGE_PEER_MAX 16
 #define ADN_BRIDGE_PEER_NAME_LEN 32
 #define ADN_BRIDGE_EL_DIR_MAX 8
+#define ADN_BRIDGE_EL_ALLOW_MAX 8
 
 typedef enum {
     ADN_BRIDGE_PEER_TYPE_DMR = 0,
@@ -55,6 +56,23 @@ typedef struct {
     char email[64];
     char directory_servers[ADN_BRIDGE_EL_DIR_MAX][128];
     int directory_server_count;
+    /* Inbound EchoLink connections (besides the configured outbound host=):
+     * max_inbound = 0 disables accepting any (today's behavior); default 1.
+     * allowed_callsigns is the authorization allow-list -- empty means no
+     * inbound connection is ever authorized (no "open node" mode).
+     * blocked_callsigns is checked first and always wins even if a callsign
+     * is also in allowed_callsigns (explicit deny overrides allow, same
+     * precedence as SvxLink's DROP/REJECT before ACCEPT). */
+    int max_inbound;
+    char allowed_callsigns[ADN_BRIDGE_EL_ALLOW_MAX][16];
+    int allowed_callsign_count;
+    char blocked_callsigns[ADN_BRIDGE_EL_ALLOW_MAX][16];
+    int blocked_callsign_count;
+    /* Free text appended to the inbound "connected users" roster blob (tlb
+     * Banner convention) -- e.g. rules or a greeting. Literal "\n" in the
+     * INI value becomes a real line break (EchoLink's '\r' line separator).
+     * Empty = no banner, just the station list. */
+    char welcome_text[512];
     int login_interval;
     int station_list_interval;
     float gain;

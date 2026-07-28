@@ -7,6 +7,7 @@ tests/test_config_peers
 tests/test_codec_plan
 tests/test_media_core
 tests/test_log
+tests/test_echolink_inbound
 tests/*.d
 data/
 debug/

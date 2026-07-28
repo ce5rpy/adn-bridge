@@ -67,9 +67,9 @@ install: adn-bridge
 	install -m 644 examples/adn-bridge-echolink-ysf.example.ini $(DESTDIR)$(CONFDIR)/
 
 clean:
-	rm -rf $(BUILD) adn-bridge tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers tests/test_codec_plan tests/test_media_core tests/test_log
+	rm -rf $(BUILD) adn-bridge tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers tests/test_codec_plan tests/test_media_core tests/test_log tests/test_echolink_inbound
 
-test: tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers tests/test_codec_plan tests/test_media_core tests/test_log
+test: tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers tests/test_codec_plan tests/test_media_core tests/test_log tests/test_echolink_inbound
 	./tests/test_wire
 	./tests/test_codecs
 	./tests/test_router
@@ -77,6 +77,7 @@ test: tests/test_wire tests/test_codecs tests/test_router tests/test_config_peer
 	./tests/test_codec_plan
 	./tests/test_media_core
 	./tests/test_log
+	./tests/test_echolink_inbound
 
 $(BUILD)/tests/test_wire.o: tests/test_wire.c
 	@mkdir -p $(dir $@)
@@ -155,6 +156,15 @@ tests/test_media_core: adn-bridge $(BUILD)/tests/test_media_core.o
 		$(BUILD)/hbp/dmr_hbp.o $(BUILD)/log.o $(BUILD)/ysf_fich.o $(BUILD)/aliases.o \
 		$(BUILD)/vendor/yyjson/yyjson.o \
 		$(filter $(BUILD)/mmdvm/%,$(OBJS)) $(LDFLAGS)
+
+$(BUILD)/tests/test_echolink_inbound.o: tests/test_echolink_inbound.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+tests/test_echolink_inbound: $(BUILD)/tests/test_echolink_inbound.o $(BUILD)/peer_echolink.o $(BUILD)/el_proxy.o $(BUILD)/log.o $(BUILD)/vocoder_remote.o
+	$(CC) -o $@ $(BUILD)/tests/test_echolink_inbound.o \
+		$(BUILD)/peer_echolink.o $(BUILD)/el_proxy.o $(BUILD)/log.o \
+		$(BUILD)/vocoder_remote.o -lcrypto -lm -lpthread -lz -lgsm
 
 -include $(DEPS)
 

@@ -17,6 +17,7 @@
 #include <netdb.h>
 #include <poll.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,7 +42,8 @@ static void el_login_and_list(peer_echolink_t *p);
 static void el_station_list_only(peer_echolink_t *p);
 static void el_dir_op_begin(peer_echolink_t *p);
 static void el_dir_op_end(peer_echolink_t *p);
-static void el_handle_rtp(peer_echolink_t *p, const uint8_t *data, int len);
+static void el_handle_rtp(peer_echolink_t *p, const uint8_t *data, int len,
+                          const struct sockaddr_in *from);
 static void el_handle_rtcp(peer_echolink_t *p, const uint8_t *data, int len,
                            const struct sockaddr_in *from);
 static int el_tcp_bind_connect(peer_echolink_t *p, const char *server, int *out_fd);
@@ -114,7 +116,7 @@ static void el_proxy_udp_cb(void *user, struct in_addr from, int is_ctrl,
     if (is_ctrl)
         el_handle_rtcp(p, data, len, &sa);
     else if (data[0] != 0x6f)
-        el_handle_rtp(p, data, len);
+        el_handle_rtp(p, data, len, &sa);
 }
 
 typedef struct {
@@ -184,6 +186,16 @@ static void el_dir_close(peer_echolink_t *p, el_dir_conn_t *c)
 #define EL_RTP_PT_GSM         3
 #define EL_RTCP_RR            201
 #define EL_RTCP_SDES          202
+#define EL_RTCP_BYE           203
+/* RTP/RTCP arrival gap after which a talk spurt is considered over and a
+ * different EchoLink source (outbound peer or an inbound[] slot) may become
+ * the active talker. Coarse (1-tick) on purpose -- matches this file's
+ * existing time_t-second granularity (EL_PEER_STALE_SEC and friends). */
+#define EL_TALK_HANG_SEC      1
+/* No RTP from the current talker for this long -> considered done talking;
+ * talk_src clears back to -1 and the roster's "->" arrow disappears (tick-
+ * driven, since el_handle_rtp only ever runs while someone IS transmitting). */
+#define EL_TALK_SILENCE_SEC   2
 #define EL_SDES_CNAME         1
 #define EL_SDES_NAME          2
 #define EL_SDES_EMAIL         3
@@ -968,6 +980,191 @@ static void el_send_sdes(peer_echolink_t *p)
 }
 
 /*
+ * Reply to an inbound EchoLink station (not the configured outbound peer) --
+ * doesn't gate on el_rtcp_ok()/peer_resolved (those describe the OUTBOUND
+ * target only) and doesn't touch last_sdes (the outbound keepalive cadence
+ * tracker). Called only from the main/poll-loop thread (RTCP dispatch), so
+ * no dir_mu needed -- `to` is a plain local value here, not shared state.
+ */
+static void el_send_sdes_to(peer_echolink_t *p, struct in_addr to)
+{
+    uint8_t buf[256];
+    int n = el_build_sdes(p, buf, (int)sizeof(buf));
+
+    if (n > 0)
+        el_send_udp_rtcp(p, to, buf, n);
+}
+
+/*
+ * Build an RTCP BYE (thelinkbox GenBye format, conference.c: RR + BYE chunk
+ * with SSRC + reason string, padded to a 4-byte boundary) -- sent instead of
+ * a silent drop when rejecting an inbound connection (unauthorized callsign,
+ * or node at capacity).
+ */
+static int el_build_bye(peer_echolink_t *p, const char *reason, uint8_t *out, int outlen)
+{
+    uint32_t nid;
+    int o = 0;
+    int reason_len = (int)strlen(reason);
+    int bye_start;
+    int need = 8 + 8 + 1 + reason_len + 3; /* RR(8) + BYE hdr(8) + len byte + reason + pad(<=3) */
+
+    if (need > outlen)
+        return -1;
+
+    nid = el_node_id(p);
+
+    out[o++] = (uint8_t)(EL_RTP_VERSION << 6);
+    out[o++] = EL_RTCP_RR;
+    out[o++] = 0;
+    out[o++] = 1;
+    memcpy(out + o, &nid, 4);
+    o += 4;
+
+    bye_start = o;
+    out[o++] = (uint8_t)((EL_RTP_VERSION << 6) | 1); /* p filled by el_finish_sdes */
+    out[o++] = EL_RTCP_BYE;
+    out[o++] = 0;
+    out[o++] = 0; /* length filled by el_finish_sdes */
+    memcpy(out + o, &nid, 4);
+    o += 4;
+
+    out[o++] = (uint8_t)reason_len;
+    memcpy(out + o, reason, (size_t)reason_len);
+    o += reason_len;
+
+    return el_finish_sdes(out, o, bye_start);
+}
+
+static void el_send_bye_to(peer_echolink_t *p, struct in_addr to, const char *reason)
+{
+    uint8_t buf[128];
+    int n = el_build_bye(p, reason, buf, (int)sizeof(buf));
+
+    if (n > 0)
+        el_send_udp_rtcp(p, to, buf, n);
+}
+
+/*
+ * tlb SendStationList (conference.c): the EchoLink app's "connected users"
+ * list and its conference welcome text are the SAME thing -- there is no
+ * separate one-shot welcome packet. It's an unauthenticated DATA packet (not
+ * RTP audio) sent on the *audio* port (5198), marked by a leading 0x6f byte
+ * instead of the usual RTP version bits, followed by the literal ASCII
+ * "NDATA" and then free text with lines separated by '\r', NUL-terminated
+ * (the NUL is part of the sent length).
+ *
+ * Matches a real conference's wire format (observed against RedChile.org):
+ *   CONF <callsign> [<count>/<max>]
+ *   --
+ *   <welcome_text, verbatim>
+ *   --
+ *   (blank line)
+ *   ->TALKER          <- "->" PREFIXES the currently transmitting station
+ *   OTHER_STATION      (no annotation at all for stations that aren't)
+ * one line per currently connected station (the outbound peer, if linked,
+ * plus every inbound[] slot); talk_src picks which one gets the "->" arrow
+ * (same transmitting/receiving feedback as SvxLink's node status).
+ */
+#define EL_DATA_MARKER 0x6f
+
+static int el_append(char *out, int o, int outlen, const char *fmt, ...)
+{
+    va_list ap;
+    int n;
+
+    va_start(ap, fmt);
+    n = vsnprintf(out + o, (size_t)(outlen - o), fmt, ap);
+    va_end(ap);
+    if (n < 0 || n >= outlen - o)
+        return -1;
+    return o + n;
+}
+
+static int el_build_station_list(peer_echolink_t *p, uint8_t *out, int outlen)
+{
+    int o;
+    int i;
+    int count = 0;
+
+    for (i = 0; i < EL_MAX_INBOUND; i++)
+        if (p->inbound[i].used)
+            count++;
+    if (p->linked)
+        count++;
+
+    o = el_append((char *)out, 0, outlen, "%cNDATACONF %s [%d/%d]\r",
+                 EL_DATA_MARKER, p->callsign, count, p->max_inbound);
+    if (o < 0)
+        return -1;
+
+    if (p->welcome_text[0]) {
+        o = el_append((char *)out, o, outlen, "--\r%s\r--\r", p->welcome_text);
+        if (o < 0)
+            return -1;
+    }
+    o = el_append((char *)out, o, outlen, "\r");
+    if (o < 0)
+        return -1;
+
+    if (p->linked) {
+        o = el_append((char *)out, o, outlen, "%s%s\r",
+                     p->talk_src == 0 ? "->" : "",
+                     p->remote_talker[0] ? p->remote_talker : p->host);
+        if (o < 0)
+            return -1;
+    }
+    for (i = 0; i < EL_MAX_INBOUND; i++) {
+        if (!p->inbound[i].used)
+            continue;
+        o = el_append((char *)out, o, outlen, "%s%s\r",
+                     p->talk_src == i + 1 ? "->" : "", p->inbound[i].cname);
+        if (o < 0)
+            return -1;
+    }
+    /* The bridge leg currently relaying audio INTO EchoLink (DMR/YSF/...),
+     * if any -- e.g. "DMR 7141001" or "YSF N0CALL". Always shown as the
+     * active talker: setting relay_label inherently means that leg is
+     * transmitting right now (see peer_el_set_relay_label callers). */
+    if (p->relay_label[0]) {
+        o = el_append((char *)out, o, outlen, "->%s\r", p->relay_label);
+        if (o < 0)
+            return -1;
+    }
+    if (o >= outlen)
+        return -1;
+    out[o++] = 0; /* terminator, included in the sent length (tlb convention) */
+    return o;
+}
+
+static void el_send_station_list_to(peer_echolink_t *p, struct in_addr to)
+{
+    uint8_t buf[512];
+    int n = el_build_station_list(p, buf, (int)sizeof(buf));
+
+    if (n > 0)
+        el_send_udp_rtp(p, to, buf, n);
+}
+
+/*
+ * Broadcast the roster/welcome blob to every currently connected inbound
+ * station -- called whenever inbound membership changes (join/leave), same
+ * trigger as tlb's bSendStationList dirty flag (conference.c:2049-2058).
+ * Not sent to the configured outbound peer (that's typically a repeater/
+ * conference bridge, not an app UI needing a roster).
+ */
+static void el_broadcast_station_list(peer_echolink_t *p)
+{
+    int i;
+
+    if (p->use_proxy)
+        return; /* same proxy.mu deadlock guard as the SDES/BYE sends above */
+    for (i = 0; i < EL_MAX_INBOUND; i++)
+        if (p->inbound[i].used)
+            el_send_station_list_to(p, p->inbound[i].addr.sin_addr);
+}
+
+/*
  * K1RFD / tlb SendFirewallOpenRequest: RTCP SDES to a directory server so it
  * can relay OPEN to the peer (needed for many conferences and NAT paths).
  *   CNAME = our callsign
@@ -1201,16 +1398,25 @@ static int el_same_station(const char *a, const char *b)
  * while RTP is still flowing — keep the user only during that active RX.
  * bridge clears the sticky talker when the EL→DMR/YSF call ends.
  */
-static void el_apply_remote_sdes(peer_echolink_t *p, const char *cname, const char *name)
+/*
+ * Pure derivation, shared by el_apply_remote_sdes (outbound peer) and
+ * el_handle_inbound_sdes (inbound connections): most EchoLink clients (tlb
+ * CallSignString convention) send CNAME as the literal placeholder
+ * "CALLSIGN" with the real station identity in NAME instead -- either as
+ * "NODE (CE5ABC) CONF" (paren) or "CE5ABC Name" (first token). CNAME is only
+ * used as a last resort, for the minority of peers that put a real callsign
+ * there directly. Writes an empty string to `out` if nothing plausible is
+ * found (out_cap must be >= 1).
+ */
+static void el_derive_callsign(const char *cname, const char *name, char *out, size_t out_cap,
+                               int *from_paren_out)
 {
-    char talker[sizeof(p->remote_talker)];
-    char cand[sizeof(p->remote_talker)];
+    char cand[64];
     const char *lp, *rp;
     size_t i, n;
     int from_paren = 0;
-    time_t now;
 
-    talker[0] = '\0';
+    out[0] = '\0';
     if (name && name[0]) {
         lp = strrchr(name, '(');
         rp = strrchr(name, ')');
@@ -1229,18 +1435,29 @@ static void el_apply_remote_sdes(peer_echolink_t *p, const char *cname, const ch
             /* "HP3ICC Esteban" / "Conference [2/8]" → first token only. */
             el_copy_token(cand, sizeof(cand), paren);
             if (el_looks_like_callsign(cand)) {
-                copy_z(talker, sizeof(talker), cand);
+                copy_z(out, out_cap, cand);
                 from_paren = 1;
             }
         }
-        if (!talker[0]) {
+        if (!out[0]) {
             el_copy_token(cand, sizeof(cand), name);
             if (el_looks_like_callsign(cand))
-                copy_z(talker, sizeof(talker), cand);
+                copy_z(out, out_cap, cand);
         }
     }
-    if (!talker[0] && cname && cname[0] && el_looks_like_callsign(cname))
-        el_copy_token(talker, sizeof(talker), cname);
+    if (!out[0] && cname && cname[0] && el_looks_like_callsign(cname))
+        el_copy_token(out, out_cap, cname);
+    if (from_paren_out)
+        *from_paren_out = from_paren;
+}
+
+static void el_apply_remote_sdes(peer_echolink_t *p, const char *cname, const char *name)
+{
+    char talker[sizeof(p->remote_talker)];
+    int from_paren = 0;
+    time_t now;
+
+    el_derive_callsign(cname, name, talker, sizeof(talker), &from_paren);
     if (!talker[0] && p->host[0])
         copy_z(talker, sizeof(talker), p->host);
 
@@ -1275,20 +1492,26 @@ static void el_apply_remote_sdes(peer_echolink_t *p, const char *cname, const ch
                 (name && name[0]) ? name : "-");
 }
 
-/* Returns 1 if this is a K1RFD firewall OPEN (directory-relayed), else 0. */
-static int el_parse_sdes_packet(peer_echolink_t *p, const uint8_t *pkt, int plen)
+/*
+ * Parse an inbound RTCP SDES chunk, returning CNAME/NAME to the caller
+ * (out_cname/out_name, always NUL-terminated, empty if absent). Returns 1 if
+ * this is a K1RFD firewall OPEN (directory-relayed, not a peer link/talker
+ * update), 0 for a normal SDES, -1 on a malformed packet. The caller decides
+ * *where* to apply the result -- the configured outbound peer (unchanged
+ * el_apply_remote_sdes path) or an inbound[] slot.
+ */
+static int el_parse_sdes_packet(const uint8_t *pkt, int plen,
+                                char *out_cname, size_t cname_cap,
+                                char *out_name, size_t name_cap)
 {
-    char cname[64];
-    char name[64];
     char loc[32];
     int o;
     int count;
-    int is_open = 0;
 
+    out_cname[0] = '\0';
+    out_name[0] = '\0';
     if (plen < 8)
-        return 0;
-    cname[0] = '\0';
-    name[0] = '\0';
+        return -1;
     loc[0] = '\0';
     count = pkt[0] & 0x1f;
     o = 4; /* after RTCP common header */
@@ -1305,26 +1528,145 @@ static int el_parse_sdes_packet(peer_echolink_t *p, const uint8_t *pkt, int plen
                 break;
             }
             if (o + 2 + ilen > plen)
-                return 0;
+                return -1;
             if (type == EL_SDES_CNAME)
-                el_sdes_copy_item(cname, sizeof(cname), pkt + o + 2, ilen);
+                el_sdes_copy_item(out_cname, cname_cap, pkt + o + 2, ilen);
             else if (type == EL_SDES_NAME)
-                el_sdes_copy_item(name, sizeof(name), pkt + o + 2, ilen);
+                el_sdes_copy_item(out_name, name_cap, pkt + o + 2, ilen);
             else if (type == EL_SDES_LOC)
                 el_sdes_copy_item(loc, sizeof(loc), pkt + o + 2, ilen);
             o += 2 + ilen;
         }
     }
-    if (loc[0] && strcasecmp(loc, "OPEN") == 0)
-        is_open = 1;
-    if (is_open) {
+    if (loc[0] && strcasecmp(loc, "OPEN") == 0) {
         /* Directory-relayed punch request — not a peer link / talker update. */
         LOG_EL_DEBUG("echolink: got firewall OPEN from %s\n",
-                     cname[0] ? cname : "?");
+                     out_cname[0] ? out_cname : "?");
         return 1;
     }
-    el_apply_remote_sdes(p, cname, name);
     return 0;
+}
+
+/* blocked_callsigns is checked separately (and first) by the caller -- an
+ * explicit block always wins even if the same callsign is also listed in
+ * allowed_callsigns. */
+static int el_is_blocked_callsign(const peer_echolink_t *p, const char *cname)
+{
+    int i;
+
+    if (!cname || !cname[0])
+        return 0;
+    for (i = 0; i < p->blocked_callsign_count; i++)
+        if (el_same_station(p->blocked_callsigns[i], cname))
+            return 1;
+    return 0;
+}
+
+/* Case-insensitive lookup of `cname` in the allowed_callsigns allow-list.
+ * Empty list = nothing is authorized (no "open node" mode). */
+static int el_authorized_callsign(const peer_echolink_t *p, const char *cname)
+{
+    int i;
+
+    if (!cname || !cname[0])
+        return 0;
+    for (i = 0; i < p->allowed_callsign_count; i++)
+        if (el_same_station(p->allowed_callsigns[i], cname))
+            return 1;
+    return 0;
+}
+
+/*
+ * Dispatch an SDES from a source that is neither the configured outbound
+ * peer nor an already-accepted inbound[] slot: either a brand new inbound
+ * connection attempt, or a keepalive/update from one already accepted.
+ * Mirrors thelinkbox RTCP_Rx (conference.c): look up by source address,
+ * AuthorizedClient()-style allow-list check, then the capacity ceiling —
+ * simplified to a flat allowed_callsigns list and used_count>=max_inbound
+ * (no ACL trees / busy flag, not needed at this scale). Unauthorized or
+ * over-capacity attempts get a real RTCP BYE (GenBye format), not a silent
+ * drop.
+ */
+static void el_handle_inbound_sdes(peer_echolink_t *p, const struct sockaddr_in *from,
+                                   const char *cname, const char *name)
+{
+    int i;
+    int idx = -1, free_idx = -1, used_count = 0;
+    char norm[32];
+
+    if (p->max_inbound <= 0)
+        return; /* feature disabled -- identical to today's behavior */
+
+    for (i = 0; i < EL_MAX_INBOUND; i++) {
+        if (!p->inbound[i].used) {
+            if (free_idx < 0)
+                free_idx = i;
+            continue;
+        }
+        used_count++;
+        if (p->inbound[i].addr.sin_addr.s_addr == from->sin_addr.s_addr)
+            idx = i;
+    }
+
+    /* Most EchoLink clients send CNAME as the literal placeholder "CALLSIGN"
+     * with the real identity in NAME instead -- same derivation as the
+     * outbound-peer path (el_apply_remote_sdes), so a plain app connection
+     * doesn't get checked against the literal string "CALLSIGN". */
+    el_derive_callsign(cname, name, norm, sizeof(norm), NULL);
+
+    if (idx >= 0) {
+        /* Already-accepted inbound station: refresh identity/keepalive. */
+        if (norm[0])
+            copy_z(p->inbound[idx].cname, sizeof(p->inbound[idx].cname), norm);
+        p->inbound[idx].last_rtcp = time(NULL);
+        /* Under proxy, demux holds proxy.mu here -- sending would deadlock
+         * (same reason as the outbound-peer path below). Skip the reply;
+         * the station will retry the keepalive on its own timer. */
+        if (!p->use_proxy)
+            el_send_sdes_to(p, from->sin_addr);
+        return;
+    }
+
+    if (el_is_blocked_callsign(p, norm)) {
+        LOG_EL_WARNING("echolink: rejecting blocked inbound %s from %s\n",
+                       norm[0] ? norm : "?", inet_ntoa(from->sin_addr));
+        if (!p->use_proxy)
+            el_send_bye_to(p, from->sin_addr, "Blocked");
+        return;
+    }
+    if (!el_authorized_callsign(p, norm)) {
+        LOG_EL_WARNING("echolink: rejecting unauthorized inbound %s from %s\n",
+                       norm[0] ? norm : "?", inet_ntoa(from->sin_addr));
+        if (!p->use_proxy)
+            el_send_bye_to(p, from->sin_addr, "Not authorized");
+        return;
+    }
+    if (free_idx < 0 || used_count >= p->max_inbound) {
+        LOG_EL_WARNING("echolink: rejecting inbound %s from %s (node busy, %d/%d)\n",
+                       norm, inet_ntoa(from->sin_addr), used_count, p->max_inbound);
+        if (!p->use_proxy)
+            el_send_bye_to(p, from->sin_addr, "Node busy");
+        return;
+    }
+
+    memset(&p->inbound[free_idx], 0, sizeof(p->inbound[free_idx]));
+    p->inbound[free_idx].used = 1;
+    p->inbound[free_idx].addr = *from;
+    copy_z(p->inbound[free_idx].cname, sizeof(p->inbound[free_idx].cname), norm);
+    p->inbound[free_idx].last_rtcp = time(NULL);
+    LOG_EL_INFO("echolink: inbound connection accepted: %s from %s (%d/%d)\n",
+               norm, inet_ntoa(from->sin_addr), used_count + 1, p->max_inbound);
+    /* Same proxy.mu deadlock guard as above -- accepted state is tracked
+     * either way; under proxy the SDES ack just waits for the station's
+     * own retry (matches sdes_reply_pending's existing defer pattern for
+     * the outbound peer, not yet extended to per-inbound targets). */
+    if (!p->use_proxy) {
+        el_send_sdes_to(p, from->sin_addr);
+        /* Roster/welcome text -- same blob doubles as both (tlb convention),
+         * sent to the new station and re-broadcast to everyone else already
+         * connected so their "connected users" view stays current. */
+        el_broadcast_station_list(p);
+    }
 }
 
 static void el_handle_rtcp(peer_echolink_t *p, const uint8_t *data, int len,
@@ -1332,7 +1674,6 @@ static void el_handle_rtcp(peer_echolink_t *p, const uint8_t *data, int len,
 {
     int o = 0;
 
-    (void)from;
     while (o + 4 <= len) {
         uint8_t pt = data[o + 1];
         int words = (data[o + 2] << 8) | data[o + 3];
@@ -1341,11 +1682,12 @@ static void el_handle_rtcp(peer_echolink_t *p, const uint8_t *data, int len,
         if (plen < 4 || o + plen > len)
             break;
         if (pt == EL_RTCP_SDES) {
-            int just_linked = 0;
-            int is_open;
+            char cname[64];
+            char name[64];
+            int is_open = el_parse_sdes_packet(data + o, plen, cname, sizeof(cname),
+                                               name, sizeof(name));
 
-            is_open = el_parse_sdes_packet(p, data + o, plen);
-            if (is_open) {
+            if (is_open == 1) {
                 /*
                  * Reply with normal SDES toward our configured peer so any
                  * NAT mapping stays warm; do not mark linked on OPEN itself.
@@ -1354,7 +1696,12 @@ static void el_handle_rtcp(peer_echolink_t *p, const uint8_t *data, int len,
                     p->sdes_reply_pending = 1;
                 else
                     el_send_sdes(p);
-            } else {
+            } else if (is_open == 0 && from && p->peer_resolved
+                       && from->sin_addr.s_addr == p->peer_rtp.sin_addr.s_addr) {
+                /* Configured outbound peer -- unchanged from before. */
+                int just_linked = 0;
+
+                el_apply_remote_sdes(p, cname, name);
                 pthread_mutex_lock(&p->dir_mu);
                 p->last_peer_rtcp = time(NULL);
                 if (!p->linked) {
@@ -1373,18 +1720,38 @@ static void el_handle_rtcp(peer_echolink_t *p, const uint8_t *data, int len,
                     p->sdes_reply_pending = 1;
                 else
                     el_send_sdes(p);
+            } else if (is_open == 0 && from) {
+                el_handle_inbound_sdes(p, from, cname, name);
             }
         }
         o += plen;
     }
 }
 
-static void el_handle_rtp(peer_echolink_t *p, const uint8_t *data, int len)
+/* Identify which known source `from` is: -1 = unknown (no prior accepted
+ * SDES -- RTP from it is dropped, mirroring thelinkbox's requirement of a
+ * registered ConfClient before RTP_Data is processed), 0 = the configured
+ * outbound peer, i+1 = inbound[i]. */
+static int el_rtp_source_id(const peer_echolink_t *p, const struct sockaddr_in *from)
+{
+    int i;
+
+    if (p->peer_resolved && from->sin_addr.s_addr == p->peer_rtp.sin_addr.s_addr)
+        return 0;
+    for (i = 0; i < EL_MAX_INBOUND; i++)
+        if (p->inbound[i].used && p->inbound[i].addr.sin_addr.s_addr == from->sin_addr.s_addr)
+            return i + 1;
+    return -1;
+}
+
+static void el_handle_rtp(peer_echolink_t *p, const uint8_t *data, int len,
+                          const struct sockaddr_in *from)
 {
     gsm g = (gsm)p->gsm_dec;
     int16_t pcm[EL_GSM_SAMPLES];
     int i;
     int frames;
+    int src;
     time_t now;
     static unsigned rtp_dbg;
     static time_t rtp_dbg_last;
@@ -1397,6 +1764,30 @@ static void el_handle_rtp(peer_echolink_t *p, const uint8_t *data, int len)
                          len, EL_RTP_FRAME_LEN, p->host);
         return;
     }
+
+    src = el_rtp_source_id(p, from);
+    if (src < 0)
+        return; /* not an accepted source -- no SDES handshake yet */
+
+    now = time(NULL);
+    /* Single-talker arbitration across the outbound peer + inbound[]: the
+     * first source to key up owns the spurt; a different source is dropped
+     * while it's still recent, so two simultaneous EchoLink sources don't
+     * garble pcm_in (same principle as a per-timeslot source lock). */
+    if (p->talk_src >= 0 && p->talk_src != src
+        && (now - p->talk_last) < EL_TALK_HANG_SEC) {
+        return;
+    }
+    if (p->talk_src != src) {
+        /* New talker taking over (or first RTP after silence) -- update
+         * everyone's "connected users" view live so the "->" arrow moves,
+         * same feedback as a real conference. Not on every packet: only
+         * once per talk-spurt start. */
+        p->talk_src = src;
+        el_broadcast_station_list(p);
+    }
+    p->talk_last = now;
+
     frames = 4;
     for (i = 0; i < frames; i++) {
         const uint8_t *frame = data + 12 + i * EL_GSM_FRAME;
@@ -1404,18 +1795,21 @@ static void el_handle_rtp(peer_echolink_t *p, const uint8_t *data, int len)
             continue;
         pcm_ring_push(p, pcm, EL_GSM_SAMPLES);
     }
-    now = time(NULL);
     /* New talk spurt after >=2s idle → reset DEBUG counter. */
     if (rtp_dbg_last && (now - rtp_dbg_last) >= 2)
         rtp_dbg = 0;
     p->last_rtp_rx = now;
-    p->last_peer_rtcp = now; /* RTP also proves the peer path is alive */
     rtp_dbg_last = now;
     p->rtp_rx_packets++;
-    if (!p->linked) {
-        p->linked = 1;
-        p->status = PEER_EL_CONNECTED;
-        LOG_EL_INFO("echolink: linked to %s (first RTP)\n", p->host);
+    if (src == 0) {
+        p->last_peer_rtcp = now; /* RTP also proves the peer path is alive */
+        if (!p->linked) {
+            p->linked = 1;
+            p->status = PEER_EL_CONNECTED;
+            LOG_EL_INFO("echolink: linked to %s (first RTP)\n", p->host);
+        }
+    } else {
+        p->inbound[src - 1].last_rtp = now;
     }
     /* First packets of a spurt + every 25th while RX is active. */
     rtp_dbg++;
@@ -1424,23 +1818,29 @@ static void el_handle_rtp(peer_echolink_t *p, const uint8_t *data, int len)
                      rtp_dbg, len, p->pcm_in_count,
                      (unsigned)(data[1] & 0x7f),
                      (unsigned)((data[2] << 8) | data[3]),
-                     p->host);
+                     src == 0 ? p->host : p->inbound[src - 1].cname);
 }
 
 static void el_flush_rtp_tx(peer_echolink_t *p)
 {
     uint8_t pkt[EL_RTP_FRAME_LEN];
-    struct in_addr to;
+    struct in_addr targets[1 + EL_MAX_INBOUND];
+    int ntargets = 0;
     gsm g = (gsm)p->gsm_enc;
     int i;
 
-    pthread_mutex_lock(&p->dir_mu);
-    if (!g || p->pcm_out_count <= 0 || !el_rtp_ok(p)) {
-        pthread_mutex_unlock(&p->dir_mu);
+    if (!g || p->pcm_out_count <= 0)
         return;
-    }
-    to = p->peer_rtp.sin_addr;
+
+    pthread_mutex_lock(&p->dir_mu);
+    if (el_rtp_ok(p))
+        targets[ntargets++] = p->peer_rtp.sin_addr;
     pthread_mutex_unlock(&p->dir_mu);
+    for (i = 0; i < EL_MAX_INBOUND; i++)
+        if (p->inbound[i].used)
+            targets[ntargets++] = p->inbound[i].addr.sin_addr;
+    if (ntargets == 0)
+        return; /* nobody to send to yet -- leave pcm_out_count queued */
 
     /* Pad short final packet with silence so VTERM audio is not dropped. */
     if (p->pcm_out_count < EL_RTP_SAMPLES)
@@ -1462,7 +1862,12 @@ static void el_flush_rtp_tx(peer_echolink_t *p)
         gsm_encode(g, (gsm_signal *)(p->pcm_out + i * EL_GSM_SAMPLES),
                    (gsm_byte *)(pkt + 12 + i * EL_GSM_FRAME));
     }
-    el_send_udp_rtp(p, to, pkt, EL_RTP_FRAME_LEN);
+    /* Encoded once, fanned out to every currently connected station (the
+     * configured outbound peer, if resolved, plus every accepted inbound[]
+     * slot) -- same principle as thelinkbox/SvxLink relaying one talker's
+     * audio to all other conference members. */
+    for (i = 0; i < ntargets; i++)
+        el_send_udp_rtp(p, targets[i], pkt, EL_RTP_FRAME_LEN);
     p->pcm_out_count = 0;
     p->rtp_tx_packets++;
 }
@@ -1500,6 +1905,19 @@ int peer_el_open(peer_echolink_t *p, const adn_bridge_peer_el_t *cfg)
     /* Until inbound SDES arrives, treat connected node as remote identity. */
     if (p->host[0])
         copy_z(p->remote_talker, sizeof(p->remote_talker), p->host);
+    p->talk_src = -1;
+    p->max_inbound = cfg->max_inbound;
+    if (p->max_inbound > EL_MAX_INBOUND)
+        p->max_inbound = EL_MAX_INBOUND;
+    p->allowed_callsign_count = cfg->allowed_callsign_count;
+    for (i = 0; i < cfg->allowed_callsign_count && i < ADN_BRIDGE_EL_ALLOW_MAX; i++)
+        copy_z(p->allowed_callsigns[i], sizeof(p->allowed_callsigns[i]),
+               cfg->allowed_callsigns[i]);
+    p->blocked_callsign_count = cfg->blocked_callsign_count;
+    for (i = 0; i < cfg->blocked_callsign_count && i < ADN_BRIDGE_EL_ALLOW_MAX; i++)
+        copy_z(p->blocked_callsigns[i], sizeof(p->blocked_callsigns[i]),
+               cfg->blocked_callsigns[i]);
+    copy_z(p->welcome_text, sizeof(p->welcome_text), cfg->welcome_text);
     p->directory_server_count = cfg->directory_server_count;
     p->login_interval = cfg->login_interval;
     p->station_list_interval = cfg->station_list_interval;
@@ -1667,6 +2085,40 @@ void peer_el_tick(peer_echolink_t *p)
         pthread_mutex_unlock(&p->dir_mu);
         el_send_connect_handshake(p);
     }
+
+    /* Inbound EchoLink connections: same stale criterion as the configured
+     * outbound peer above, applied per slot. */
+    {
+        int i;
+        int any_removed = 0;
+
+        for (i = 0; i < EL_MAX_INBOUND; i++) {
+            if (!p->inbound[i].used)
+                continue;
+            if (now - p->inbound[i].last_rtcp >= EL_PEER_STALE_SEC
+                && now - p->inbound[i].last_rtp >= EL_PEER_STALE_SEC) {
+                LOG_EL_INFO("echolink: inbound %s silent %lds — disconnected\n",
+                           p->inbound[i].cname,
+                           (long)(now - p->inbound[i].last_rtcp));
+                if (p->talk_src == i + 1)
+                    p->talk_src = -1;
+                memset(&p->inbound[i], 0, sizeof(p->inbound[i]));
+                any_removed = 1;
+            }
+        }
+        /* Update everyone still connected's "connected users" view. */
+        if (any_removed && !p->use_proxy)
+            el_broadcast_station_list(p);
+    }
+
+    /* Current talker gone silent -> clear the "->" arrow and update everyone
+     * still connected (el_handle_rtp only ever runs while someone IS
+     * transmitting, so this tick-driven check is what detects release). */
+    if (p->talk_src >= 0 && now - p->talk_last >= EL_TALK_SILENCE_SEC) {
+        p->talk_src = -1;
+        if (!p->use_proxy)
+            el_broadcast_station_list(p);
+    }
 }
 
 int peer_el_poll(peer_echolink_t *p, int timeout_ms)
@@ -1716,7 +2168,7 @@ int peer_el_poll(peer_echolink_t *p, int timeout_ms)
         if (n <= 0)
             break;
         if (p->rx_buf[0] != 0x6f) {
-            el_handle_rtp(p, p->rx_buf, n);
+            el_handle_rtp(p, p->rx_buf, n, &from);
             drained = 1;
         }
     }
@@ -1814,6 +2266,22 @@ void peer_el_set_talker_name(peer_echolink_t *p, const char *name)
     else
         LOG_EL_INFO("echolink: talker NAME cleared (CNAME=%s)\n", p->callsign);
     el_send_sdes(p);
+}
+
+void peer_el_set_relay_label(peer_echolink_t *p, const char *label)
+{
+    char buf[sizeof(p->relay_label)];
+
+    if (!p)
+        return;
+    buf[0] = '\0';
+    if (label && label[0])
+        copy_z(buf, sizeof(buf), label);
+    if (strcmp(p->relay_label, buf) == 0)
+        return;
+    copy_z(p->relay_label, sizeof(p->relay_label), buf);
+    if (!p->use_proxy)
+        el_broadcast_station_list(p);
 }
 
 const char *peer_el_remote_talker(const peer_echolink_t *p)

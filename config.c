@@ -218,6 +218,44 @@ static void parse_directory_servers(adn_bridge_peer_el_t *el, const char *val)
     el->directory_server_count = n;
 }
 
+static void parse_callsign_list(const char *val, char list[][16], int *count)
+{
+    char buf[256];
+    char *tok, *save = NULL;
+    int n = 0;
+
+    if (!val || !*val)
+        return;
+    strncpy(buf, val, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    for (tok = strtok_r(buf, ", \t", &save); tok && n < ADN_BRIDGE_EL_ALLOW_MAX;
+         tok = strtok_r(NULL, ", \t", &save)) {
+        set_str(list[n], 16, tok);
+        n++;
+    }
+    *count = n;
+}
+
+/* Literal "\n" (backslash + 'n', two INI characters) becomes a real EchoLink
+ * line separator ('\r') so welcome_text can be multi-line in a single INI
+ * value. Any other backslash escape is left as-is (copied verbatim). */
+static void parse_welcome_text(char *dst, size_t dstlen, const char *val)
+{
+    size_t o = 0;
+
+    if (!val || !dst || dstlen == 0)
+        return;
+    for (; *val && o + 1 < dstlen; val++) {
+        if (val[0] == '\\' && val[1] == 'n') {
+            dst[o++] = '\r';
+            val++;
+        } else {
+            dst[o++] = *val;
+        }
+    }
+    dst[o] = '\0';
+}
+
 static int parse_peer_type(const char *val)
 {
     if (!val || !*val)
@@ -253,6 +291,7 @@ static adn_bridge_peer_t *find_or_add_peer(adn_bridge_config_t *cfg, const char 
     cfg->peers[i].u.el.login_interval = 360;
     cfg->peers[i].u.el.station_list_interval = 600;
     cfg->peers[i].u.el.gain = 1.0f;
+    cfg->peers[i].u.el.max_inbound = 1;
     return &cfg->peers[i];
 }
 
@@ -319,6 +358,14 @@ static void apply_peer_el_key(adn_bridge_peer_el_t *el, const char *key, const c
         set_str(el->email, sizeof(el->email), val);
     else if (strcmp(key, "directory_servers") == 0)
         parse_directory_servers(el, val);
+    else if (strcmp(key, "max_inbound") == 0)
+        set_int(&el->max_inbound, val);
+    else if (strcmp(key, "allowed_callsigns") == 0)
+        parse_callsign_list(val, el->allowed_callsigns, &el->allowed_callsign_count);
+    else if (strcmp(key, "blocked_callsigns") == 0)
+        parse_callsign_list(val, el->blocked_callsigns, &el->blocked_callsign_count);
+    else if (strcmp(key, "welcome_text") == 0)
+        parse_welcome_text(el->welcome_text, sizeof(el->welcome_text), val);
     else if (strcmp(key, "login_interval") == 0 || strcmp(key, "LoginInterval") == 0)
         set_int(&el->login_interval, val);
     else if (strcmp(key, "station_list_interval") == 0
@@ -667,6 +714,10 @@ static int validate_peer_el(const adn_bridge_peer_t *p, char *err, size_t errlen
     }
     if (el->gain <= 0.0f || el->gain > 4.0f) {
         snprintf(err, errlen, "[peer.%s] invalid gain (0 < gain <= 4)", p->name);
+        return -1;
+    }
+    if (el->max_inbound < 0) {
+        snprintf(err, errlen, "[peer.%s] invalid max_inbound (must be >= 0)", p->name);
         return -1;
     }
     return 0;
