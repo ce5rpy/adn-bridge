@@ -18,8 +18,10 @@
 
 #include "peer_dmr.h"
 #include "hbp/dmr_hbp.h"
+#include "log.h"
 
 #include <arpa/inet.h>
+#include <errno.h>
 #include <netdb.h>
 #include <stdio.h>
 #include <string.h>
@@ -56,7 +58,8 @@ static void send_rptc(peer_dmr_t *p)
 {
     uint8_t out[302];
     char body[294];
-    const char *desc = p->description[0] ? p->description : "ysf2dmrcon";
+    int id = get_dmrid(p->dmrid);
+    const char *desc = p->description[0] ? p->description : "adn-bridge";
     /* Monitor Linked Systems shows LOCATION only (not DESCRIPTION). */
     const char *loc = p->location[0] ? p->location
                     : (p->description[0] ? p->description : "");
@@ -75,18 +78,18 @@ static void send_rptc(peer_dmr_t *p)
     body[89] = p->slots ? (uint8_t)p->slots : (uint8_t)'0';
     pad_copy(body + 90, 124, "");
     pad_copy(body + 214, 40, p->software_id[0] ? p->software_id : "MMDVMHost");
-    pad_copy(body + 254, 40, p->package_id[0] ? p->package_id : "ysf2dmrcon");
+    pad_copy(body + 254, 40, p->package_id[0] ? p->package_id : "adn-bridge");
 
     memcpy(out, "RPTC", 4);
-    out[4] = (get_dmrid(1, 0) >> 24) & 0xff;
-    out[5] = (get_dmrid(1, 0) >> 16) & 0xff;
-    out[6] = (get_dmrid(1, 0) >> 8) & 0xff;
-    out[7] = (get_dmrid(1, 0) >> 0) & 0xff;
+    out[4] = (id >> 24) & 0xff;
+    out[5] = (id >> 16) & 0xff;
+    out[6] = (id >> 8) & 0xff;
+    out[7] = (id >> 0) & 0xff;
     memcpy(out + 8, body, sizeof(body));
 
     sendto(p->sock, out, sizeof(out), 0, (const struct sockaddr *)&p->peer, sizeof(p->peer));
-    fprintf(stderr, "DMR: RPTC sent (location=%s description=%s)\n",
-            loc[0] ? loc : "(empty)", desc);
+    LOG_DMR_DEBUG("DMR: RPTC sent (location=%s description=%s)\n",
+                 loc[0] ? loc : "(empty)", desc);
 }
 
 /*
@@ -100,6 +103,7 @@ static void send_rpto(peer_dmr_t *p)
     char out[200];
     size_t opt_len;
     int len;
+    int id = get_dmrid(p->dmrid);
 
     if (!p->options[0])
         return;
@@ -110,14 +114,14 @@ static void send_rpto(peer_dmr_t *p)
         opt_len = sizeof(out) - 9;
 
     memcpy(out, "RPTO", 4);
-    out[4] = (get_dmrid(1, 0) >> 24) & 0xff;
-    out[5] = (get_dmrid(1, 0) >> 16) & 0xff;
-    out[6] = (get_dmrid(1, 0) >> 8) & 0xff;
-    out[7] = (get_dmrid(1, 0) >> 0) & 0xff;
+    out[4] = (id >> 24) & 0xff;
+    out[5] = (id >> 16) & 0xff;
+    out[6] = (id >> 8) & 0xff;
+    out[7] = (id >> 0) & 0xff;
     memcpy(&out[8], p->options, opt_len);
     len = 8 + (int)opt_len;
     sendto(p->sock, out, len, 0, (const struct sockaddr *)&p->peer, sizeof(p->peer));
-    fprintf(stderr, "DMR: RPTO sent (OPTIONS=%s)\n", p->options);
+    LOG_DMR_DEBUG("DMR: RPTO sent (OPTIONS=%s)\n", p->options);
 }
 
 int peer_dmr_open(peer_dmr_t *p, const char *host, int port, const char *cs,
@@ -141,7 +145,7 @@ int peer_dmr_open(peer_dmr_t *p, const char *host, int port, const char *cs,
         strncpy(p->description, description, sizeof(p->description) - 1);
     if (location && location[0])
         strncpy(p->location, location, sizeof(p->location) - 1);
-    strncpy(p->package_id, "ysf2dmrcon", sizeof(p->package_id) - 1);
+    strncpy(p->package_id, "adn-bridge", sizeof(p->package_id) - 1);
     strncpy(p->software_id, "MMDVMHost", sizeof(p->software_id) - 1);
     memset(p->callsign, ' ', 10);
     {
@@ -152,33 +156,25 @@ int peer_dmr_open(peer_dmr_t *p, const char *host, int port, const char *cs,
         memcpy(p->callsign, cs, cs_len);
     }
 
-    dmrid = id;
-    host1_tg = tg;
-    host1_pw = p->password;
-    memcpy(callsign, p->callsign, 10);
-
     if ((p->sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-        perror("peer_dmr socket");
+        LOG_DMR_ERROR("peer_dmr: socket() failed: %s\n", strerror(errno));
         return -1;
     }
-    udp1 = p->sock;
 
     memset(&p->peer, 0, sizeof(p->peer));
     p->peer.sin_family = AF_INET;
     p->peer.sin_port = htons((uint16_t)port);
     hp = gethostbyname(host);
     if (!hp) {
-        fprintf(stderr, "peer_dmr: cannot resolve %s\n", host);
+        LOG_DMR_ERROR("peer_dmr: cannot resolve %s\n", host);
         return -1;
     }
     memcpy(&p->peer.sin_addr, hp->h_addr_list[0], hp->h_length);
-    host1 = p->peer;
 
-    host1_connect_status = DISCONNECTED;
     p->login_phase = 0;
-    pong_time1 = time(NULL);
+    p->pong_time = time(NULL);
     p->status = DISCONNECTED;
-    fprintf(stderr, "DMR peer: %s:%d TG %d (hotspot/HBP client)\n", host, port, tg);
+    LOG_DMR_INFO("DMR peer: %s:%d TG %d (hotspot/HBP client)\n", host, port, tg);
     return 0;
 }
 
@@ -198,49 +194,66 @@ int peer_dmr_connected(const peer_dmr_t *p)
 void peer_dmr_tick(peer_dmr_t *p)
 {
     time_t now = time(NULL);
+    int id;
 
-    if (host1_connect_status == DISCONNECTED) {
+    if (p->status == DISCONNECTED) {
         if (now < p->login_fail_until)
             return;
-        host1_connect_status = CONNECTING;
+        p->status = CONNECTING;
         p->login_phase = 0;
-        pong_time1 = now;
+        p->pong_time = now;
+        id = get_dmrid(p->dmrid);
         buf[0] = 'R'; buf[1] = 'P'; buf[2] = 'T'; buf[3] = 'L';
-        buf[4] = (get_dmrid(1, 0) >> 24) & 0xff;
-        buf[5] = (get_dmrid(1, 0) >> 16) & 0xff;
-        buf[6] = (get_dmrid(1, 0) >> 8) & 0xff;
-        buf[7] = (get_dmrid(1, 0) >> 0) & 0xff;
+        buf[4] = (id >> 24) & 0xff;
+        buf[5] = (id >> 16) & 0xff;
+        buf[6] = (id >> 8) & 0xff;
+        buf[7] = (id >> 0) & 0xff;
         sendto(p->sock, buf, 8, 0, (const struct sockaddr *)&p->peer, sizeof(p->peer));
-        fprintf(stderr, "DMR: RPTL sent...\n");
+        LOG_DMR_DEBUG("DMR: RPTL sent...\n");
     }
 
-    p->status = host1_connect_status;
-    if (host1_connect_status == CONNECTED) {
-        if (now - pong_time1 > TIMEOUT) {
-            host1_connect_status = DISCONNECTED;
+    if (p->status == CONNECTED) {
+        if (now - p->pong_time > TIMEOUT) {
             p->status = DISCONNECTED;
-            fprintf(stderr, "DMR: keepalive timeout, reconnecting...\n");
+            LOG_DMR_WARNING("DMR: keepalive timeout (no MSTPONG), reconnecting...\n");
         }
-    } else if (host1_connect_status == CONNECTING) {
-        if (now - pong_time1 > TIMEOUT * 2) {
-            fprintf(stderr, "DMR: login timeout, retrying...\n");
-            host1_connect_status = DISCONNECTED;
+    } else if (p->status == CONNECTING) {
+        if (now - p->pong_time > TIMEOUT * 2) {
+            LOG_DMR_WARNING("DMR: login timeout, retrying...\n");
+            p->status = DISCONNECTED;
         }
     }
 }
 
 static void handle_rx(peer_dmr_t *p)
 {
-    if (host1_connect_status == CONNECTED)
-        pong_time1 = time(NULL); /* any server traffic resets keepalive */
+    /* Keepalive is MSTPONG-only (narspt/dmrcon). Refreshing on any packet
+     * masked server restarts: MSTCL/stray traffic kept the session "alive"
+     * while RPTPING went unanswered. */
+    if (p->status == CONNECTED) {
+        if (memcmp(buf, "MSTCL", 5) == 0) {
+            LOG_DMR_WARNING("DMR: MSTCL from server — disconnected, will reconnect\n");
+            p->status = DISCONNECTED;
+            return;
+        }
+        if (memcmp(buf, "MSTNAK", 6) == 0) {
+            LOG_DMR_WARNING("DMR: MSTNAK while connected — disconnected, will reconnect\n");
+            p->status = DISCONNECTED;
+            p->login_fail_until = time(NULL) + 3;
+            return;
+        }
+        if (memcmp(buf, "MSTPONG", 7) == 0)
+            p->pong_time = time(NULL);
+    }
 
-    if (host1_connect_status == CONNECTING) {
+    if (p->status == CONNECTING) {
         if (memcmp(buf, "RPTACK", 6) == 0) {
             switch (p->login_phase) {
             case 0:
-                host1_connect_status = process_connect(host1_connect_status, (char *)buf, 1);
+                p->status = process_connect(p->status, (char *)buf, 1, p->sock,
+                                            &p->peer, p->password, p->dmrid);
                 p->login_phase = 1;
-                fprintf(stderr, "DMR: RPTK sent, waiting RPTACK...\n");
+                LOG_DMR_DEBUG("DMR: RPTK sent, waiting RPTACK...\n");
                 break;
             case 1:
                 send_rptc(p);
@@ -250,31 +263,30 @@ static void handle_rx(peer_dmr_t *p)
                 if (p->options[0]) {
                     send_rpto(p);
                     p->login_phase = 3;
-                    fprintf(stderr, "DMR: waiting RPTACK for RPTO...\n");
+                    LOG_DMR_DEBUG("DMR: waiting RPTACK for RPTO...\n");
                 } else {
-                    host1_connect_status = CONNECTED;
+                    p->status = CONNECTED;
                     p->login_phase = 4;
-                    pong_time1 = time(NULL);
-                    fprintf(stderr, "DMR: login complete — peer registered (no RPTO)\n");
+                    p->pong_time = time(NULL);
+                    LOG_DMR_INFO("DMR: login complete — peer registered (no RPTO)\n");
                 }
                 break;
             case 3:
-                host1_connect_status = CONNECTED;
+                p->status = CONNECTED;
                 p->login_phase = 4;
-                pong_time1 = time(NULL);
-                fprintf(stderr, "DMR: login complete — peer registered on server\n");
+                p->pong_time = time(NULL);
+                LOG_DMR_INFO("DMR: login complete — peer registered on server\n");
                 break;
             default:
                 break;
             }
         } else if (memcmp(buf, "MSTNAK", 6) == 0) {
-            fprintf(stderr, "DMR: login rejected (MSTNAK) at phase %d — check ID/callsign/password\n",
-                    p->login_phase);
-            host1_connect_status = DISCONNECTED;
+            LOG_DMR_WARNING("DMR: login rejected (MSTNAK) at phase %d — check ID/callsign/password\n",
+                            p->login_phase);
+            p->status = DISCONNECTED;
             p->login_fail_until = time(NULL) + 3;
         }
     }
-    p->status = host1_connect_status;
 }
 
 int peer_dmr_poll(peer_dmr_t *p, int timeout_ms, int *from_peer)
@@ -309,19 +321,24 @@ int peer_dmr_poll(peer_dmr_t *p, int timeout_ms, int *from_peer)
 
 void peer_dmr_send(peer_dmr_t *p, const uint8_t *data, int len)
 {
+    /* DMRD / app traffic only while registered. Login uses sendto() directly. */
+    if (p->status != CONNECTED)
+        return;
     sendto(p->sock, data, len, 0, (const struct sockaddr *)&p->peer, sizeof(p->peer));
 }
 
 void peer_dmr_on_sigint(peer_dmr_t *p)
 {
     if (p->sock >= 0) {
-        if (host1_connect_status == CONNECTED) {
+        if (p->status == CONNECTED) {
             uint8_t b[20];
+            int id = get_dmrid(p->dmrid);
+
             b[0] = 'R'; b[1] = 'P'; b[2] = 'T'; b[3] = 'C'; b[4] = 'L';
-            b[5] = (get_dmrid(1, 0) >> 24) & 0xff;
-            b[6] = (get_dmrid(1, 0) >> 16) & 0xff;
-            b[7] = (get_dmrid(1, 0) >> 8) & 0xff;
-            b[8] = (get_dmrid(1, 0) >> 0) & 0xff;
+            b[5] = (id >> 24) & 0xff;
+            b[6] = (id >> 16) & 0xff;
+            b[7] = (id >> 8) & 0xff;
+            b[8] = (id >> 0) & 0xff;
             sendto(p->sock, b, 9, 0, (const struct sockaddr *)&p->peer, sizeof(p->peer));
         }
         peer_dmr_close(p);
@@ -330,15 +347,16 @@ void peer_dmr_on_sigint(peer_dmr_t *p)
 
 void peer_dmr_on_alarm(peer_dmr_t *p)
 {
-    if (host1_connect_status != CONNECTED)
+    if (p->status != CONNECTED)
         return;
     uint8_t b[20];
     const char tag[] = { 'R','P','T','P','I','N','G' };
+    int id = get_dmrid(p->dmrid);
+
     memcpy(b, tag, 7);
-    b[7] = (get_dmrid(1, 0) >> 24) & 0xff;
-    b[8] = (get_dmrid(1, 0) >> 16) & 0xff;
-    b[9] = (get_dmrid(1, 0) >> 8) & 0xff;
-    b[10] = (get_dmrid(1, 0) >> 0) & 0xff;
+    b[7] = (id >> 24) & 0xff;
+    b[8] = (id >> 16) & 0xff;
+    b[9] = (id >> 8) & 0xff;
+    b[10] = (id >> 0) & 0xff;
     sendto(p->sock, b, 11, 0, (const struct sockaddr *)&p->peer, sizeof(p->peer));
-    (void)p;
 }

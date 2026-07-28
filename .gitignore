@@ -1,11 +1,20 @@
-ysf2dmrcon
+adn-bridge
 build/
+tests/test_wire
+tests/test_codecs
+tests/test_router
+tests/test_config_peers
+tests/test_codec_plan
+tests/test_media_core
+tests/test_log
+tests/*.d
 data/
 debug/
+docs-priv/
 
-# Local instance configs (keep the template tracked)
+# Local instance configs (templates stay under examples/)
 *.ini
-!ysf2dmrcon.example.ini
-!ysf2dmrcon-ysf-dmr.example.ini
-!ysf2dmrcon-echolink-dmr.example.ini
-!ysf2dmrcon-echolink-ysf.example.ini
+!examples/*.example.ini
+# Keep directory in git; ignore local INIs (also covered by *.ini above)
+config/*
+!config/.gitkeep

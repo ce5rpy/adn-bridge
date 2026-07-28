@@ -1,0 +1,34 @@
+# Example systemd unit for one adn-bridge instance.
+#
+# Install (binary/INI via make install; this unit stays in examples/):
+#   sudo cp examples/adn-bridge.service /etc/systemd/system/mysite.service
+#   # edit paths / Description / SyslogIdentifier / -c INI
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now mysite.service
+#
+# Prefer the instance template (adn-bridge@.service) when you run several bridges.
+#
+# [log] in the INI: `handlers = console` avoids a duplicate timestamp in
+# journalctl (systemd already stamps each line); omit `handlers` entirely to
+# auto-detect the same thing. For `handlers = file-timed` + `file = ...`,
+# rotate with logrotate's postrotate sending SIGUSR2 (no restart needed):
+#   systemctl kill -s USR2 adn-bridge.service
+
+[Unit]
+Description=adn-bridge bridge (edit me)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=root
+Type=simple
+Restart=always
+RestartSec=3
+SyslogIdentifier=adn-bridge
+WorkingDirectory=/opt/adn-bridge
+ExecStart=/opt/adn-bridge/adn-bridge -c /opt/adn-bridge/config/adn-bridge.ini
+KillSignal=SIGINT
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

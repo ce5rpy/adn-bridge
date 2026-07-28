@@ -16,8 +16,8 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#ifndef YSF2DMR_ALIASES_H
-#define YSF2DMR_ALIASES_H
+#ifndef ADN_BRIDGE_ALIASES_H
+#define ADN_BRIDGE_ALIASES_H
 
 #include <stddef.h>
 
@@ -36,32 +36,32 @@ typedef struct {
     char local_subscriber_file[64];
     char checksum_file[64];
     char checksum_url[256];
-} ysf2dmr_aliases_cfg_t;
+} adn_bridge_aliases_cfg_t;
 
-typedef struct ysf2dmr_aliases ysf2dmr_aliases_t;
+typedef struct adn_bridge_aliases adn_bridge_aliases_t;
 
-void ysf2dmr_aliases_cfg_init(ysf2dmr_aliases_cfg_t *cfg);
+void adn_bridge_aliases_cfg_init(adn_bridge_aliases_cfg_t *cfg);
 
 /* Download (if enabled) and load subscriber alias files. Returns 0 on success. */
-int ysf2dmr_aliases_load(const ysf2dmr_aliases_cfg_t *cfg, ysf2dmr_aliases_t **out);
+int adn_bridge_aliases_load(const adn_bridge_aliases_cfg_t *cfg, adn_bridge_aliases_t **out);
 
 /* Periodic maintenance: re-download when stale/checksum mismatch; and/or
  * rebuild RAM when on-disk mtime is newer than the last load (reload_minutes).
  * Returns 1 if the table was replaced, 0 if unchanged, -1 on failure
  * (previous table kept). */
-int ysf2dmr_aliases_maybe_refresh(const ysf2dmr_aliases_cfg_t *cfg,
-                                  ysf2dmr_aliases_t **aliases);
+int adn_bridge_aliases_maybe_refresh(const adn_bridge_aliases_cfg_t *cfg,
+                                  adn_bridge_aliases_t **aliases);
 
-void ysf2dmr_aliases_free(ysf2dmr_aliases_t *aliases);
+void adn_bridge_aliases_free(adn_bridge_aliases_t *aliases);
 
 /* callsign -> primary DMR ID; 0 if unknown.
  * Backing store: open-addressing tables. Every ID is in id→callsign
  * (7300391 and 7300392 → CE5RPY on DMR→YSF). Returns first file-order ID
  * for YSF→DMR (local overlay may overwrite the primary). */
-int ysf2dmr_alias_lookup_id(const ysf2dmr_aliases_t *aliases, const char *callsign);
+int adn_bridge_alias_lookup_id(const adn_bridge_aliases_t *aliases, const char *callsign);
 
 /* DMR ID -> callsign padded to 10 chars; exact id match (DMR->YSF). */
-int ysf2dmr_alias_lookup_callsign(const ysf2dmr_aliases_t *aliases, int dmrid,
+int adn_bridge_alias_lookup_callsign(const adn_bridge_aliases_t *aliases, int dmrid,
                                   char out[10]);
 
 #endif

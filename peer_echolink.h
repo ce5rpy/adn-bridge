@@ -61,7 +61,7 @@ typedef struct {
     char remote_talker[32];
     /* 1 = talker came from NAME parentheses (real user); keep across Conference status. */
     int remote_talker_explicit;
-    char directory_servers[YSF2DMR_EL_DIR_MAX][128];
+    char directory_servers[ADN_BRIDGE_EL_DIR_MAX][128];
     int directory_server_count;
     int status; /* PEER_EL_* */
     int linked; /* RTCP SDES seen from peer */
@@ -104,10 +104,9 @@ typedef struct {
     int sdes_reply_pending;
 } peer_echolink_t;
 
-int peer_el_open(peer_echolink_t *p, const ysf2dmr_echolink_cfg_t *cfg);
+int peer_el_open(peer_echolink_t *p, const adn_bridge_peer_el_t *cfg);
 void peer_el_close(peer_echolink_t *p);
 void peer_el_tick(peer_echolink_t *p);
-int peer_el_linked(const peer_echolink_t *p);
 /* Poll RTP/RTCP; returns samples available in pcm_in (>0), or 0. */
 int peer_el_poll(peer_echolink_t *p, int timeout_ms);
 /* Read up to max_samples of inbound PCM (8 kHz s16 LE). Returns samples read. */
@@ -122,8 +121,6 @@ void peer_el_drop_pcm_in(peer_echolink_t *p);
 void peer_el_set_talker_name(peer_echolink_t *p, const char *name);
 /* Best remote identity for EL→DMR/YSF (talker, else CNAME, else host). */
 const char *peer_el_remote_talker(const peer_echolink_t *p);
-/* 1 = current remote_talker came from NAME parentheses (real user). */
-int peer_el_remote_talker_explicit(const peer_echolink_t *p);
 /* After EL→DMR/YSF hangtime: drop sticky user talker so the next QSO starts clean. */
 void peer_el_clear_remote_talker(peer_echolink_t *p);
 void peer_el_on_sigint(peer_echolink_t *p);

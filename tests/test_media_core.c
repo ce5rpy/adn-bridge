@@ -1,0 +1,507 @@
+/*
+ * Unit checks for media_core stub (Fase 1: contracts, no session logic yet).
+ *
+ * Copyright (C) 2026  Rodrigo Pérez, CE5RPY <ce5rpy@qmd.cl>
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "media/core.h"
+#include "media/core_echolink.h"
+#include "media/peer_bus.h"
+#include "media/router.h"
+
+static void test_init_defaults(void)
+{
+    media_core_t core;
+
+    media_core_init(&core);
+    assert(core.leg_ysf_dmr.phase == MEDIA_CALL_IDLE);
+    assert(core.leg_el.phase == MEDIA_CALL_IDLE);
+    assert(core.dmr_slot_bit == 0x80);
+    assert(core.use_vocoder == 0);
+}
+
+static void test_bind_sets_use_vocoder(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_codec_plan_t plan;
+
+    media_router_init(&r);
+    media_router_add_peer_cfg(&r, MEDIA_PEER_ECHOLINK, 0, 1);
+    media_router_add_peer_cfg(&r, MEDIA_PEER_DMR, 1, 1);
+    media_codec_plan_build(&r, &plan);
+
+    media_core_init(&core);
+    media_core_bind(&core, &r, NULL, &plan, NULL);
+    assert(core.use_vocoder == 1);
+}
+
+static void test_ingress_drops_when_blocked(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_bus_frame_t frame;
+    int dmr, ysf;
+
+    media_router_init(&r);
+    dmr = media_router_add_peer(&r, MEDIA_PEER_DMR);
+    ysf = media_router_add_peer(&r, MEDIA_PEER_YSF);
+
+    media_core_init(&core);
+    media_core_bind(&core, &r, NULL, NULL, NULL);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.kind = MEDIA_FRAME_VOICE;
+    frame.codec = CODEC_DMR_AMBE;
+
+    /* dmr becomes active ingress; ysf must be blocked until dmr releases it. */
+    media_router_ingress_begin(&r, dmr);
+    assert(media_router_ingress_allowed(&r, ysf) == 0);
+    media_core_ingress(&core, ysf, &frame); /* must not assert / must be a no-op */
+    assert(media_router_ingress_allowed(&r, dmr) == 1);
+
+    media_router_ingress_end(&r, dmr);
+    assert(media_router_ingress_allowed(&r, ysf) == 1);
+}
+
+static void setup_ysf_dmr_bus(media_peer_bus_t *bus, media_router_t *r, int dmr_id, int ysf_id)
+{
+    memset(bus, 0, sizeof(*bus));
+    bus->router = r;
+    bus->n_slots = 2;
+
+    bus->slots[0].router_id = dmr_id;
+    bus->slots[0].kind = MEDIA_PEER_DMR;
+    bus->slots[0].open = 1;
+    bus->slots[0].u.dmr.sock = -1;
+    bus->slots[0].u.dmr.dmrid = 7141001;
+    bus->slots[0].u.dmr.tg = 7141;
+    memset(bus->slots[0].u.dmr.callsign, ' ', sizeof(bus->slots[0].u.dmr.callsign));
+
+    bus->slots[1].router_id = ysf_id;
+    bus->slots[1].kind = MEDIA_PEER_YSF;
+    bus->slots[1].open = 1;
+    bus->slots[1].u.ysf.sock = -1;
+    memset(bus->slots[1].u.ysf.callsign, ' ', sizeof(bus->slots[1].u.ysf.callsign));
+}
+
+/* DMR call-begin must take router ingress and carry stream_id/seq from the
+ * frame into core state (media/core_ysf_dmr.c: core_begin_dmr_to_ysf). */
+static void test_dmr_call_begin_takes_ingress(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    media_bus_frame_t frame;
+    int dmr_id, ysf_id;
+
+    media_router_init(&r);
+    dmr_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+    ysf_id = media_router_add_peer(&r, MEDIA_PEER_YSF);
+    setup_ysf_dmr_bus(&bus, &r, dmr_id, ysf_id);
+
+    media_core_init(&core);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.kind = MEDIA_FRAME_CALL_BEGIN;
+    frame.codec = CODEC_DMR_AMBE;
+    frame.meta.stream_id = 42;
+    frame.meta.talker_id = 7141001;
+    frame.wire_seq = 5;
+    memset(frame.meta.netcall.net_src, ' ', 10);
+    memcpy(frame.meta.netcall.net_src, "TESTCALL", 8);
+
+    media_core_ingress(&core, dmr_id, &frame);
+
+    assert(core.leg_ysf_dmr.phase == MEDIA_CALL_TX_TO_PEER);
+    assert(media_router_active_ingress(&r) == dmr_id);
+    assert(core.leg_ysf_dmr.call.stream_id == 42);
+    assert(core.leg_ysf_dmr.dmr_seq == 5);
+    assert(core.leg_ysf_dmr.call.talker_id == 7141001);
+}
+
+/*
+ * Faithful bug-for-bug parity with bridge.c: both directions share a single
+ * call phase (like adn_bridge_t.call_active), so a YSF call-begin while a DMR
+ * call is already active does NOT reset/steal — it is treated as a
+ * continuation (feeds modeconv_put_ysf_header, does not touch router state).
+ * This is v0.3.1's actual behaviour, not a design choice of this refactor —
+ * see docs-priv/media-bus-dumb-modes-plan.md correction #4 / risk table.
+ */
+static void test_shared_phase_no_cross_peer_preempt(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    media_bus_frame_t frame;
+    int dmr_id, ysf_id;
+
+    media_router_init(&r);
+    dmr_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+    ysf_id = media_router_add_peer(&r, MEDIA_PEER_YSF);
+    setup_ysf_dmr_bus(&bus, &r, dmr_id, ysf_id);
+
+    media_core_init(&core);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.kind = MEDIA_FRAME_CALL_BEGIN;
+    frame.codec = CODEC_DMR_AMBE;
+    frame.meta.stream_id = 1;
+    frame.meta.talker_id = 7141001;
+    media_core_ingress(&core, dmr_id, &frame);
+    assert(media_router_active_ingress(&r) == dmr_id);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.kind = MEDIA_FRAME_CALL_BEGIN;
+    frame.codec = CODEC_YSF_AMBE;
+    frame.meta.talker_id = 99;
+    media_core_ingress(&core, ysf_id, &frame);
+
+    /* Router ingress untouched — DMR is still the "active" peer of record. */
+    assert(media_router_active_ingress(&r) == dmr_id);
+    assert(core.leg_ysf_dmr.phase == MEDIA_CALL_TX_TO_PEER);
+}
+
+/* DMR call-begin in an EL<->DMR layout must take RX_FROM_PEER phase (the
+ * "peer -> EL" leg) — media/core_echolink.c: core_el_dmr_ingress_dmr. */
+static void test_el_dmr_call_begin_takes_rx_phase(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    media_bus_frame_t frame;
+    int el_id, dmr_id;
+
+    media_router_init(&r);
+    el_id = media_router_add_peer(&r, MEDIA_PEER_ECHOLINK);
+    dmr_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+
+    memset(&bus, 0, sizeof(bus));
+    bus.router = &r;
+    bus.n_slots = 2;
+    bus.slots[0].router_id = el_id;
+    bus.slots[0].kind = MEDIA_PEER_ECHOLINK;
+    bus.slots[0].open = 1;
+    bus.slots[1].router_id = dmr_id;
+    bus.slots[1].kind = MEDIA_PEER_DMR;
+    bus.slots[1].open = 1;
+    bus.slots[1].u.dmr.sock = -1;
+    bus.slots[1].u.dmr.dmrid = 7141001;
+    bus.slots[1].u.dmr.tg = 7141;
+
+    media_core_init(&core);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.kind = MEDIA_FRAME_CALL_BEGIN;
+    frame.codec = CODEC_DMR_AMBE;
+    frame.meta.stream_id = 7;
+
+    media_core_ingress(&core, dmr_id, &frame);
+
+    assert(core.leg_el.phase == MEDIA_CALL_RX_FROM_PEER);
+    assert(core.leg_el.dmr_rx_stream_id == 7);
+    assert(media_router_active_ingress(&r) == dmr_id);
+}
+
+/* A connect-PTT burst on a DMR slot must pause EL->DMR AMBE encoding too
+ * (core_el_dmr_process_el_audio), not just the ModeConv drain
+ * (core_el_dmr_pace_tx) — otherwise core->mc_el's ring buffer fills while
+ * draining is paused, desyncing ModeConv's internal frame counter from the
+ * buffer's real contents (a real bug hit in production, inherited unchanged
+ * from v0.3.1's bridge_el.c: both process_el_audio functions lacked this
+ * gate that pace_tx always had). */
+static void test_el_dmr_process_el_audio_pauses_during_connect_ptt(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    media_codec_plan_t plan;
+    media_peer_slot_t *dmr_slot;
+    int el_id, dmr_id;
+    int i;
+
+    media_router_init(&r);
+    el_id = media_router_add_peer(&r, MEDIA_PEER_ECHOLINK);
+    dmr_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+    media_codec_plan_build(&r, &plan);
+
+    memset(&bus, 0, sizeof(bus));
+    bus.router = &r;
+    bus.n_slots = 2;
+    bus.slots[0].router_id = el_id;
+    bus.slots[0].kind = MEDIA_PEER_ECHOLINK;
+    bus.slots[0].open = 1;
+    bus.slots[1].router_id = dmr_id;
+    bus.slots[1].kind = MEDIA_PEER_DMR;
+    bus.slots[1].open = 1;
+    bus.slots[1].u.dmr.sock = -1;
+    bus.slots[1].u.dmr.dmrid = 7141001;
+    bus.slots[1].u.dmr.tg = 7141;
+    bus.slots[1].u.dmr.status = PEER_DMR_CONNECTED;
+
+    media_core_init(&core);
+    media_core_bind(&core, &r, &bus, &plan, NULL);
+    assert(core.use_vocoder == 1); /* EL+DMR always needs the PCM hub */
+
+    /* Pretend 160 samples of EL RTP audio already arrived. */
+    for (i = 0; i < 160; i++)
+        bus.slots[0].u.el.pcm_in[i] = 100;
+    bus.slots[0].u.el.pcm_in_count = 160;
+
+    dmr_slot = media_peer_bus_slot_mut(&bus, dmr_id);
+    dmr_slot->cp_active = 1; /* connect-PTT burst in progress on this DMR peer */
+
+    core_el_dmr_process_el_audio(&core);
+
+    /* Paused: nothing drained from EL's own jitter buffer. */
+    assert(bus.slots[0].u.el.pcm_in_count == 160);
+}
+
+/* YSF call-begin in an EL<->YSF layout must take RX_FROM_PEER phase —
+ * media/core_echolink.c: core_el_ysf_ingress_ysf. */
+static void test_el_ysf_call_begin_takes_rx_phase(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    media_bus_frame_t frame;
+    int el_id, ysf_id;
+
+    media_router_init(&r);
+    el_id = media_router_add_peer(&r, MEDIA_PEER_ECHOLINK);
+    ysf_id = media_router_add_peer(&r, MEDIA_PEER_YSF);
+
+    memset(&bus, 0, sizeof(bus));
+    bus.router = &r;
+    bus.n_slots = 2;
+    bus.slots[0].router_id = el_id;
+    bus.slots[0].kind = MEDIA_PEER_ECHOLINK;
+    bus.slots[0].open = 1;
+    bus.slots[1].router_id = ysf_id;
+    bus.slots[1].kind = MEDIA_PEER_YSF;
+    bus.slots[1].open = 1;
+    bus.slots[1].u.ysf.sock = -1;
+
+    media_core_init(&core);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.kind = MEDIA_FRAME_CALL_BEGIN;
+    frame.codec = CODEC_YSF_AMBE;
+    memset(frame.meta.netcall.net_src, ' ', 10);
+    memcpy(frame.meta.netcall.net_src, "N0CALL", 6);
+
+    media_core_ingress(&core, ysf_id, &frame);
+
+    assert(core.leg_el.phase == MEDIA_CALL_RX_FROM_PEER);
+    assert(media_router_active_ingress(&r) == ysf_id);
+    assert(memcmp(core.leg_el.call.netcall.net_src, "N0CALL", 6) == 0);
+}
+
+/* Fase 5: fan-out to >1 DMR destination must give each connection its own
+ * seq/stream, not one shared across all of them (media_peer_slot_t.dmr_tx_*,
+ * reset by core_reset_dmr_tx_slots in core_ysf_dmr.c/core_echolink.c). */
+static void test_multi_dmr_fanout_gets_distinct_tx_state(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    media_bus_frame_t frame;
+    int ysf_id, dmr1_id, dmr2_id;
+    media_peer_slot_t *s1, *s2;
+
+    media_router_init(&r);
+    ysf_id = media_router_add_peer(&r, MEDIA_PEER_YSF);
+    dmr1_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+    dmr2_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+
+    memset(&bus, 0, sizeof(bus));
+    bus.router = &r;
+    bus.n_slots = 3;
+    bus.slots[0].router_id = ysf_id;
+    bus.slots[0].kind = MEDIA_PEER_YSF;
+    bus.slots[0].open = 1;
+    bus.slots[0].u.ysf.sock = -1;
+    bus.slots[1].router_id = dmr1_id;
+    bus.slots[1].kind = MEDIA_PEER_DMR;
+    bus.slots[1].open = 1;
+    bus.slots[1].u.dmr.sock = -1;
+    bus.slots[1].u.dmr.dmrid = 7141001;
+    bus.slots[1].u.dmr.tg = 7141;
+    bus.slots[2].router_id = dmr2_id;
+    bus.slots[2].kind = MEDIA_PEER_DMR;
+    bus.slots[2].open = 1;
+    bus.slots[2].u.dmr.sock = -1;
+    bus.slots[2].u.dmr.dmrid = 7141002;
+    bus.slots[2].u.dmr.tg = 7142;
+
+    media_core_init(&core);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.kind = MEDIA_FRAME_CALL_BEGIN;
+    frame.codec = CODEC_YSF_AMBE;
+    frame.meta.talker_id = 7141001;
+    memset(frame.meta.netcall.net_src, ' ', 10);
+    memcpy(frame.meta.netcall.net_src, "TESTCALL", 8);
+
+    media_core_ingress(&core, ysf_id, &frame);
+
+    s1 = media_peer_bus_slot_mut(&bus, dmr1_id);
+    s2 = media_peer_bus_slot_mut(&bus, dmr2_id);
+    assert(s1 && s2);
+    assert(s1->dmr_tx_seq == 0 && s2->dmr_tx_seq == 0);
+    assert(s1->dmr_tx_stream_id != 0 && s2->dmr_tx_stream_id != 0);
+    /* Each destination gets its own bridge_new_stream_id() call — sharing
+     * one field across destinations is exactly the bug Fase 5 fixes. */
+    assert(s1->dmr_tx_stream_id != s2->dmr_tx_stream_id);
+}
+
+/* Fase 7: pure same-kind relay (the "diagonal") — 2 DMR peers, no YSF/EL at
+ * all. Config validation used to reject this outright ("unsupported peer
+ * mix"); media/core_relay.c now relays it wire-only. Relay never touches
+ * core.leg_*.phase (see media/core_relay.c) — only the router's shared
+ * active_ingress marks who's on the air. */
+static void test_dmr_relay_two_peers(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    media_bus_frame_t frame;
+    int dmr1_id, dmr2_id;
+    media_peer_slot_t *s2;
+
+    media_router_init(&r);
+    dmr1_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+    dmr2_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+
+    memset(&bus, 0, sizeof(bus));
+    bus.router = &r;
+    bus.n_slots = 2;
+    bus.slots[0].router_id = dmr1_id;
+    bus.slots[0].kind = MEDIA_PEER_DMR;
+    bus.slots[0].open = 1;
+    bus.slots[0].u.dmr.sock = -1;
+    bus.slots[0].u.dmr.dmrid = 7141001;
+    bus.slots[0].u.dmr.tg = 7141;
+    bus.slots[1].router_id = dmr2_id;
+    bus.slots[1].kind = MEDIA_PEER_DMR;
+    bus.slots[1].open = 1;
+    bus.slots[1].u.dmr.sock = -1;
+    bus.slots[1].u.dmr.dmrid = 7141002;
+    bus.slots[1].u.dmr.tg = 7142;
+
+    media_core_init(&core);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.kind = MEDIA_FRAME_CALL_BEGIN;
+    frame.codec = CODEC_DMR_AMBE;
+    frame.meta.talker_id = 7141001;
+
+    media_core_ingress(&core, dmr1_id, &frame);
+
+    assert(media_router_active_ingress(&r) == dmr1_id);
+    /* Relay is phase-less by design — neither leg is touched. */
+    assert(core.leg_ysf_dmr.phase == MEDIA_CALL_IDLE);
+    assert(core.leg_el.phase == MEDIA_CALL_IDLE);
+    s2 = media_peer_bus_slot_mut(&bus, dmr2_id);
+    assert(s2 && s2->dmr_tx_stream_id != 0);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.kind = MEDIA_FRAME_CALL_END;
+    frame.codec = CODEC_DMR_AMBE;
+    frame.meta.talker_id = 7141001;
+    media_core_ingress(&core, dmr1_id, &frame);
+
+    assert(media_router_active_ingress(&r) == -1);
+}
+
+/* Fase 7: a 3+-kind bus can fire relay, direct (ModeConv) and pcm (vocoder)
+ * for the same source frame at once — verifies the independent leg-state
+ * split (media_leg_ysf_dmr_t/media_leg_el_t) actually prevents the two
+ * cross-kind pathways from clobbering each other's phase. */
+static void test_three_kind_bus_relay_direct_pcm_concurrent(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    media_bus_frame_t frame;
+    int dmr1_id, dmr2_id, ysf_id, el_id;
+    media_peer_slot_t *s2;
+
+    media_router_init(&r);
+    dmr1_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+    dmr2_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+    ysf_id = media_router_add_peer(&r, MEDIA_PEER_YSF);
+    el_id = media_router_add_peer(&r, MEDIA_PEER_ECHOLINK);
+
+    memset(&bus, 0, sizeof(bus));
+    bus.router = &r;
+    bus.n_slots = 4;
+    bus.slots[0].router_id = dmr1_id;
+    bus.slots[0].kind = MEDIA_PEER_DMR;
+    bus.slots[0].open = 1;
+    bus.slots[0].u.dmr.sock = -1;
+    bus.slots[0].u.dmr.dmrid = 7141001;
+    bus.slots[0].u.dmr.tg = 7141;
+    bus.slots[1].router_id = dmr2_id;
+    bus.slots[1].kind = MEDIA_PEER_DMR;
+    bus.slots[1].open = 1;
+    bus.slots[1].u.dmr.sock = -1;
+    bus.slots[1].u.dmr.dmrid = 7141002;
+    bus.slots[1].u.dmr.tg = 7142;
+    bus.slots[2].router_id = ysf_id;
+    bus.slots[2].kind = MEDIA_PEER_YSF;
+    bus.slots[2].open = 1;
+    bus.slots[2].u.ysf.sock = -1;
+    bus.slots[3].router_id = el_id;
+    bus.slots[3].kind = MEDIA_PEER_ECHOLINK;
+    bus.slots[3].open = 1;
+
+    media_core_init(&core);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.kind = MEDIA_FRAME_CALL_BEGIN;
+    frame.codec = CODEC_DMR_AMBE;
+    frame.meta.stream_id = 55;
+    frame.meta.talker_id = 7141001;
+
+    media_core_ingress(&core, dmr1_id, &frame);
+
+    assert(media_router_active_ingress(&r) == dmr1_id);
+    /* direct (DMR->YSF via ModeConv) fired */
+    assert(core.leg_ysf_dmr.phase == MEDIA_CALL_TX_TO_PEER);
+    /* pcm (DMR->EL via vocoder) fired too, same frame — this is exactly the
+     * case that used to corrupt when both legs shared one phase field. */
+    assert(core.leg_el.phase == MEDIA_CALL_RX_FROM_PEER);
+    /* relay (DMR->DMR) fired as well: dmr2's per-slot TX state was reset. */
+    s2 = media_peer_bus_slot_mut(&bus, dmr2_id);
+    assert(s2 && s2->dmr_tx_stream_id != 0);
+}
+
+int main(void)
+{
+    test_init_defaults();
+    test_bind_sets_use_vocoder();
+    test_ingress_drops_when_blocked();
+    test_dmr_call_begin_takes_ingress();
+    test_shared_phase_no_cross_peer_preempt();
+    test_el_dmr_call_begin_takes_rx_phase();
+    test_el_dmr_process_el_audio_pauses_during_connect_ptt();
+    test_el_ysf_call_begin_takes_rx_phase();
+    test_multi_dmr_fanout_gets_distinct_tx_state();
+    test_dmr_relay_two_peers();
+    test_three_kind_bus_relay_direct_pcm_concurrent();
+    printf("test_media_core: ok\n");
+    return 0;
+}

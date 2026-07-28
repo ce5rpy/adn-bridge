@@ -8,8 +8,8 @@
  * (at your option) any later version.
  */
 
-#ifndef YSF2DMR_EL_PROXY_H
-#define YSF2DMR_EL_PROXY_H
+#ifndef ADN_BRIDGE_EL_PROXY_H
+#define ADN_BRIDGE_EL_PROXY_H
 
 #include <netinet/in.h>
 #include <pthread.h>

@@ -299,6 +299,11 @@ void vocoder_close(vocoder_t *v)
     v->ready = 0;
 }
 
+int vocoder_is_ready(const vocoder_t *v)
+{
+    return v && v->ready && v->sock >= 0;
+}
+
 int vocoder_encode(vocoder_t *v, const int16_t pcm[VOC_PCM_SAMPLES], uint8_t ambe[VOC_AMBE_BYTES])
 {
     uint8_t req[4 + 2 + VOC_PCM_SAMPLES * 2];

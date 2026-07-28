@@ -1,7 +1,7 @@
 /*
  *   Copyright (C) 2009,2014,2015,2016 Jonathan Naylor, G4KLX
  *
- *   Stub implementation for ysf2dmrcon (vendored from MMDVM_CM YSF2DMR).
+ *   Stub implementation for adn-bridge (vendored from MMDVM_CM YSF2DMR).
  *
  *   This program is free software; you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by

@@ -872,7 +872,7 @@ static int el_build_sdes(peer_echolink_t *p, uint8_t *out, int outlen)
     struct tm tm_buf;
     struct tm *tm = localtime_r(&now, &tm_buf);
     char phone[16];
-    char tool[] = "ysf2dmrcon";
+    char tool[] = "adn-bridge";
     const char *name_txt;
     uint32_t nid;
     int o = 0;
@@ -1467,7 +1467,7 @@ static void el_flush_rtp_tx(peer_echolink_t *p)
     p->rtp_tx_packets++;
 }
 
-int peer_el_open(peer_echolink_t *p, const ysf2dmr_echolink_cfg_t *cfg)
+int peer_el_open(peer_echolink_t *p, const adn_bridge_peer_el_t *cfg)
 {
     int i;
 
@@ -1503,7 +1503,7 @@ int peer_el_open(peer_echolink_t *p, const ysf2dmr_echolink_cfg_t *cfg)
     p->directory_server_count = cfg->directory_server_count;
     p->login_interval = cfg->login_interval;
     p->station_list_interval = cfg->station_list_interval;
-    for (i = 0; i < cfg->directory_server_count && i < YSF2DMR_EL_DIR_MAX; i++)
+    for (i = 0; i < cfg->directory_server_count && i < ADN_BRIDGE_EL_DIR_MAX; i++)
         copy_z(p->directory_servers[i], sizeof(p->directory_servers[i]),
                cfg->directory_servers[i]);
 
@@ -1669,11 +1669,6 @@ void peer_el_tick(peer_echolink_t *p)
     }
 }
 
-int peer_el_linked(const peer_echolink_t *p)
-{
-    return p && p->linked;
-}
-
 int peer_el_poll(peer_echolink_t *p, int timeout_ms)
 {
     struct pollfd pf[2];
@@ -1832,11 +1827,6 @@ const char *peer_el_remote_talker(const peer_echolink_t *p)
     if (p->host[0])
         return p->host;
     return "";
-}
-
-int peer_el_remote_talker_explicit(const peer_echolink_t *p)
-{
-    return p && p->remote_talker_explicit && p->remote_talker[0];
 }
 
 void peer_el_clear_remote_talker(peer_echolink_t *p)
