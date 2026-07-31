@@ -42,6 +42,8 @@ typedef struct {
     char slots; /* RPTC SLOTS: '0' = IP bridge (monitor RX/TX N/A) */
     int status;
     int login_phase; /* 0=RPTL..4=CONNECTED */
+    int block_private; /* set by media_peer_bus_open_all() from config, not peer_dmr_open() --
+                         * mirrors how media_peer_slot_t.clear_dynamic_tg is copied in. */
     time_t pong_time;
     time_t last_activity;
     time_t login_fail_until;

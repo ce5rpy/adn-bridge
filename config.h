@@ -36,6 +36,7 @@ typedef struct {
     char password[64];
     int tg;
     int clear_dynamic_tg;
+    int block_private;   /* drop DMR unit (private) calls instead of relaying them */
     int log_level; /* -1 = inherit [log] level= */
 } adn_bridge_peer_dmr_t;
 

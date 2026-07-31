@@ -132,6 +132,7 @@ static int bus_open_slot(media_peer_slot_t *slot, const adn_bridge_config_t *cfg
                           d->options, d->password, d->description, d->location) < 0)
             return -1;
         slot->clear_dynamic_tg = d->clear_dynamic_tg ? 1 : 0;
+        slot->u.dmr.block_private = d->block_private ? 1 : 0;
         break;
     }
     case MEDIA_PEER_YSF: {

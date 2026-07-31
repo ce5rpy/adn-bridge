@@ -324,6 +324,51 @@ static int test_log_handlers_null(void)
     return 0;
 }
 
+static int test_dmr_block_private_default_and_override(void)
+{
+    const char *ini_default =
+        "[peer.master]\n"
+        "type = dmr\n"
+        "enabled = true\n"
+        "callsign = N0CALL\n"
+        "dmrid = 1234567\n"
+        "host = m.example\n"
+        "port = 62031\n"
+        "tg = 1234\n"
+        "password = secret\n";
+    const char *ini_off =
+        "[peer.master]\n"
+        "type = dmr\n"
+        "enabled = true\n"
+        "callsign = N0CALL\n"
+        "dmrid = 1234567\n"
+        "host = m.example\n"
+        "port = 62031\n"
+        "tg = 1234\n"
+        "password = secret\n"
+        "block_private = false\n";
+    adn_bridge_config_t cfg;
+    char err[128];
+    const adn_bridge_peer_t *dmr;
+
+    if (write_ini("/tmp/adn-test-block-private-default.ini", ini_default) != 0)
+        return 100;
+    if (adn_bridge_config_load("/tmp/adn-test-block-private-default.ini", &cfg, err, sizeof(err)) != 0)
+        return 101;
+    dmr = adn_bridge_config_find_peer(&cfg, ADN_BRIDGE_PEER_TYPE_DMR);
+    if (!dmr || dmr->u.dmr.block_private != 1)
+        return 102;
+
+    if (write_ini("/tmp/adn-test-block-private-off.ini", ini_off) != 0)
+        return 103;
+    if (adn_bridge_config_load("/tmp/adn-test-block-private-off.ini", &cfg, err, sizeof(err)) != 0)
+        return 104;
+    dmr = adn_bridge_config_find_peer(&cfg, ADN_BRIDGE_PEER_TYPE_DMR);
+    if (!dmr || dmr->u.dmr.block_private != 0)
+        return 105;
+    return 0;
+}
+
 int main(void)
 {
     int rc;
@@ -372,6 +417,11 @@ int main(void)
     if (rc != 0) {
         fprintf(stderr, "test_config_peers: log handlers null failed (%d)\n", rc);
         return 9;
+    }
+    rc = test_dmr_block_private_default_and_override();
+    if (rc != 0) {
+        fprintf(stderr, "test_config_peers: dmr block_private failed (%d)\n", rc);
+        return 10;
     }
 
     printf("test_config_peers: ok\n");

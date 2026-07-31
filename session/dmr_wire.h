@@ -14,6 +14,7 @@
 #define DMRD_FT_VOICE_SYNC 1U
 #define DMRD_DTYPE_VHEAD   1U
 #define DMRD_DTYPE_VTERM   2U
+#define DMRD_CALL_PRIVATE  0x40U /* byte 15 bit 6: unit (private) call, not group */
 
 extern const uint8_t DMR_MS_SOURCED_AUDIO_SYNC[7];
 extern const uint8_t DMR_SYNC_MASK[7];

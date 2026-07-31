@@ -20,8 +20,6 @@ void adapter_dmr_on_wire(media_core_t *core, int src_router_id, peer_dmr_t *dmr,
     media_bus_frame_t frame;
     int rf, dst;
 
-    (void)dmr; /* identity resolution moved to core — only needed on call-begin */
-
     if (len == DMRA_PACKET_LEN && memcmp(pkt, "DMRA", 4) == 0) {
         int block_id;
         uint8_t payload7[7];
@@ -50,6 +48,14 @@ void adapter_dmr_on_wire(media_core_t *core, int src_router_id, peer_dmr_t *dmr,
         } else {
             LOG_DMR_DEBUG("DMR RX %s len=%d hex=%s (ignored)\n", cmd, len, hex);
         }
+        return;
+    }
+
+    if (dmr->block_private && (pkt[15] & DMRD_CALL_PRIVATE)) {
+        static int private_log;
+
+        if (bridge_dbg_periodic(&private_log))
+            LOG_DMR_DEBUG("DMR RX private call (unit) — dropped, block_private is on\n");
         return;
     }
 

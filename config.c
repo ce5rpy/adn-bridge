@@ -284,6 +284,7 @@ static adn_bridge_peer_t *find_or_add_peer(adn_bridge_config_t *cfg, const char 
     set_str(cfg->peers[i].name, sizeof(cfg->peers[i].name), peer_name);
     cfg->peers[i].enabled = 1;
     cfg->peers[i].u.dmr.log_level = -1;
+    cfg->peers[i].u.dmr.block_private = 1;
     cfg->peers[i].u.ysf.log_level = -1;
     cfg->peers[i].u.el.log_level = -1;
     cfg->peers[i].u.el.vocoder_log_level = -1;
@@ -324,6 +325,8 @@ static void apply_peer_dmr_key(adn_bridge_peer_dmr_t *d, const char *key, const 
         set_int(&d->tg, val);
     else if (strcmp(key, "clear_dynamic_tg") == 0)
         set_bool01(&d->clear_dynamic_tg, val);
+    else if (strcmp(key, "block_private") == 0)
+        set_bool01(&d->block_private, val);
     else if (strcmp(key, "log_level") == 0 || strcmp(key, "log") == 0)
         d->log_level = (int)log_level_from_string(val);
 }
