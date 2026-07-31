@@ -126,6 +126,7 @@ typedef struct {
 static int el_dir_connect(peer_echolink_t *p, const char *server, el_dir_conn_t *c)
 {
     struct in_addr ip;
+    int rc;
 
     if (!p || !c)
         return -1;
@@ -137,7 +138,13 @@ static int el_dir_connect(peer_echolink_t *p, const char *server, el_dir_conn_t 
             return -1;
         return el_proxy_tcp_open(&p->proxy, ip, EL_DIR_LOOKUP_TIMEOUT_SEC * 1000);
     }
-    return el_tcp_bind_connect(p, server, &c->fd);
+    rc = el_tcp_bind_connect(p, server, &c->fd);
+    if (rc == 0) {
+        pthread_mutex_lock(&p->dir_mu);
+        p->dir_fd = c->fd;
+        pthread_mutex_unlock(&p->dir_mu);
+    }
+    return rc;
 }
 
 static int el_dir_write(peer_echolink_t *p, el_dir_conn_t *c, const void *buf, int len)
@@ -172,6 +179,10 @@ static void el_dir_close(peer_echolink_t *p, el_dir_conn_t *c)
         return;
     }
     if (c->fd >= 0) {
+        pthread_mutex_lock(&p->dir_mu);
+        if (p->dir_fd == c->fd)
+            p->dir_fd = -1;
+        pthread_mutex_unlock(&p->dir_mu);
         close(c->fd);
         c->fd = -1;
     }
@@ -775,6 +786,7 @@ static int el_dir_thread_start(peer_echolink_t *p)
     p->dir_stop = 0;
     p->dir_busy = 0;
     p->dir_job = EL_DIR_JOB_NONE;
+    p->dir_fd = -1;
     err = pthread_create(&p->dir_tid, NULL, el_dir_thread_main, p);
     if (err != 0) {
         LOG_EL_WARNING("echolink: directory thread create failed (%s); "
@@ -789,12 +801,20 @@ static int el_dir_thread_start(peer_echolink_t *p)
 
 static void el_dir_thread_stop(peer_echolink_t *p)
 {
+    int fd;
+
     if (!p->dir_thread_on)
         return;
     pthread_mutex_lock(&p->dir_mu);
     p->dir_stop = 1;
+    fd = p->dir_fd;
     pthread_cond_signal(&p->dir_cv);
     pthread_mutex_unlock(&p->dir_mu);
+    /* Force any in-flight connect()/read() to return now instead of making
+     * shutdown wait out the directory timeout (up to EL_DIR_LOOKUP_TIMEOUT_SEC,
+     * possibly repeated across a station-list read loop). */
+    if (fd >= 0)
+        shutdown(fd, SHUT_RDWR);
     pthread_join(p->dir_tid, NULL);
     p->dir_thread_on = 0;
     p->dir_busy = 0;
@@ -1879,6 +1899,7 @@ int peer_el_open(peer_echolink_t *p, const adn_bridge_peer_el_t *cfg)
     memset(p, 0, sizeof(*p));
     p->rtp_sock = -1;
     p->rtcp_sock = -1;
+    p->dir_fd = -1;
     el_proxy_init(&p->proxy);
     pthread_mutex_init(&p->dir_mu, NULL);
     pthread_cond_init(&p->dir_cv, NULL);

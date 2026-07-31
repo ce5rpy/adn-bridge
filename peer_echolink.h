@@ -129,6 +129,11 @@ typedef struct {
     int dir_stop;
     int dir_busy;
     int dir_job; /* EL_DIR_JOB_* */
+    /* fd of the directory worker's in-flight direct TCP connection (dir_mu-
+     * guarded), -1 when none. Lets el_dir_thread_stop() shutdown() it so a
+     * blocked connect()/read() returns immediately instead of making Ctrl-C
+     * wait out the full directory timeout. */
+    int dir_fd;
     /*
      * Proxy demux holds proxy.mu while calling RTCP/RTP handlers. Defer SDES
      * TX until after poll unlocks — otherwise el_send_sdes deadlocks on mu.
