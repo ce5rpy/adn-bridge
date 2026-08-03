@@ -32,6 +32,8 @@ typedef struct {
     int dmrid;
     char description[20];
     char location[21];
+    char freq[10]; /* RPTC announcement only, cosmetic; 9-digit Hz, e.g. "445000000".
+                     * Used for both RX and TX fields -- this bridge has no duplex concept. */
     char options[128];
     char password[64];
     int tg;

@@ -24,7 +24,9 @@
 
 #define DMR_FRAME_MS   60 /* bridge_el paces DMR TX slightly slower than adapters/dmr.c's 55ms */
 #define YSF_FRAME_MS   90
-#define CONNECT_PTT_MS 500
+#define CONNECT_PTT_MS 500               /* on-air duration of each connect-PTT burst (4000 and real TG alike) */
+#define CONNECT_PTT_START_DELAY_MS 2000  /* silent gap after DMR connects, before the first connect-PTT starts */
+#define CONNECT_PTT_GAP_MS         4000  /* silent gap after the 4000 clear-PTT ends, before the real-TG PTT starts */
 #define DMR_CLEAR_DYNAMIC_TG 4000
 /* End EL->DMR/YSF after this much without inbound EL PCM (key-down silence
  * must still hold / activate the TG; hang follows PCM presence, not RMS). */
@@ -259,6 +261,12 @@ static void core_el_dmr_tx_dmrd(media_core_t *core, media_peer_slot_t *slot,
     if (!slot || !slot->open)
         return;
     dmr = &slot->u.dmr;
+
+    /* Same as core_ysf_dmr.c's core_dmr_tx_one(): the synthetic PTT to TG
+     * 4000 (clear_dynamic_tg) must be a private (unit) call, not group. */
+    if (slot->cp_active && slot->cp_clearing)
+        frame_type |= DMRD_CALL_PRIVATE;
+
     args.peer = dmr;
     args.bridge_dmrid = dmr->dmrid;
     args.talker_rf_id = core_el_rf_id_or_bridge(core, dmr);
@@ -606,6 +614,20 @@ static void core_el_cp_begin_stream(media_peer_slot_t *slot, int tg, int clearin
                  tg, CONNECT_PTT_MS, clearing ? " [clear dynamic]" : "", slot->u.dmr.callsign);
 }
 
+/* Silent placeholder phase -- no TX, just waiting out a fixed delay before
+ * the next real PTT. cp_tg/cp_clearing are stashed here as "what to send
+ * once the wait ends" (core_el_cp_begin_stream reads them back). Used for
+ * both the initial post-connect delay and the post-4000 gap. */
+static void core_el_cp_begin_wait(media_peer_slot_t *slot, int phase, int next_tg, int next_clearing)
+{
+    slot->cp_active = 1;
+    slot->cp_phase = phase;
+    slot->cp_voice_frames = 0;
+    slot->cp_tg = next_tg;
+    slot->cp_clearing = next_clearing ? 1 : 0;
+    bridge_stamp_now(&slot->cp_start);
+}
+
 static void core_el_cp_finish(media_core_t *core, media_peer_slot_t *slot)
 {
     uint8_t slot_bit = core->dmr_slot_bit;
@@ -624,7 +646,7 @@ static void core_el_cp_finish(media_core_t *core, media_peer_slot_t *slot)
                  ended_tg, slot->cp_voice_frames, dmr->callsign);
 
     if (was_clearing && dmr->tg > 0) {
-        core_el_cp_begin_stream(slot, dmr->tg, 0);
+        core_el_cp_begin_wait(slot, 2, dmr->tg, 0);
         return;
     }
     slot->cp_active = 0;
@@ -669,9 +691,9 @@ static void core_el_start_connect_ptt(media_peer_slot_t *slot, media_call_phase_
     if (dmr->tg <= 0)
         return;
     if (slot->clear_dynamic_tg)
-        core_el_cp_begin_stream(slot, DMR_CLEAR_DYNAMIC_TG, 1);
+        core_el_cp_begin_wait(slot, 3, DMR_CLEAR_DYNAMIC_TG, 1);
     else
-        core_el_cp_begin_stream(slot, dmr->tg, 0);
+        core_el_cp_begin_wait(slot, 3, dmr->tg, 0);
 }
 
 static void core_el_emit_connect_ptt(media_core_t *core, media_peer_slot_t *slot)
@@ -681,6 +703,16 @@ static void core_el_emit_connect_ptt(media_core_t *core, media_peer_slot_t *slot
     if (!slot->cp_active)
         return;
 
+    if (slot->cp_phase == 3) {
+        if (bridge_ms_since(&slot->cp_start) >= CONNECT_PTT_START_DELAY_MS)
+            core_el_cp_begin_stream(slot, slot->cp_tg, slot->cp_clearing);
+        return;
+    }
+    if (slot->cp_phase == 2) {
+        if (bridge_ms_since(&slot->cp_start) >= CONNECT_PTT_GAP_MS)
+            core_el_cp_begin_stream(slot, slot->cp_tg, slot->cp_clearing);
+        return;
+    }
     if (slot->cp_phase == 0) {
         core_el_dmr_tx_dmrd(core, slot, (uint8_t)(slot_bit | (DMRD_FT_DATA_SYNC << 4) | DMRD_DTYPE_VHEAD),
                            NULL);

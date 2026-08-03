@@ -66,8 +66,8 @@ static void send_rptc(peer_dmr_t *p)
 
     memset(body, 0, sizeof(body));
     pad_copy(body + 0, 8, p->callsign);
-    pad_copy(body + 8, 9, "000000000");
-    pad_copy(body + 17, 9, "000000000");
+    pad_copy(body + 8, 9, p->freq[0] ? p->freq : "000000000");
+    pad_copy(body + 17, 9, p->freq[0] ? p->freq : "000000000");
     pad_copy(body + 26, 2, "99");
     pad_copy(body + 28, 2, "01");
     pad_copy(body + 30, 8, "00000000");
@@ -127,7 +127,8 @@ static void send_rpto(peer_dmr_t *p)
 int peer_dmr_open(peer_dmr_t *p, const char *host, int port, const char *cs,
                   int id, int tg, const char *options,
                   const char *password,
-                  const char *description, const char *location)
+                  const char *description, const char *location,
+                  const char *freq)
 {
     struct hostent *hp;
 
@@ -145,6 +146,7 @@ int peer_dmr_open(peer_dmr_t *p, const char *host, int port, const char *cs,
         strncpy(p->description, description, sizeof(p->description) - 1);
     if (location && location[0])
         strncpy(p->location, location, sizeof(p->location) - 1);
+    snprintf(p->freq, sizeof(p->freq), "%s", (freq && freq[0]) ? freq : "000000000");
     strncpy(p->package_id, "adn-bridge", sizeof(p->package_id) - 1);
     strncpy(p->software_id, "MMDVMHost", sizeof(p->software_id) - 1);
     memset(p->callsign, ' ', 10);

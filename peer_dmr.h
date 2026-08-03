@@ -37,6 +37,7 @@ typedef struct {
     char password[64];
     char description[20];
     char location[21];
+    char freq[10]; /* RPTC announcement only, cosmetic; 9-digit Hz, used for both RX and TX */
     char software_id[41];
     char package_id[41];
     char slots; /* RPTC SLOTS: '0' = IP bridge (monitor RX/TX N/A) */
@@ -53,7 +54,8 @@ typedef struct {
 int peer_dmr_open(peer_dmr_t *p, const char *host, int port, const char *callsign,
                   int dmrid, int tg, const char *options,
                   const char *password,
-                  const char *description, const char *location);
+                  const char *description, const char *location,
+                  const char *freq);
 void peer_dmr_close(peer_dmr_t *p);
 void peer_dmr_tick(peer_dmr_t *p);
 int peer_dmr_connected(const peer_dmr_t *p);

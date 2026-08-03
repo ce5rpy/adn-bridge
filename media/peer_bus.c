@@ -129,7 +129,8 @@ static int bus_open_slot(media_peer_slot_t *slot, const adn_bridge_config_t *cfg
         const adn_bridge_peer_dmr_t *d = &p->u.dmr;
 
         if (peer_dmr_open(&slot->u.dmr, d->host, d->port, d->callsign, d->dmrid, d->tg,
-                          d->options, d->password, d->description, d->location) < 0)
+                          d->options, d->password, d->description, d->location,
+                          d->freq) < 0)
             return -1;
         slot->clear_dynamic_tg = d->clear_dynamic_tg ? 1 : 0;
         slot->u.dmr.block_private = d->block_private ? 1 : 0;

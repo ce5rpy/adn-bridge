@@ -21,7 +21,9 @@
 
 #define DMR_FRAME_MS   55
 #define YSF_FRAME_MS   90
-#define CONNECT_PTT_MS 500
+#define CONNECT_PTT_MS 500               /* on-air duration of each connect-PTT burst (4000 and real TG alike) */
+#define CONNECT_PTT_START_DELAY_MS 2000  /* silent gap after DMR connects, before the first connect-PTT starts */
+#define CONNECT_PTT_GAP_MS         4000  /* silent gap after the 4000 clear-PTT ends, before the real-TG PTT starts */
 #define DMR_CLEAR_DYNAMIC_TG 4000
 
 static void core_ysf_dmr_abort_connect_ptt(media_core_t *core);
@@ -114,6 +116,14 @@ static void core_dmr_tx_one(media_core_t *core, media_peer_slot_t *slot,
     if (!slot || !slot->open)
         return;
     dmr = &slot->u.dmr;
+
+    /* The synthetic PTT to TG 4000 (clear_dynamic_tg) must be a private
+     * (unit) call, not group -- receivers key on this bit to treat it as a
+     * control code instead of routing/repeating it as a real group call
+     * (see adn-bridge's own block_private and new-adn-server's dst==4000
+     * private-call special case). */
+    if (slot->cp_active && slot->cp_clearing)
+        frame_type |= DMRD_CALL_PRIVATE;
 
     args.peer = dmr;
     args.bridge_dmrid = dmr->dmrid;
@@ -462,6 +472,20 @@ static void core_connect_ptt_begin_stream(media_peer_slot_t *slot, int tg, int c
                  tg, CONNECT_PTT_MS, clearing ? " [clear dynamic]" : "", slot->u.dmr.callsign);
 }
 
+/* Silent placeholder phase -- no TX, just waiting out a fixed delay before
+ * the next real PTT. cp_tg/cp_clearing are stashed here as "what to send
+ * once the wait ends" (core_connect_ptt_begin_stream reads them back). Used
+ * for both the initial post-connect delay and the post-4000 gap. */
+static void core_connect_ptt_begin_wait(media_peer_slot_t *slot, int phase, int next_tg, int next_clearing)
+{
+    slot->cp_active = 1;
+    slot->cp_phase = phase;
+    slot->cp_voice_frames = 0;
+    slot->cp_tg = next_tg;
+    slot->cp_clearing = next_clearing ? 1 : 0;
+    bridge_stamp_now(&slot->cp_start);
+}
+
 static void core_connect_ptt_finish(media_core_t *core, media_peer_slot_t *slot)
 {
     uint8_t slot_bit = core->dmr_slot_bit;
@@ -480,7 +504,7 @@ static void core_connect_ptt_finish(media_core_t *core, media_peer_slot_t *slot)
                  ended_tg, slot->cp_voice_frames, dmr->callsign);
 
     if (was_clearing && dmr->tg > 0) {
-        core_connect_ptt_begin_stream(slot, dmr->tg, 0);
+        core_connect_ptt_begin_wait(slot, 2, dmr->tg, 0);
         return;
     }
     slot->cp_active = 0;
@@ -501,7 +525,10 @@ static void core_ysf_dmr_abort_connect_ptt(media_core_t *core)
 
         if (slot->kind != MEDIA_PEER_DMR || !slot->cp_active)
             continue;
-        if (slot->cp_phase > 0) {
+        /* Phase 1 is the only phase with voice actually on the air -- flush
+         * it to a clean VTERM. Phases 0/2/3 (need-VHEAD/gap/pre-delay) have
+         * sent no voice yet, so just drop the pending sequence. */
+        if (slot->cp_phase == 1) {
             slot->cp_clearing = 0;
             core_connect_ptt_finish(core, slot);
         } else {
@@ -523,9 +550,9 @@ static void core_start_connect_ptt(media_core_t *core, media_peer_slot_t *slot)
     if (dmr->tg <= 0)
         return;
     if (slot->clear_dynamic_tg)
-        core_connect_ptt_begin_stream(slot, DMR_CLEAR_DYNAMIC_TG, 1);
+        core_connect_ptt_begin_wait(slot, 3, DMR_CLEAR_DYNAMIC_TG, 1);
     else
-        core_connect_ptt_begin_stream(slot, dmr->tg, 0);
+        core_connect_ptt_begin_wait(slot, 3, dmr->tg, 0);
 }
 
 static void core_emit_connect_ptt(media_core_t *core, media_peer_slot_t *slot)
@@ -536,6 +563,16 @@ static void core_emit_connect_ptt(media_core_t *core, media_peer_slot_t *slot)
     if (!slot->cp_active)
         return;
 
+    if (slot->cp_phase == 3) {
+        if (bridge_ms_since(&slot->cp_start) >= CONNECT_PTT_START_DELAY_MS)
+            core_connect_ptt_begin_stream(slot, slot->cp_tg, slot->cp_clearing);
+        return;
+    }
+    if (slot->cp_phase == 2) {
+        if (bridge_ms_since(&slot->cp_start) >= CONNECT_PTT_GAP_MS)
+            core_connect_ptt_begin_stream(slot, slot->cp_tg, slot->cp_clearing);
+        return;
+    }
     if (slot->cp_phase == 0) {
         for (i = 0; i < 3; i++)
             core_dmr_tx_one(core, slot, (uint8_t)(slot_bit | (DMRD_FT_DATA_SYNC << 4) | DMRD_DTYPE_VHEAD), NULL);

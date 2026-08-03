@@ -8,11 +8,18 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <poll.h>
 
 #include "media/core.h"
 #include "media/core_echolink.h"
+#include "media/core_ysf_dmr.h"
 #include "media/peer_bus.h"
 #include "media/router.h"
+#include "session/dmr_wire.h"
 
 static void test_init_defaults(void)
 {
@@ -489,6 +496,129 @@ static void test_three_kind_bus_relay_direct_pcm_concurrent(void)
     assert(s2 && s2->dmr_tx_stream_id != 0);
 }
 
+static void rewind_ms(struct timespec *ts, long ms)
+{
+    ts->tv_sec -= ms / 1000;
+    ts->tv_nsec -= (ms % 1000) * 1000000L;
+    if (ts->tv_nsec < 0) {
+        ts->tv_nsec += 1000000000L;
+        ts->tv_sec -= 1;
+    }
+}
+
+static int recv_nb(int fd, uint8_t *buf, size_t cap, int timeout_ms)
+{
+    struct pollfd pfd;
+
+    pfd.fd = fd; pfd.events = POLLIN; pfd.revents = 0;
+    if (poll(&pfd, 1, timeout_ms) <= 0)
+        return -1;
+    return (int)recv(fd, buf, cap, 0);
+}
+
+/* Discard any packets already queued (e.g. a just-finished PTT's trailing
+ * VTERM) so a later "nothing sent" check isn't fooled by a stale read. */
+static void drain_all(int fd)
+{
+    uint8_t buf[64];
+
+    while (recv_nb(fd, buf, sizeof(buf), 0) >= 0)
+        ;
+}
+
+/* connect-PTT sequence (media/core_ysf_dmr.c): on DMR connect, wait
+ * CONNECT_PTT_START_DELAY_MS, PTT to TG 4000 as a PRIVATE call for
+ * CONNECT_PTT_MS, wait CONNECT_PTT_GAP_MS, then PTT to the real TG as a
+ * normal GROUP call for CONNECT_PTT_MS. Drives the state machine via real
+ * loopback UDP so the actual wire bytes (dst id, private bit) are checked,
+ * not just internal state -- timestamps are rewound instead of sleeping so
+ * the test runs instantly despite the multi-second real delays involved. */
+static void test_connect_ptt_sequence_timing_and_privacy(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    media_peer_slot_t *dmr_slot;
+    int dmr_id, fake_master_fd, n;
+    struct sockaddr_in addr;
+    socklen_t alen = sizeof(addr);
+    uint8_t buf[64];
+
+    fake_master_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    assert(fake_master_fd >= 0);
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    assert(bind(fake_master_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+    assert(getsockname(fake_master_fd, (struct sockaddr *)&addr, &alen) == 0);
+
+    media_router_init(&r);
+    dmr_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+
+    memset(&bus, 0, sizeof(bus));
+    bus.router = &r;
+    bus.n_slots = 1;
+    bus.slots[0].router_id = dmr_id;
+    bus.slots[0].kind = MEDIA_PEER_DMR;
+    bus.slots[0].open = 1;
+    bus.slots[0].clear_dynamic_tg = 1;
+
+    dmr_slot = &bus.slots[0];
+    dmr_slot->u.dmr.sock = socket(AF_INET, SOCK_DGRAM, 0);
+    assert(dmr_slot->u.dmr.sock >= 0);
+    dmr_slot->u.dmr.dmrid = 7141001;
+    dmr_slot->u.dmr.tg = 7141;
+    dmr_slot->u.dmr.peer.sin_family = AF_INET;
+    dmr_slot->u.dmr.peer.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    dmr_slot->u.dmr.peer.sin_port = addr.sin_port;
+    dmr_slot->u.dmr.status = PEER_DMR_CONNECTED;
+
+    media_core_init(&core);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
+    core.leg_ysf_dmr.phase = MEDIA_CALL_IDLE;
+
+    /* Rising edge -> phase 3 (initial 2s delay). Nothing sent yet. */
+    core_ysf_dmr_poll_connect_ptt(&core);
+    assert(dmr_slot->cp_active && dmr_slot->cp_phase == 3);
+    assert(recv_nb(fake_master_fd, buf, sizeof(buf), 50) < 0);
+
+    /* Past the 2s pre-delay -> arms the 4000 PTT (phase 0, not sent yet). */
+    rewind_ms(&dmr_slot->cp_start, 2100);
+    core_ysf_dmr_poll_connect_ptt(&core);
+    assert(dmr_slot->cp_phase == 0);
+
+    /* This tick sends the VHEAD bursts for the private PTT to 4000. */
+    core_ysf_dmr_poll_connect_ptt(&core);
+    assert(dmr_slot->cp_phase == 1);
+    n = recv_nb(fake_master_fd, buf, sizeof(buf), 200);
+    assert(n == 55 && memcmp(buf, "DMRD", 4) == 0);
+    assert(buf[15] & DMRD_CALL_PRIVATE);
+    assert(((buf[8] << 16) | (buf[9] << 8) | buf[10]) == 4000);
+
+    /* Past the 500ms 4000 PTT -> finishes (VTERM) -> 4s gap (phase 2). */
+    rewind_ms(&dmr_slot->cp_start, 600);
+    rewind_ms(&core.leg_ysf_dmr.last_dmr_tx, 100);
+    core_ysf_dmr_poll_connect_ptt(&core);
+    assert(dmr_slot->cp_phase == 2 && dmr_slot->cp_clearing == 0);
+    drain_all(fake_master_fd);
+
+    /* Past the 4s gap -> arms the real-TG PTT (phase 0, not sent yet). */
+    rewind_ms(&dmr_slot->cp_start, 4100);
+    rewind_ms(&core.leg_ysf_dmr.last_dmr_tx, 100);
+    core_ysf_dmr_poll_connect_ptt(&core);
+    assert(dmr_slot->cp_phase == 0);
+
+    /* This tick sends the VHEAD bursts for the real-TG PTT -- group call. */
+    core_ysf_dmr_poll_connect_ptt(&core);
+    n = recv_nb(fake_master_fd, buf, sizeof(buf), 200);
+    assert(n == 55 && memcmp(buf, "DMRD", 4) == 0);
+    assert(!(buf[15] & DMRD_CALL_PRIVATE));
+    assert(((buf[8] << 16) | (buf[9] << 8) | buf[10]) == 7141);
+
+    close(fake_master_fd);
+    close(dmr_slot->u.dmr.sock);
+}
+
 int main(void)
 {
     test_init_defaults();
@@ -502,6 +632,7 @@ int main(void)
     test_multi_dmr_fanout_gets_distinct_tx_state();
     test_dmr_relay_two_peers();
     test_three_kind_bus_relay_direct_pcm_concurrent();
+    test_connect_ptt_sequence_timing_and_privacy();
     printf("test_media_core: ok\n");
     return 0;
 }
