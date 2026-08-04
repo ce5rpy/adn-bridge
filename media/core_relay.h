@@ -15,5 +15,8 @@ void core_relay_dmr_to_dmr(media_core_t *core, int src_router_id, const media_bu
 void core_relay_ysf_to_ysf(media_core_t *core, int src_router_id, const media_bus_frame_t *frame);
 /* Polled (mirrors media_core_poll_el_pcm) — no wire frame to classify. */
 void core_relay_el_to_el(media_core_t *core);
+/* Force-ends a DMR<->DMR or YSF<->YSF relay call stuck without a CALL_END
+ * (lost VTERM/EOT). Call once per media_core_tick. */
+void core_relay_check_stale(media_core_t *core);
 
 #endif

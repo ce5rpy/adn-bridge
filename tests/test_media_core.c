@@ -20,6 +20,7 @@
 #include "media/peer_bus.h"
 #include "media/router.h"
 #include "session/dmr_wire.h"
+#include "ysf_fich.h"
 
 static void test_init_defaults(void)
 {
@@ -619,6 +620,158 @@ static void test_connect_ptt_sequence_timing_and_privacy(void)
     close(dmr_slot->u.dmr.sock);
 }
 
+/* A same-kind relay call (YSF<->YSF or DMR<->DMR) has no PCM/silence signal
+ * to poll -- if the source's CALL_END/EOT is lost (common on a lossy RF/
+ * hotspot link), the router's active_ingress lock must not stay stuck
+ * forever, or every other peer is blocked from talking indefinitely. */
+static void test_ysf_relay_stale_call_releases_router(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    media_bus_frame_t frame;
+    int ysf1_id, ysf2_id;
+
+    media_router_init(&r);
+    ysf1_id = media_router_add_peer(&r, MEDIA_PEER_YSF);
+    ysf2_id = media_router_add_peer(&r, MEDIA_PEER_YSF);
+
+    memset(&bus, 0, sizeof(bus));
+    bus.router = &r;
+    bus.n_slots = 2;
+    bus.slots[0].router_id = ysf1_id;
+    bus.slots[0].kind = MEDIA_PEER_YSF;
+    bus.slots[0].open = 1;
+    bus.slots[0].u.ysf.sock = -1;
+    memset(bus.slots[0].u.ysf.callsign, ' ', sizeof(bus.slots[0].u.ysf.callsign));
+    bus.slots[1].router_id = ysf2_id;
+    bus.slots[1].kind = MEDIA_PEER_YSF;
+    bus.slots[1].open = 1;
+    bus.slots[1].u.ysf.sock = -1;
+    memset(bus.slots[1].u.ysf.callsign, ' ', sizeof(bus.slots[1].u.ysf.callsign));
+
+    media_core_init(&core);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.kind = MEDIA_FRAME_CALL_BEGIN;
+    frame.codec = CODEC_YSF_AMBE;
+    memcpy(frame.meta.netcall.net_src, "HP3ICC    ", 10);
+    media_core_ingress(&core, ysf1_id, &frame);
+    assert(media_router_active_ingress(&r) == ysf1_id);
+
+    /* No further traffic (EOT lost) -- a tick before the hang window elapses
+     * must leave the call active. */
+    media_core_tick(&core);
+    assert(media_router_active_ingress(&r) == ysf1_id);
+
+    /* Past the hang window -- the watchdog must force-end and release. */
+    rewind_ms(&core.last_ysf_relay_rx, 1600);
+    media_core_tick(&core);
+    assert(media_router_active_ingress(&r) == -1);
+
+    /* Released means a new source can now take the lock. */
+    memset(&frame, 0, sizeof(frame));
+    frame.kind = MEDIA_FRAME_CALL_BEGIN;
+    frame.codec = CODEC_YSF_AMBE;
+    memcpy(frame.meta.netcall.net_src, "OTHERSTA  ", 10);
+    media_core_ingress(&core, ysf2_id, &frame);
+    assert(media_router_active_ingress(&r) == ysf2_id);
+}
+
+/* YSF<->YSF relay must be transparent: the source radio's real DCH content
+ * (radio model/serial/GPS live past the FICH span) must reach the far peer
+ * byte-for-byte, unlike DMR->YSF/EchoLink->YSF synthesis which legitimately
+ * fabricates that region (no real YSF frame to preserve there). Captures the
+ * actual wire bytes over a real loopback socket, mirroring the connect-PTT
+ * test's approach, rather than trusting internal state. */
+static void test_ysf_relay_voice_frame_is_transparent(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    media_bus_frame_t frame;
+    media_peer_slot_t *ysf2_slot;
+    int ysf1_id, ysf2_id, fake_reflector_fd, n, i;
+    struct sockaddr_in addr;
+    socklen_t alen = sizeof(addr);
+    uint8_t buf[160];
+    uint8_t marker[40];
+
+    fake_reflector_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    assert(fake_reflector_fd >= 0);
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    assert(bind(fake_reflector_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+    assert(getsockname(fake_reflector_fd, (struct sockaddr *)&addr, &alen) == 0);
+
+    media_router_init(&r);
+    ysf1_id = media_router_add_peer(&r, MEDIA_PEER_YSF);
+    ysf2_id = media_router_add_peer(&r, MEDIA_PEER_YSF);
+
+    memset(&bus, 0, sizeof(bus));
+    bus.router = &r;
+    bus.n_slots = 2;
+    bus.slots[0].router_id = ysf1_id;
+    bus.slots[0].kind = MEDIA_PEER_YSF;
+    bus.slots[0].open = 1;
+    bus.slots[0].u.ysf.sock = -1;
+    memset(bus.slots[0].u.ysf.callsign, ' ', sizeof(bus.slots[0].u.ysf.callsign));
+
+    ysf2_slot = &bus.slots[1];
+    ysf2_slot->router_id = ysf2_id;
+    ysf2_slot->kind = MEDIA_PEER_YSF;
+    ysf2_slot->open = 1;
+    ysf2_slot->u.ysf.sock = socket(AF_INET, SOCK_DGRAM, 0);
+    assert(ysf2_slot->u.ysf.sock >= 0);
+    ysf2_slot->u.ysf.dgid = 82;
+    memset(ysf2_slot->u.ysf.callsign, ' ', sizeof(ysf2_slot->u.ysf.callsign));
+    memcpy(ysf2_slot->u.ysf.callsign, "N0CALL-LNK", 10);
+    ysf2_slot->u.ysf.peer.sin_family = AF_INET;
+    ysf2_slot->u.ysf.peer.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    ysf2_slot->u.ysf.peer.sin_port = addr.sin_port;
+
+    media_core_init(&core);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.kind = MEDIA_FRAME_CALL_BEGIN;
+    frame.codec = CODEC_YSF_AMBE;
+    memcpy(frame.meta.netcall.net_src, "HP3ICC    ", 10);
+    media_core_ingress(&core, ysf1_id, &frame);
+    n = recv_nb(fake_reflector_fd, buf, sizeof(buf), 200);
+    assert(n == 155 && memcmp(buf, "YSFD", 4) == 0); /* HEADER, drained */
+
+    for (i = 0; i < 40; i++)
+        marker[i] = (uint8_t)(0x10 + i);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.kind = MEDIA_FRAME_VOICE;
+    frame.codec = CODEC_YSF_AMBE;
+    memcpy(frame.meta.netcall.net_src, "HP3ICC    ", 10);
+    memcpy(frame.payload.ysf_payload120 + 80, marker, sizeof(marker));
+    media_core_ingress(&core, ysf1_id, &frame);
+
+    n = recv_nb(fake_reflector_fd, buf, sizeof(buf), 200);
+    assert(n == 155 && memcmp(buf, "YSFD", 4) == 0);
+    /* payload120 lands at wire offset 35 (YSF_FICH_OFFSET_NET); the marker
+     * at payload120[80:120) is wire[115:155) -- must survive byte-for-byte,
+     * not be overwritten by DCH/FICH synthesis meant for non-YSF sources. */
+    assert(memcmp(buf + 115, marker, sizeof(marker)) == 0);
+    /* The one thing that IS always rewritten: DGID always follows this
+     * destination peer's own configured value, never the source's. */
+    {
+        uint8_t fi, fn, ft, cm, dt;
+
+        assert(ysf_fich_decode_fields(buf, &fi, &fn, &ft, &cm, &dt) == 0);
+        assert(ysf_fich_get_dgid() == 82);
+    }
+
+    close(ysf2_slot->u.ysf.sock);
+    close(fake_reflector_fd);
+}
+
 int main(void)
 {
     test_init_defaults();
@@ -633,6 +786,8 @@ int main(void)
     test_dmr_relay_two_peers();
     test_three_kind_bus_relay_direct_pcm_concurrent();
     test_connect_ptt_sequence_timing_and_privacy();
+    test_ysf_relay_stale_call_releases_router();
+    test_ysf_relay_voice_frame_is_transparent();
     printf("test_media_core: ok\n");
     return 0;
 }

@@ -150,6 +150,7 @@ void media_core_tick(media_core_t *core)
         core_ysf_dmr_tick(core);
     if (has_el)
         core_el_tick(core);
+    core_relay_check_stale(core);
 }
 
 /* EchoLink PCM ingress does not go through media_core_ingress (it is polled

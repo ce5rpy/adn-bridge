@@ -137,6 +137,16 @@ typedef struct {
     struct timespec last_el_relay_speech;
     struct timespec relay_last_dmr_tx;
     struct timespec relay_last_ysf_tx;
+    /* Stamped on every relayed CALL_BEGIN/VOICE frame while that peer holds
+     * the router's active_ingress -- lets media_core_tick's stale-call check
+     * detect a lost VTERM/EOT (e.g. dropped on a lossy RF/hotspot link) and
+     * force-release the lock instead of blocking every other peer forever. */
+    struct timespec last_dmr_relay_rx;
+    struct timespec last_ysf_relay_rx;
+    /* Talker identity captured at relay CALL_BEGIN, needed to address the
+     * synthetic VTERM/TERMINATOR sent when core_relay_check_stale fires. */
+    media_call_meta_t relay_dmr_meta;
+    media_call_meta_t relay_ysf_meta;
 
     /* DMRA sidechain (talker identity). */
     media_dmra_t dmra;

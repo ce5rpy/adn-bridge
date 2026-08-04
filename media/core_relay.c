@@ -33,6 +33,13 @@
 #include <string.h>
 
 #define EL_RELAY_HANG_MS 700
+/* Same-kind relay (DMR<->DMR, YSF<->YSF) has no PCM/silence signal to poll
+ * like EchoLink -- it only hears CALL_BEGIN/VOICE/CALL_END wire events. If a
+ * source's terminator/EOT is lost (common on lossy RF/hotspot links), the
+ * router's active_ingress lock would otherwise never release. Matches the
+ * DMR_RX_HANG_MS/YSF_RX_HANG_MS precedent in core_echolink.c. */
+#define DMR_RELAY_HANG_MS 1500
+#define YSF_RELAY_HANG_MS 1500
 
 /* Check-then-take only, no force-release of a different active peer — same
  * (non-preempting) semantics as core_echolink.c's core_router_take, chosen so
@@ -142,6 +149,8 @@ void core_relay_dmr_to_dmr(media_core_t *core, int src_router_id, const media_bu
         if (!core_relay_router_take(core, src_router_id))
             return;
         core_relay_reset_dmr_tx_slots(core);
+        bridge_stamp_now(&core->last_dmr_relay_rx);
+        core->relay_dmr_meta = frame->meta;
         LOG_DMR_INFO("dmr->dmr relay call start (src %d)\n", frame->meta.talker_id);
         core_relay_send_dmrd(core, src_router_id, frame->meta.talker_id,
                              (uint8_t)(slot_bit | (DMRD_FT_DATA_SYNC << 4) | DMRD_DTYPE_VHEAD), NULL);
@@ -161,6 +170,8 @@ void core_relay_dmr_to_dmr(media_core_t *core, int src_router_id, const media_bu
             core_relay_reset_dmr_tx_slots(core);
             LOG_DMR_INFO("dmr->dmr relay late entry (src %d)\n", frame->meta.talker_id);
         }
+        bridge_stamp_now(&core->last_dmr_relay_rx);
+        core->relay_dmr_meta = frame->meta;
         {
             uint8_t b15 = (uint8_t)(slot_bit | (frame->wire_dmr_ft << 4) | frame->wire_dtype);
 
@@ -201,6 +212,7 @@ static int core_relay_ysfd_cb(int dst_id, media_peer_kind_t kind, void *vctx)
         .meta = &ctx->netcall,
         .last_tx = &ctx->core->relay_last_ysf_tx,
         .dgid_cfg = ysf->dgid,
+        .relay_passthrough = 1,
     };
     adapter_ysf_egress_ysfd(&args, ctx->fi, ctx->ft, ctx->cm, ctx->fich_fn, ctx->net_cnt,
                             ctx->payload120, ctx->csd1, ctx->csd2);
@@ -247,6 +259,8 @@ void core_relay_ysf_to_ysf(media_core_t *core, int src_router_id, const media_bu
             return;
         if (src)
             src->ysf_relay_cnt = 0;
+        bridge_stamp_now(&core->last_ysf_relay_rx);
+        core->relay_ysf_meta = frame->meta;
         LOG_YSF_INFO("ysf->ysf relay call start (src %.10s)\n", frame->meta.netcall.net_src);
         ysf_tx_fill_csd(&frame->meta.netcall, csd1, csd2);
         core_relay_send_ysfd(core, src_router_id, &frame->meta.netcall,
@@ -274,6 +288,8 @@ void core_relay_ysf_to_ysf(media_core_t *core, int src_router_id, const media_bu
                 src->ysf_relay_cnt = 0;
             LOG_YSF_INFO("ysf->ysf relay late entry (src %.10s)\n", frame->meta.netcall.net_src);
         }
+        bridge_stamp_now(&core->last_ysf_relay_rx);
+        core->relay_ysf_meta = frame->meta;
         {
             uint8_t cnt = src ? src->ysf_relay_cnt : 0;
             uint8_t fn = (uint8_t)((cnt) % (YSF_FICH_FT + 1U));
@@ -288,6 +304,45 @@ void core_relay_ysf_to_ysf(media_core_t *core, int src_router_id, const media_bu
         return;
     default:
         return;
+    }
+}
+
+/* Force-end a same-kind relay call whose source has gone quiet without a
+ * proper CALL_END (VTERM/TERMINATOR lost on a lossy RF/hotspot link) -- else
+ * the router's active_ingress lock never releases and every other peer stays
+ * blocked forever. Call once per media_core_tick; cheap when idle. */
+void core_relay_check_stale(media_core_t *core)
+{
+    int src_id;
+    media_peer_kind_t kind;
+
+    if (!core->router)
+        return;
+    src_id = media_router_active_ingress(core->router);
+    if (src_id < 0 || src_id >= core->router->n_peers)
+        return;
+    kind = core->router->peers[src_id].kind;
+
+    if (kind == MEDIA_PEER_DMR) {
+        if (bridge_ms_since(&core->last_dmr_relay_rx) < DMR_RELAY_HANG_MS)
+            return;
+        core_relay_send_dmrd(core, src_id, core->relay_dmr_meta.talker_id,
+                             (uint8_t)(core->dmr_slot_bit | (DMRD_FT_DATA_SYNC << 4) | DMRD_DTYPE_VTERM),
+                             NULL);
+        LOG_DMR_INFO("dmr->dmr relay call end (stale, no traffic %d ms)\n", DMR_RELAY_HANG_MS);
+        core_relay_router_release(core, src_id);
+    } else if (kind == MEDIA_PEER_YSF) {
+        uint8_t csd1[20], csd2[20];
+        media_peer_slot_t *src = core_relay_ysf_src_slot(core, src_id);
+
+        if (bridge_ms_since(&core->last_ysf_relay_rx) < YSF_RELAY_HANG_MS)
+            return;
+        ysf_tx_fill_csd(&core->relay_ysf_meta.netcall, csd1, csd2);
+        core_relay_send_ysfd(core, src_id, &core->relay_ysf_meta.netcall,
+                             YSF_FI_TERMINATOR, YSF_FICH_FT, YSF_FICH_CM, 0,
+                             src ? src->ysf_relay_cnt : 0, NULL, csd1, csd2);
+        LOG_YSF_INFO("ysf->ysf relay call end (stale, no traffic %d ms)\n", YSF_RELAY_HANG_MS);
+        core_relay_router_release(core, src_id);
     }
 }
 

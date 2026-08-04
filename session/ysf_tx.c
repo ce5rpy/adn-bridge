@@ -145,8 +145,10 @@ int ysf_tx_send(ysf_tx_args_t *args, uint8_t fi, uint8_t ft, uint8_t cm,
         if (payload120)
             memcpy(frame + YSF_FICH_OFFSET_NET, payload120, 120);
         memcpy(frame + YSF_FICH_OFFSET_NET, YSF_SYNC_BYTES, 5);
-        ysf_tx_apply_dch_slot(frame + YSF_FICH_OFFSET_NET, fich_fn, args->meta);
-        ysf_fich_encode_outbound(frame + YSF_FICH_OFFSET_RX, fich_fn, fi, ft, cm);
+        if (!(args->relay_passthrough && payload120)) {
+            ysf_tx_apply_dch_slot(frame + YSF_FICH_OFFSET_NET, fich_fn, args->meta);
+            ysf_fich_encode_outbound(frame + YSF_FICH_OFFSET_RX, fich_fn, fi, ft, cm);
+        }
     }
 
     peer_ysf_send_ysfd(args->peer, frame, 155);

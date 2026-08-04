@@ -28,6 +28,13 @@ typedef struct {
     const bridge_call_meta_t *meta;
     struct timespec *last_tx;
     unsigned dgid_cfg;
+    /* YSF<->YSF relay only (media/core_relay.c): payload120 already carries
+     * the source radio's real FICH+DCH bits (voice AND terminal data --
+     * radio model/serial/GPS live there) verbatim -- ysf_tx_send must not
+     * rebuild them from placeholder/fixed content the way it does for
+     * DMR->YSF/EchoLink->YSF synthesis, where there is no original YSF frame
+     * to preserve and fixed values are the correct, intentional behavior. */
+    int relay_passthrough;
 } ysf_tx_args_t;
 
 const uint8_t *ysf_tx_modeconv_chunk(const uint8_t *pkt155, uint8_t scratch[120]);
