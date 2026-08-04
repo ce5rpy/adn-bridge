@@ -28,7 +28,9 @@ static void test_init_defaults(void)
 
     media_core_init(&core);
     assert(core.leg_ysf_dmr.phase == MEDIA_CALL_IDLE);
-    assert(core.leg_el.phase == MEDIA_CALL_IDLE);
+    assert(core.leg_el_rx.phase == MEDIA_CALL_IDLE);
+    assert(core.leg_el_tx_dmr.phase == MEDIA_CALL_IDLE);
+    assert(core.leg_el_tx_ysf.phase == MEDIA_CALL_IDLE);
     assert(core.dmr_slot_bit == 0x80);
     assert(core.use_vocoder == 0);
 }
@@ -214,18 +216,19 @@ static void test_el_dmr_call_begin_takes_rx_phase(void)
 
     media_core_ingress(&core, dmr_id, &frame);
 
-    assert(core.leg_el.phase == MEDIA_CALL_RX_FROM_PEER);
-    assert(core.leg_el.dmr_rx_stream_id == 7);
+    assert(core.leg_el_rx.phase == MEDIA_CALL_RX_FROM_PEER);
+    assert(core.leg_el_rx.rx_src_kind == MEDIA_PEER_DMR);
+    assert(core.leg_el_rx.dmr_rx_stream_id == 7);
     assert(media_router_active_ingress(&r) == dmr_id);
 }
 
 /* A connect-PTT burst on a DMR slot must pause EL->DMR AMBE encoding too
- * (core_el_dmr_process_el_audio), not just the ModeConv drain
- * (core_el_dmr_pace_tx) — otherwise core->mc_el's ring buffer fills while
+ * (core_el_process_el_audio), not just the ModeConv drain
+ * (core_el_dmr_pace_tx) — otherwise core->mc_el_dmr's ring buffer fills while
  * draining is paused, desyncing ModeConv's internal frame counter from the
  * buffer's real contents (a real bug hit in production, inherited unchanged
- * from v0.3.1's bridge_el.c: both process_el_audio functions lacked this
- * gate that pace_tx always had). */
+ * from v0.3.1's bridge_el.c: the capture path lacked this gate that pace_tx
+ * always had). */
 static void test_el_dmr_process_el_audio_pauses_during_connect_ptt(void)
 {
     media_core_t core;
@@ -267,7 +270,7 @@ static void test_el_dmr_process_el_audio_pauses_during_connect_ptt(void)
     dmr_slot = media_peer_bus_slot_mut(&bus, dmr_id);
     dmr_slot->cp_active = 1; /* connect-PTT burst in progress on this DMR peer */
 
-    core_el_dmr_process_el_audio(&core);
+    core_el_process_el_audio(&core);
 
     /* Paused: nothing drained from EL's own jitter buffer. */
     assert(bus.slots[0].u.el.pcm_in_count == 160);
@@ -309,9 +312,10 @@ static void test_el_ysf_call_begin_takes_rx_phase(void)
 
     media_core_ingress(&core, ysf_id, &frame);
 
-    assert(core.leg_el.phase == MEDIA_CALL_RX_FROM_PEER);
+    assert(core.leg_el_rx.phase == MEDIA_CALL_RX_FROM_PEER);
+    assert(core.leg_el_rx.rx_src_kind == MEDIA_PEER_YSF);
     assert(media_router_active_ingress(&r) == ysf_id);
-    assert(memcmp(core.leg_el.call.netcall.net_src, "N0CALL", 6) == 0);
+    assert(memcmp(core.leg_el_rx.call.netcall.net_src, "N0CALL", 6) == 0);
 }
 
 /* Fase 5: fan-out to >1 DMR destination must give each connection its own
@@ -420,7 +424,9 @@ static void test_dmr_relay_two_peers(void)
     assert(media_router_active_ingress(&r) == dmr1_id);
     /* Relay is phase-less by design — neither leg is touched. */
     assert(core.leg_ysf_dmr.phase == MEDIA_CALL_IDLE);
-    assert(core.leg_el.phase == MEDIA_CALL_IDLE);
+    assert(core.leg_el_rx.phase == MEDIA_CALL_IDLE);
+    assert(core.leg_el_tx_dmr.phase == MEDIA_CALL_IDLE);
+    assert(core.leg_el_tx_ysf.phase == MEDIA_CALL_IDLE);
     s2 = media_peer_bus_slot_mut(&bus, dmr2_id);
     assert(s2 && s2->dmr_tx_stream_id != 0);
 
@@ -491,7 +497,8 @@ static void test_three_kind_bus_relay_direct_pcm_concurrent(void)
     assert(core.leg_ysf_dmr.phase == MEDIA_CALL_TX_TO_PEER);
     /* pcm (DMR->EL via vocoder) fired too, same frame — this is exactly the
      * case that used to corrupt when both legs shared one phase field. */
-    assert(core.leg_el.phase == MEDIA_CALL_RX_FROM_PEER);
+    assert(core.leg_el_rx.phase == MEDIA_CALL_RX_FROM_PEER);
+    assert(core.leg_el_rx.rx_src_kind == MEDIA_PEER_DMR);
     /* relay (DMR->DMR) fired as well: dmr2's per-slot TX state was reset. */
     s2 = media_peer_bus_slot_mut(&bus, dmr2_id);
     assert(s2 && s2->dmr_tx_stream_id != 0);
@@ -525,6 +532,121 @@ static void drain_all(int fd)
 
     while (recv_nb(fd, buf, sizeof(buf), 0) >= 0)
         ;
+}
+
+/* Fase 8: EchoLink mic audio must reach a DMR peer AND a YSF peer
+ * concurrently in a DMR+YSF+EchoLink bus. Before this fix, both pathways
+ * drained the same PCM ring buffer AND shared one modeconv instance
+ * (core->mc_el) plus one phase field -- whichever ran first (always DMR,
+ * by call order) silently starved/clobbered the other every tick. No real
+ * vocoder runs in this test binary, so this bypasses the capture stage and
+ * queues AMBE directly into each pathway's own modeconv instance, exactly
+ * what core_el_process_el_audio would have done, then verifies one
+ * core_el_tick drains BOTH to real wire bytes on independent sockets. */
+static void test_el_tx_fanout_dmr_and_ysf_concurrent(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    media_peer_slot_t *dmr_slot, *ysf_slot;
+    int el_id, dmr_id, ysf_id, n;
+    int fake_dmr_fd, fake_ysf_fd;
+    struct sockaddr_in dmr_addr, ysf_addr;
+    socklen_t alen;
+    uint8_t buf[160];
+    uint8_t ambe[7];
+
+    memset(ambe, 0x42, sizeof(ambe));
+
+    fake_dmr_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    assert(fake_dmr_fd >= 0);
+    memset(&dmr_addr, 0, sizeof(dmr_addr));
+    dmr_addr.sin_family = AF_INET;
+    dmr_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    assert(bind(fake_dmr_fd, (struct sockaddr *)&dmr_addr, sizeof(dmr_addr)) == 0);
+    alen = sizeof(dmr_addr);
+    assert(getsockname(fake_dmr_fd, (struct sockaddr *)&dmr_addr, &alen) == 0);
+
+    fake_ysf_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    assert(fake_ysf_fd >= 0);
+    memset(&ysf_addr, 0, sizeof(ysf_addr));
+    ysf_addr.sin_family = AF_INET;
+    ysf_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    assert(bind(fake_ysf_fd, (struct sockaddr *)&ysf_addr, sizeof(ysf_addr)) == 0);
+    alen = sizeof(ysf_addr);
+    assert(getsockname(fake_ysf_fd, (struct sockaddr *)&ysf_addr, &alen) == 0);
+
+    media_router_init(&r);
+    el_id = media_router_add_peer(&r, MEDIA_PEER_ECHOLINK);
+    dmr_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+    ysf_id = media_router_add_peer(&r, MEDIA_PEER_YSF);
+
+    memset(&bus, 0, sizeof(bus));
+    bus.router = &r;
+    bus.n_slots = 3;
+    bus.slots[0].router_id = el_id;
+    bus.slots[0].kind = MEDIA_PEER_ECHOLINK;
+    bus.slots[0].open = 1;
+
+    dmr_slot = &bus.slots[1];
+    dmr_slot->router_id = dmr_id;
+    dmr_slot->kind = MEDIA_PEER_DMR;
+    dmr_slot->open = 1;
+    dmr_slot->u.dmr.sock = socket(AF_INET, SOCK_DGRAM, 0);
+    assert(dmr_slot->u.dmr.sock >= 0);
+    dmr_slot->u.dmr.dmrid = 7141001;
+    dmr_slot->u.dmr.tg = 7141;
+    dmr_slot->u.dmr.peer.sin_family = AF_INET;
+    dmr_slot->u.dmr.peer.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    dmr_slot->u.dmr.peer.sin_port = dmr_addr.sin_port;
+    dmr_slot->u.dmr.status = PEER_DMR_CONNECTED;
+
+    ysf_slot = &bus.slots[2];
+    ysf_slot->router_id = ysf_id;
+    ysf_slot->kind = MEDIA_PEER_YSF;
+    ysf_slot->open = 1;
+    ysf_slot->u.ysf.sock = socket(AF_INET, SOCK_DGRAM, 0);
+    assert(ysf_slot->u.ysf.sock >= 0);
+    memset(ysf_slot->u.ysf.callsign, ' ', sizeof(ysf_slot->u.ysf.callsign));
+    ysf_slot->u.ysf.peer.sin_family = AF_INET;
+    ysf_slot->u.ysf.peer.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    ysf_slot->u.ysf.peer.sin_port = ysf_addr.sin_port;
+
+    media_core_init(&core);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
+    /* The split that fixes the starvation bug: two genuinely separate
+     * modeconv instances, not one shared between DMR-TX and YSF-TX. */
+    assert(core.mc_el_dmr != NULL && core.mc_el != NULL && core.mc_el_dmr != core.mc_el);
+    clock_gettime(CLOCK_MONOTONIC, &core.leg_el_capture.last_el_speech);
+
+    /* Simulate what core_el_process_el_audio would have done once each
+     * pathway is already mid-call: queue AMBE directly, bypassing the
+     * vocoder (none running in this test binary). */
+    core.leg_el_tx_dmr.phase = MEDIA_CALL_TX_TO_PEER;
+    core.leg_el_tx_dmr.call.talker_id = 7300391;
+    memcpy(core.leg_el_tx_dmr.call.netcall.net_src, "TESTCALL  ", 10);
+    modeconv_reset(core.mc_el_dmr);
+    modeconv_put_ambe7(core.mc_el_dmr, ambe);
+    modeconv_put_ambe7(core.mc_el_dmr, ambe);
+    modeconv_put_ambe7(core.mc_el_dmr, ambe);
+
+    core.leg_el_tx_ysf.phase = MEDIA_CALL_TX_TO_PEER;
+    memcpy(core.leg_el_tx_ysf.call.netcall.net_src, "TESTCALL  ", 10);
+    modeconv_reset(core.mc_el);
+    modeconv_put_dmr_header(core.mc_el);
+
+    core_el_tick(&core);
+
+    n = recv_nb(fake_dmr_fd, buf, sizeof(buf), 200);
+    assert(n == 55 && memcmp(buf, "DMRD", 4) == 0);
+
+    n = recv_nb(fake_ysf_fd, buf, sizeof(buf), 200);
+    assert(n == 155 && memcmp(buf, "YSFD", 4) == 0);
+
+    close(dmr_slot->u.dmr.sock);
+    close(ysf_slot->u.ysf.sock);
+    close(fake_dmr_fd);
+    close(fake_ysf_fd);
 }
 
 /* connect-PTT sequence (media/core_ysf_dmr.c): on DMR connect, wait
@@ -784,6 +906,7 @@ int main(void)
     test_el_ysf_call_begin_takes_rx_phase();
     test_multi_dmr_fanout_gets_distinct_tx_state();
     test_dmr_relay_two_peers();
+    test_el_tx_fanout_dmr_and_ysf_concurrent();
     test_three_kind_bus_relay_direct_pcm_concurrent();
     test_connect_ptt_sequence_timing_and_privacy();
     test_ysf_relay_stale_call_releases_router();

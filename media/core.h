@@ -56,40 +56,69 @@ typedef struct {
     struct timespec last_ysf_tx;
 } media_leg_ysf_dmr_t;
 
-/* media/core_echolink.c's own session state — EchoLink<->DMR and
- * EchoLink<->YSF share this (never concurrent with each other: a single EL
- * leg is half-duplex, only one direction/peer at a time), but never with
- * media_leg_ysf_dmr_t above. */
+/* media/core_echolink.c's own session state, split by direction/destination
+ * (Fase 8): EchoLink<->DMR and EchoLink<->YSF used to share ONE struct on the
+ * theory that a single EL leg is half-duplex (only one direction/peer at a
+ * time) -- true for network->EL (one human listener, one active source,
+ * still arbitrated below by leg_el_rx + the router's shared active_ingress),
+ * but WRONG for EL->network: in a DMR+YSF+EchoLink bus, EL mic audio must
+ * reach both a DMR peer and a YSF peer at once, and sharing one phase/PCM
+ * accumulator meant whichever pathway polled first (always DMR) silently
+ * starved the other every tick. Never shared with media_leg_ysf_dmr_t above. */
+
+/* EchoLink mic capture -- one vocoder-encode per 160-sample chunk. Shared
+ * because it's the same physical audio regardless of which destination(s)
+ * consume it; the destinations' own activity/pacing state below is not
+ * shared. */
+typedef struct {
+    int16_t pcm_el_acc[160];
+    int     pcm_el_acc_n;
+    struct timespec last_el_speech; /* last time a full 160-sample chunk arrived */
+} media_leg_el_capture_t;
+
+/* Network -> EchoLink: single listener, single active source at a time,
+ * arbitrated by the router's shared active_ingress exactly like every other
+ * pathway (a DMR peer and a YSF peer can never both hold it concurrently).
+ * rx_src_kind records which category actually claimed it, so tick-time hang
+ * detection doesn't have to guess from which kinds happen to be paired. */
+typedef struct {
+    media_call_phase_t phase; /* IDLE or RX_FROM_PEER */
+    media_call_meta_t  call;
+    media_peer_kind_t  rx_src_kind;
+    uint32_t dmr_rx_stream_id; /* DMR->EL RX stream (dedupe VHEAD) */
+    int      dmr_voice_frames; /* voice frames in, whichever kind is active */
+    int      ysf_voice_frames;
+    struct timespec last_dmr_rx; /* last peer(DMR or YSF)->EL activity */
+} media_leg_el_rx_t;
+
+/* EchoLink mic -> DMR. Independent of media_leg_el_tx_ysf_t below -- both can
+ * be active concurrently. */
+typedef struct {
+    media_call_phase_t phase; /* IDLE or TX_TO_PEER */
+    media_call_meta_t  call;
+    uint8_t  dmr_seq;
+    int      dmr_voice_frames;
+    uint8_t  el_ambe_buf[3][7];
+    int      el_ambe_count;
+    struct timespec last_dmr_tx;
+    struct timespec last_el_tx_end;
+    int      el_speech_run;
+    int      dmr_ending;
+} media_leg_el_tx_dmr_t;
+
+/* EchoLink mic -> YSF. Independent of media_leg_el_tx_dmr_t above. */
 typedef struct {
     media_call_phase_t phase;
     media_call_meta_t  call;
-
-    uint8_t  dmr_seq;
-    int      dmr_voice_frames;
-    uint32_t dmr_rx_stream_id; /* DMR->EL RX stream (dedupe VHEAD), separate
-                                 * from call.stream_id which is the EL->DMR TX
-                                 * stream */
-
-    /* EchoLink PCM accumulation + AMBE grouping before ModeConv/vocoder flush. */
-    int16_t pcm_el_acc[160];
-    int     pcm_el_acc_n;
-    uint8_t el_ambe_buf[3][7];
-    int     el_ambe_count;
-    uint8_t ysf_ambe_buf[5][7];
-    int     ysf_ambe_count;
-
-    uint8_t ysf_cnt;
-    int     ysf_voice_frames;
-
-    struct timespec last_dmr_tx;
-    struct timespec last_dmr_rx;
+    uint8_t  ysf_cnt;
+    int      ysf_voice_frames;
+    uint8_t  ysf_ambe_buf[5][7];
+    int      ysf_ambe_count;
     struct timespec last_ysf_tx;
-    struct timespec last_el_speech;
     struct timespec last_el_tx_end;
-    int el_speech_run;
-    int dmr_ending;
-    int ysf_ending;
-} media_leg_el_t;
+    int      el_speech_run;
+    int      ysf_ending;
+} media_leg_el_tx_ysf_t;
 
 typedef struct {
     /* Infra (bound once at engine start). */
@@ -106,15 +135,22 @@ typedef struct {
      * concurrent cross-kind pairing — sharing one across pairings would let
      * two calls in the same tick (a 3+-kind bus) corrupt each other's ring
      * buffer. mc_ysf_dmr: media/core_ysf_dmr.c's DMR<->YSF direct pathway.
-     * mc_el: media/core_echolink.c's EchoLink<->DMR/YSF vocoder pathway (its
-     * two sub-cases don't run concurrently with each other, only one EL leg
-     * can be active at a time, so they share one instance). */
+     * mc_el_dmr: media/core_echolink.c's EchoLink mic -> DMR pathway (its own
+     * instance since Fase 8 -- it now runs concurrently with mc_el below).
+     * mc_el: the YSF-TX and RX-from-YSF pathways, which remain mutually
+     * exclusive with each other (RX blocks TX, same as before), so they
+     * still safely share one instance. */
     modeconv_t *mc_ysf_dmr;
+    modeconv_t *mc_el_dmr;
     modeconv_t *mc_el;
 
-    /* Per-pathway session state — see media_leg_ysf_dmr_t/media_leg_el_t. */
-    media_leg_ysf_dmr_t leg_ysf_dmr;
-    media_leg_el_t      leg_el;
+    /* Per-pathway session state — see media_leg_ysf_dmr_t and the
+     * media_leg_el_{capture,rx,tx_dmr,tx_ysf}_t split above. */
+    media_leg_ysf_dmr_t    leg_ysf_dmr;
+    media_leg_el_capture_t leg_el_capture;
+    media_leg_el_rx_t      leg_el_rx;
+    media_leg_el_tx_dmr_t  leg_el_tx_dmr;
+    media_leg_el_tx_ysf_t  leg_el_tx_ysf;
 
     uint8_t dmr_slot_bit; /* always 0x80 = TS2 */
     float   el_pcm_gain;  /* [peer.*] echolink gain — EL->DMR/YSF PCM scale */

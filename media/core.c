@@ -23,6 +23,7 @@ void media_core_init(media_core_t *core)
     core->dmr_slot_bit = 0x80; /* TX always TS2 */
     core->el_pcm_gain = 1.0f;
     core->mc_ysf_dmr = modeconv_create();
+    core->mc_el_dmr = modeconv_create();
     core->mc_el = modeconv_create();
 }
 
@@ -156,23 +157,15 @@ void media_core_tick(media_core_t *core)
 /* EchoLink PCM ingress does not go through media_core_ingress (it is polled
  * directly, not classified from a wire packet) — exposed so engine.c can call
  * it after polling the EL peer, mirroring bridge_el_process_el_audio/
- * bridge_el_process_el_to_ysf today. Same "run every applicable family"
- * approach as media_core_ingress: DMR and YSF fan-out are not mutually
- * exclusive in a 3-kind bus, and same-protocol EL<->EL relay is orthogonal
- * to both. */
+ * bridge_el_process_el_to_ysf today. core_el_process_el_audio itself fans out
+ * to whichever of {DMR, YSF} are eligible (not mutually exclusive in a
+ * 3-kind bus); same-protocol EL<->EL relay is orthogonal to both. */
 void media_core_poll_el_pcm(media_core_t *core)
 {
-    int has_dmr, has_ysf;
-
     if (!core || !core->router)
         return;
-    has_dmr = media_router_find_first(core->router, MEDIA_PEER_DMR) >= 0;
-    has_ysf = media_router_find_first(core->router, MEDIA_PEER_YSF) >= 0;
 
-    if (has_dmr)
-        core_el_dmr_process_el_audio(core);
-    if (has_ysf)
-        core_el_ysf_process_el_audio(core);
+    core_el_process_el_audio(core);
     if (core_kind_has_multiple_enabled(core->router, MEDIA_PEER_ECHOLINK))
         core_relay_el_to_el(core);
 }

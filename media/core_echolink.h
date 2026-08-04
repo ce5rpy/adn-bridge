@@ -10,13 +10,16 @@
 
 #include "media/core.h"
 
-/* DMR -> EL (ingress from wire) and EL -> DMR (polled PCM). */
+/* DMR -> EL (ingress from wire). */
 void core_el_dmr_ingress_dmr(media_core_t *core, int src_router_id, const media_bus_frame_t *frame);
-void core_el_dmr_process_el_audio(media_core_t *core);
 
-/* YSF -> EL (ingress from wire) and EL -> YSF (polled PCM). */
+/* YSF -> EL (ingress from wire). */
 void core_el_ysf_ingress_ysf(media_core_t *core, int src_router_id, const media_bus_frame_t *frame);
-void core_el_ysf_process_el_audio(media_core_t *core);
+
+/* EL -> DMR and/or EL -> YSF (polled PCM) — a single capture+encode pass,
+ * fanned out to whichever destination pathway(s) are eligible so both can be
+ * active concurrently in a DMR+YSF+EchoLink bus (Fase 8). */
+void core_el_process_el_audio(media_core_t *core);
 
 /* Paces ModeConv/DMR TX, EL hangtime, DMR/YSF RX hangtime — derives which
  * pairing is active from the router's enabled peer kinds, not a stored
