@@ -854,10 +854,12 @@ void ysf_fich_rewrite_dgid(uint8_t *frame155, uint8_t dgid)
 {
     if (dgid < 1U)
         return;
-    /* Wire FICH sits after the 5-byte sync (+40), like dgidcon's fich_encode(frame+40). */
+    /* Wire FICH sits after the 5-byte sync (+40), like dgidcon's fich_encode(frame+40).
+     * Unlike dgidcon, do NOT force DT here -- this rewrites a real relayed frame, and
+     * clobbering DT to VD_MODE2 while leaving the DCH payload encoded for whatever mode
+     * the source radio actually used corrupts terminal data (GPS, radio ID/model) on
+     * decode. Only DGID should change; everything else stays exactly as received. */
     fich_decode(frame155 + YSF_FICH_OFFSET_RX);
-    fich_set_voip(false);
-    fich_set_dt(YSF_FICH_DT_VD_MODE2);
     fich_set_dgid(dgid);
     fich_encode(frame155 + YSF_FICH_OFFSET_RX);
 }
