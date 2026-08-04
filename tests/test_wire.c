@@ -70,6 +70,31 @@ static void test_identity_callsign(void)
     assert(identity_callsign10_to_dmrid(numeric) == 1234567);
 }
 
+/* A YSF->YSF relay must keep the source radio's real callsign (incl. any
+ * -SUFFIX/SUFFIX after '-' or '/') intact -- only the DMR ID/alias lookup
+ * needs the truncated base form, since a DMR radio ID has no room for it. */
+static void test_identity_resolve_ysf_header_keeps_full_callsign(void)
+{
+    uint8_t pkt[155];
+    bridge_call_meta_t meta;
+    identity_ysf_ctx_t ctx = { NULL, 0, NULL };
+    int rf_id = 0;
+
+    memset(pkt, 0, sizeof(pkt));
+    memcpy(pkt, "YSFD", 4);
+    /* Garbage FICH/CSD payload -> ysf_payload_process_header fails on both
+     * try offsets, forcing the raw wire_src_fallback path (reads pkt+14
+     * directly), same as a real malformed/late-join frame would. */
+    memcpy(pkt + 14, "1234567-A ", 10);
+
+    bridge_call_meta_clear(&meta);
+    assert(identity_resolve_ysf_header(&meta, &rf_id, &ctx, pkt) == 1);
+    /* Base "1234567" is numeric -> resolves via identity_callsign10_to_dmrid
+     * alone, no alias DB needed -- keeps this test self-contained. */
+    assert(rf_id == 1234567);
+    assert(memcmp(meta.net_src, "1234567-A ", 10) == 0);
+}
+
 static void test_ysf_csd(void)
 {
     bridge_call_meta_t meta;
@@ -88,6 +113,7 @@ int main(void)
 {
     test_dmr_wire();
     test_identity_callsign();
+    test_identity_resolve_ysf_header_keeps_full_callsign();
     test_ysf_csd();
     printf("test_wire: ok\n");
     return 0;

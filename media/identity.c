@@ -300,17 +300,23 @@ static int identity_assign_ysf_talker(bridge_call_meta_t *meta, int *ysf_rf_id,
     identity_dbg_label10(raw_label, (const uint8_t *)(src ? src : (const char *)"          "));
     identity_callsign_base_src(src, base);
     identity_format_base_callsign10(talker, base);
-    memcpy(meta->net_src, talker, 10);
-    LOG_DMR_DEBUG("%s callsign raw=%s base=%s\n",
-                  media_flow_label(MEDIA_PEER_YSF, MEDIA_PEER_DMR), raw_label, base);
+    /* net_src carries the wire callsign onward (incl. to a YSF->YSF relay
+     * peer, where it must stay transparent) -- only the base (no -SUFFIX/
+     * /SUFFIX) is used for DMR ID/alias lookup below; the outbound callsign
+     * itself keeps the real suffix a DMR radio ID has no room for. */
+    identity_format_full_callsign10(meta->net_src, src);
+    /* This resolves a generic talker id (alias/DMR-ID lookup by base
+     * callsign) used for any destination, not just DMR -- log it under the
+     * YSF channel it actually runs on, not as if a DMR peer were involved
+     * (misleading on a DMR-less YSF<->YSF bridge). */
+    LOG_YSF_DEBUG("YSF callsign raw=%s base=%s\n", raw_label, base);
 
     id = identity_callsign10_to_dmrid((const uint8_t *)talker);
     if (id <= 0)
         id = identity_lookup_alias_id(ctx->aliases, base);
     if (id > 0) {
         *ysf_rf_id = id;
-        LOG_DMR_DEBUG("%s base %s -> id %d (alias)\n",
-                      media_flow_label(MEDIA_PEER_YSF, MEDIA_PEER_DMR), base, id);
+        LOG_YSF_DEBUG("YSF base %s -> talker id %d (alias)\n", base, id);
         return 1;
     }
 
@@ -355,19 +361,19 @@ int identity_resolve_ysf_header(bridge_call_meta_t *meta, int *ysf_rf_id,
             continue;
 
         if (identity_assign_ysf_talker(meta, ysf_rf_id, ctx, csd_src)) {
-            LOG_YSF_DEBUG("YSF HEADER CSD src=%.10s dst=%.10s -> DMR id %d (try %d)\n",
+            LOG_YSF_DEBUG("YSF HEADER CSD src=%.10s dst=%.10s -> talker id %d (try %d)\n",
                           csd_src, csd_dst, *ysf_rf_id, i);
             return 1;
         }
-        LOG_YSF_DEBUG("YSF HEADER CSD src=%.10s dst=%.10s (no DMR id, try %d)\n",
+        LOG_YSF_DEBUG("YSF HEADER CSD src=%.10s dst=%.10s (no talker id, try %d)\n",
                       csd_src, csd_dst, i);
     }
 
     if (wire_src_fallback(meta, ysf_rf_id, ctx, pkt155)) {
-        LOG_YSF_DEBUG("YSF HEADER wire src=%.10s -> DMR id %d\n", meta->net_src, *ysf_rf_id);
+        LOG_YSF_DEBUG("YSF HEADER wire src=%.10s -> talker id %d\n", meta->net_src, *ysf_rf_id);
         return 1;
     }
 
-    LOG_YSF_DEBUG("YSF HEADER: no talker DMR id (bridge dmrid not set)\n");
+    LOG_YSF_DEBUG("YSF HEADER: no talker id resolved (no alias match, no bridge dmrid)\n");
     return 0;
 }
