@@ -616,12 +616,18 @@ static int el_directory_lookup_node(peer_echolink_t *p, const char *node, struct
         return -1;
     upper_copy(want, sizeof(want), node);
 
-    /* EchoLink iLink list ('S' + scrambled IP), then legacy 's'. */
+    /* EchoLink iLink list ('S' + scrambled IP), then legacy 's'. Same
+     * dir_stop check as el_try_directory_login -- up to 2 * server_count
+     * blocking attempts here otherwise, each up to EL_DIR_LOOKUP_TIMEOUT_SEC. */
     for (i = 0; i < p->directory_server_count; i++) {
+        if (p->dir_stop)
+            return -1;
         if (el_directory_lookup_on_server(p, p->directory_servers[i], want, 1, out) == 0)
             return 0;
     }
     for (i = 0; i < p->directory_server_count; i++) {
+        if (p->dir_stop)
+            return -1;
         if (el_directory_lookup_on_server(p, p->directory_servers[i], want, 0, out) == 0)
             return 0;
     }
@@ -707,7 +713,7 @@ static void el_login_and_list(peer_echolink_t *p)
 {
     el_dir_op_begin(p);
     el_try_directory_login(p);
-    if (p->station_list_interval > 0)
+    if (!p->dir_stop && p->station_list_interval > 0)
         el_station_list_refresh_peer(p);
     el_dir_op_end(p);
 }
@@ -884,6 +890,12 @@ static int el_try_directory_login(peer_echolink_t *p)
     int i;
 
     for (i = 0; i < p->directory_server_count; i++) {
+        /* Shutdown requested mid-retry — el_dir_thread_stop's shutdown() only
+         * interrupts whichever single connection is active right now; without
+         * this check we'd immediately open the next server and block again,
+         * for up to directory_server_count * EL_DIR_LOOKUP_TIMEOUT_SEC. */
+        if (p->dir_stop)
+            return -1;
         if (el_directory_login(p, p->directory_servers[i]) == 0)
             return 0;
     }
