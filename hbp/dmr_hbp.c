@@ -168,7 +168,6 @@ uint32_t            sha256_buffer[32U];
 uint32_t            sha256_buflen;
 bool                bptc_rawData[196];
 bool                bptc_deInterData[196];
-bool                emb_raw[128U];
 bool                emb_data[72U];
 int                 rx_srcid;
 int                 tx_tgid;
@@ -591,7 +590,7 @@ void encode_qr1676(uint8_t* data)
     data[0U] = cksum >> 8;
     data[1U] = cksum & 0xFFU;
 }
-void encode_embedded_data()
+void encode_embedded_data(bool *emb_raw_out)
 {
     uint32_t crc;
     unsigned short total = 0U;
@@ -631,19 +630,19 @@ void encode_embedded_data()
         data[a + 112U] = data[a + 0U] ^ data[a + 16U] ^ data[a + 32U] ^ data[a + 48U] ^ data[a + 64U] ^ data[a + 80U] ^ data[a + 96U];
     b = 0U;
     for (uint32_t a = 0U; a < 128U; a++) {
-        emb_raw[a] = data[b];
+        emb_raw_out[a] = data[b];
         b += 16U;
         if (b > 127U)
             b -= 127U;
     }
 }
-uint8_t get_embedded_data(uint8_t* data, uint8_t n)
+uint8_t get_embedded_data(uint8_t* data, uint8_t n, const bool *emb_raw_in)
 {
     if (n >= 1U && n < 5U) {
         n--;
         bool bits[40U];
         memset(bits, 0x00U, 40U * sizeof(bool));
-        memcpy(bits + 4U, emb_raw + n * 32U, 32U * sizeof(bool));
+        memcpy(bits + 4U, emb_raw_in + n * 32U, 32U * sizeof(bool));
         uint8_t bytes[5U];
         bitsToByteBE(bits + 0U,  &bytes[0U]);
         bitsToByteBE(bits + 8U,  &bytes[1U]);

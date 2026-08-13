@@ -21,7 +21,7 @@ void dmr_tx_send(const dmr_tx_args_t *a, uint8_t frame_type, const uint8_t *voic
     int rf_id;
     int src_id;
 
-    if (!a || !a->peer || !a->seq || !a->last_tx)
+    if (!a || !a->peer || !a->seq || !a->last_tx || !a->emb_raw)
         return;
 
     rf_id = a->talker_rf_id;
@@ -62,12 +62,12 @@ void dmr_tx_send(const dmr_tx_args_t *a, uint8_t frame_type, const uint8_t *voic
             for (i = 0; i < 7; i++)
                 pkt[20 + 13 + i] = (uint8_t)((pkt[20 + 13 + i] & ~DMR_SYNC_MASK[i])
                                              | DMR_MS_SOURCED_AUDIO_SYNC[i]);
-            encode_embedded_data();
+            encode_embedded_data(a->emb_raw);
         } else {
             uint8_t lcss;
 
             memcpy(buf + 20, pkt + 20, 33);
-            lcss = get_embedded_data(buf + 20, frame_type & 0x0f);
+            lcss = get_embedded_data(buf + 20, frame_type & 0x0f, a->emb_raw);
             get_emb_data(buf + 20, lcss);
             memcpy(pkt + 20, buf + 20, 33);
         }
