@@ -23,6 +23,7 @@
 #ifndef DMR_CODEC_H
 #define DMR_CODEC_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 extern uint8_t buf[];
@@ -30,8 +31,11 @@ extern int tx_tgid;
 extern int rx_srcid;
 
 void generate_header(void);
-void encode_embedded_data(void);
-uint8_t get_embedded_data(uint8_t *data, uint8_t n);
+/* emb_raw is 128 bools owned by the caller (media_peer_slot_t.dmr_emb_raw),
+ * not a shared global -- it must survive from the n=0 encode to the n=1..5
+ * reads that follow across separate calls. */
+void encode_embedded_data(bool *emb_raw_out);
+uint8_t get_embedded_data(uint8_t *data, uint8_t n, const bool *emb_raw_in);
 void get_emb_data(uint8_t *data, uint8_t lcss);
 
 #endif

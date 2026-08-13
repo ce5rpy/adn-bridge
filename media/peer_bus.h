@@ -8,6 +8,7 @@
 #ifndef ADN_MEDIA_PEER_BUS_H
 #define ADN_MEDIA_PEER_BUS_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
 
@@ -33,6 +34,9 @@ typedef struct {
      * pathway at call-begin (see media/core_ysf_dmr.c, media/core_echolink.c). */
     uint8_t           dmr_tx_seq;
     uint32_t          dmr_tx_stream_id;
+    /* Per-destination embedded LC scratch (encoded on n=0, read on n=1..5
+     * across separate dmr_tx_send() calls) -- must not be shared globally. */
+    bool              dmr_emb_raw[128];
     /* Per-destination connect-PTT (DMR-kind slots only): each DMR peer may
      * have its own TG and its own clear_dynamic_tg config, so each needs an
      * independent clear-then-activate sequence, not one shared TG fanned

@@ -278,6 +278,7 @@ static void core_el_dmr_tx_dmrd(media_core_t *core, media_peer_slot_t *slot,
     args.seq = &slot->dmr_tx_seq;
     args.stream_id = slot->dmr_tx_stream_id;
     args.last_tx = &core->leg_el_tx_dmr.last_dmr_tx;
+    args.emb_raw = slot->dmr_emb_raw;
     adapter_dmr_egress_dmrd(&args, frame_type, voice33);
 }
 

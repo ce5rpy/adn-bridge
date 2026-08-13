@@ -19,6 +19,7 @@
 #include "media/core_ysf_dmr.h"
 #include "media/peer_bus.h"
 #include "media/router.h"
+#include "session/dmr_tx.h"
 #include "session/dmr_wire.h"
 #include "ysf_fich.h"
 
@@ -649,6 +650,98 @@ static void test_el_tx_fanout_dmr_and_ysf_concurrent(void)
     close(fake_ysf_fd);
 }
 
+/* A destination's embedded LC (encoded on n=0, read back on n=1..5 across
+ * separate dmr_tx_send() calls) must not change depending on what other
+ * destinations' calls run in between. */
+static void test_dmr_tx_embedded_lc_independent_per_destination(void)
+{
+    peer_dmr_t dmrA, dmrB;
+    dmr_tx_args_t argsA, argsB;
+    uint8_t seqA, seqB;
+    struct timespec last_txA, last_txB;
+    bool emb_rawA[128], emb_rawB[128];
+    int fake_fdA, fake_fdB;
+    struct sockaddr_in addrA, addrB;
+    socklen_t alen;
+    uint8_t bufA[64], bufB[64], buf_isolated[64];
+    uint8_t voice[33];
+
+    fake_fdA = socket(AF_INET, SOCK_DGRAM, 0);
+    assert(fake_fdA >= 0);
+    memset(&addrA, 0, sizeof(addrA));
+    addrA.sin_family = AF_INET;
+    addrA.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    assert(bind(fake_fdA, (struct sockaddr *)&addrA, sizeof(addrA)) == 0);
+    alen = sizeof(addrA);
+    assert(getsockname(fake_fdA, (struct sockaddr *)&addrA, &alen) == 0);
+
+    fake_fdB = socket(AF_INET, SOCK_DGRAM, 0);
+    assert(fake_fdB >= 0);
+    memset(&addrB, 0, sizeof(addrB));
+    addrB.sin_family = AF_INET;
+    addrB.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    assert(bind(fake_fdB, (struct sockaddr *)&addrB, sizeof(addrB)) == 0);
+    alen = sizeof(addrB);
+    assert(getsockname(fake_fdB, (struct sockaddr *)&addrB, &alen) == 0);
+
+    memset(&dmrA, 0, sizeof(dmrA));
+    dmrA.sock = socket(AF_INET, SOCK_DGRAM, 0);
+    assert(dmrA.sock >= 0);
+    dmrA.status = PEER_DMR_CONNECTED;
+    dmrA.peer.sin_family = AF_INET;
+    dmrA.peer.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    dmrA.peer.sin_port = addrA.sin_port;
+
+    memset(&dmrB, 0, sizeof(dmrB));
+    dmrB.sock = socket(AF_INET, SOCK_DGRAM, 0);
+    assert(dmrB.sock >= 0);
+    dmrB.status = PEER_DMR_CONNECTED;
+    dmrB.peer.sin_family = AF_INET;
+    dmrB.peer.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    dmrB.peer.sin_port = addrB.sin_port;
+
+    memset(&last_txA, 0, sizeof(last_txA));
+    memset(&last_txB, 0, sizeof(last_txB));
+    memset(voice, 0x55, sizeof(voice));
+    seqA = seqB = 0;
+    memset(emb_rawA, 0, sizeof(emb_rawA));
+    memset(emb_rawB, 0, sizeof(emb_rawB));
+
+    argsA = (dmr_tx_args_t){ .peer = &dmrA, .bridge_dmrid = 3000001, .talker_rf_id = 7300391,
+                             .tx_tg = 100, .seq = &seqA, .stream_id = 111, .last_tx = &last_txA,
+                             .emb_raw = emb_rawA };
+    argsB = (dmr_tx_args_t){ .peer = &dmrB, .bridge_dmrid = 3000002, .talker_rf_id = 7300391,
+                             .tx_tg = 200, .seq = &seqB, .stream_id = 222, .last_tx = &last_txB,
+                             .emb_raw = emb_rawB };
+
+    /* Interleaved: A's n=0, B's n=0, then A's n=1, then B's n=1. */
+    dmr_tx_send(&argsA, (uint8_t)(DMRD_FT_VOICE_SYNC << 4), voice);
+    assert(recv_nb(fake_fdA, bufA, sizeof(bufA), 200) == 55);
+    dmr_tx_send(&argsB, (uint8_t)(DMRD_FT_VOICE_SYNC << 4), voice);
+    assert(recv_nb(fake_fdB, bufB, sizeof(bufB), 200) == 55);
+
+    dmr_tx_send(&argsA, 1, voice);
+    assert(recv_nb(fake_fdA, bufA, sizeof(bufA), 200) == 55);
+    dmr_tx_send(&argsB, 1, voice);
+    assert(recv_nb(fake_fdB, bufB, sizeof(bufB), 200) == 55);
+
+    /* Isolated: A alone, nothing else touches emb_rawA in between. */
+    memset(emb_rawA, 0, sizeof(emb_rawA));
+    seqA = 0;
+    dmr_tx_send(&argsA, (uint8_t)(DMRD_FT_VOICE_SYNC << 4), voice);
+    assert(recv_nb(fake_fdA, buf_isolated, sizeof(buf_isolated), 200) == 55);
+    dmr_tx_send(&argsA, 1, voice);
+    assert(recv_nb(fake_fdA, buf_isolated, sizeof(buf_isolated), 200) == 55);
+
+    /* Embedded LC fragment: wire offset 34-38. */
+    assert(memcmp(bufA + 34, buf_isolated + 34, 5) == 0);
+
+    close(dmrA.sock);
+    close(dmrB.sock);
+    close(fake_fdA);
+    close(fake_fdB);
+}
+
 /* connect-PTT sequence (media/core_ysf_dmr.c): on DMR connect, wait
  * CONNECT_PTT_START_DELAY_MS, PTT to TG 4000 as a PRIVATE call for
  * CONNECT_PTT_MS, wait CONNECT_PTT_GAP_MS, then PTT to the real TG as a
@@ -911,6 +1004,7 @@ int main(void)
     test_connect_ptt_sequence_timing_and_privacy();
     test_ysf_relay_stale_call_releases_router();
     test_ysf_relay_voice_frame_is_transparent();
+    test_dmr_tx_embedded_lc_independent_per_destination();
     printf("test_media_core: ok\n");
     return 0;
 }
