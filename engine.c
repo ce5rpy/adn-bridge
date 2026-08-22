@@ -134,8 +134,9 @@ static int engine_start(engine_host_t *host, adn_bridge_config_t *cfg, engine_ct
         ctx->vocoder_open = 1;
     }
 
-    LOG_INFO("engine: %s (%d peers, ModeConv=%s, vocoder=%s)\n",
+    LOG_INFO("engine: %s (%d enabled / %d, ModeConv=%s, vocoder=%s)\n",
              adn_bridge_layout_name(cfg),
+             adn_bridge_config_enabled_peer_count(cfg),
              media_router_peer_count(&ctx->router),
              ctx->plan.needs_modeconv ? "yes" : "no",
              ctx->plan.needs_vocoder ? "yes" : "no");
