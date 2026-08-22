@@ -154,11 +154,12 @@ static void voc_drain(vocoder_t *v)
 static int voc_exchange_once(vocoder_t *v, const uint8_t *req, int reqlen,
                              uint8_t *rsp, int rsplen, int timeout_ms)
 {
-    int n;
+    int n, sent;
 
     voc_drain(v);
-    if (sendto(v->sock, req, (size_t)reqlen, 0,
-               (struct sockaddr *)&v->peer, sizeof(v->peer)) < 0)
+    sent = (int)sendto(v->sock, req, (size_t)reqlen, 0,
+                       (struct sockaddr *)&v->peer, sizeof(v->peer));
+    if (sent < 0)
         return -1;
     n = voc_recv(v, rsp, rsplen, timeout_ms);
     if (n == 0)
@@ -166,6 +167,38 @@ static int voc_exchange_once(vocoder_t *v, const uint8_t *req, int reqlen,
     if (n < 4 || rsp[0] != DV3K_START)
         return -1;
     return n;
+}
+
+static void voc_log_probe_fail(const char *host, int port, const char *stage,
+                               int n, const uint8_t *rsp, int rsp_len)
+{
+    if (n == 0) {
+        LOG_VOC_ERROR("vocoder: %s probe to %s:%d timed out (no UDP reply in 2s) — "
+                      "port may be open but md380-emu/AMBEServer not answering "
+                      "(wedged emulator, wrong service on port, or firewall)\n",
+                      stage, host, port);
+        return;
+    }
+    if (n < 0) {
+        if (errno)
+            LOG_VOC_ERROR("vocoder: %s probe to %s:%d failed: %s\n",
+                          stage, host, port, strerror(errno));
+        else
+            LOG_VOC_ERROR("vocoder: %s probe to %s:%d failed (I/O or bad reply)\n",
+                          stage, host, port);
+        return;
+    }
+    LOG_VOC_ERROR("vocoder: %s probe to %s:%d unexpected reply len=%d "
+                  "(want DV3K 0x61 ctrl)\n",
+                  stage, host, port, n);
+    if (rsp_len > 0 && rsp) {
+        int show = rsp_len > 8 ? 8 : rsp_len;
+        LOG_VOC_ERROR("vocoder: reply head: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                      rsp[0], show > 1 ? rsp[1] : 0, show > 2 ? rsp[2] : 0,
+                      show > 3 ? rsp[3] : 0, show > 4 ? rsp[4] : 0,
+                      show > 5 ? rsp[5] : 0, show > 6 ? rsp[6] : 0,
+                      show > 7 ? rsp[7] : 0);
+    }
 }
 
 /* Re-assert DMR 49-bit rate after emu stalls / desync (md380-emu under qemu). */
@@ -250,8 +283,7 @@ int vocoder_open(vocoder_t *v, const char *host, int port)
     n = voc_exchange_once(v, DV3K_PRODID_REQ, (int)sizeof(DV3K_PRODID_REQ),
                           rsp, (int)sizeof(rsp), 2000);
     if (n <= 0) {
-        LOG_VOC_ERROR("vocoder: PRODID probe failed (%s:%d)%s\n", host, port,
-                  n == 0 ? " timeout" : "");
+        voc_log_probe_fail(host, port, "PRODID", n, rsp, n > 0 ? n : 0);
         close(v->sock);
         v->sock = -1;
         return -1;
@@ -272,7 +304,7 @@ int vocoder_open(vocoder_t *v, const char *host, int port)
     n = voc_exchange_once(v, DV3K_RATET_DMR, (int)sizeof(DV3K_RATET_DMR),
                           rsp, (int)sizeof(rsp), 2000);
     if (n <= 0) {
-        LOG_VOC_ERROR("vocoder: DMR rate set failed%s\n", n == 0 ? " timeout" : "");
+        voc_log_probe_fail(host, port, "DMR RATET", n, rsp, n > 0 ? n : 0);
         close(v->sock);
         v->sock = -1;
         return -1;

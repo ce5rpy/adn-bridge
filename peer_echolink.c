@@ -668,7 +668,9 @@ static int el_station_list_refresh_peer(peer_echolink_t *p)
         return 0;
     /* TCP/DNS lookup — must not hold dir_mu (audio path needs it briefly). */
     if (el_resolve_peer(p, &ip) != 0) {
-        LOG_EL_WARNING("echolink: station list: %s not found\n", p->host);
+        LOG_EL_WARNING("echolink: station list: %s not in directory "
+                       "(conference/node offline, wrong callsign, or directory down)\n",
+                       p->host);
         return -1;
     }
 

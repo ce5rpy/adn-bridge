@@ -106,18 +106,32 @@ static int engine_start(engine_host_t *host, adn_bridge_config_t *cfg, engine_ct
     if (el_p)
         media_core_set_el_gain(core, el_p->u.el.gain);
 
-    if (ctx->plan.needs_vocoder) {
-        if (!el_p || !el_p->u.el.vocoder_host[0] || el_p->u.el.vocoder_port <= 0)
-            return -1;
-        if (vocoder_open(&core->voc, el_p->u.el.vocoder_host, el_p->u.el.vocoder_port) < 0)
-            return -1;
-        ctx->vocoder_open = 1;
+    /*
+     * Open wire peers before the vocoder probe so startup logs show EchoLink
+     * directory / conference resolution (e.g. *REDCHILE* offline) before AMBE
+     * errors — otherwise a wedged md380-emu masks the real operator context.
+     */
+    if (media_peer_bus_open_all(&ctx->bus, cfg) != 0) {
+        LOG_ERROR("engine: startup aborted — peer open failed "
+                  "(see dmr/echolink/ysf log above)\n");
+        return -1;
     }
 
-    if (media_peer_bus_open_all(&ctx->bus, cfg) != 0) {
-        if (ctx->vocoder_open)
-            vocoder_close(&core->voc);
-        return -1;
+    if (ctx->plan.needs_vocoder) {
+        if (!el_p || !el_p->u.el.vocoder_host[0] || el_p->u.el.vocoder_port <= 0) {
+            LOG_ERROR("engine: startup aborted — EchoLink layout needs "
+                      "[peer.el] vocoder_host and vocoder_port\n");
+            media_peer_bus_close_all(&ctx->bus);
+            return -1;
+        }
+        if (vocoder_open(&core->voc, el_p->u.el.vocoder_host, el_p->u.el.vocoder_port) < 0) {
+            LOG_ERROR("engine: startup aborted — AMBE vocoder not ready at %s:%d "
+                      "(EchoLink voice bridge cannot start; see vocoder log above)\n",
+                      el_p->u.el.vocoder_host, el_p->u.el.vocoder_port);
+            media_peer_bus_close_all(&ctx->bus);
+            return -1;
+        }
+        ctx->vocoder_open = 1;
     }
 
     LOG_INFO("engine: %s (%d peers, ModeConv=%s, vocoder=%s)\n",
