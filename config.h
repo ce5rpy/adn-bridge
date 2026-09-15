@@ -23,6 +23,7 @@ typedef enum {
     ADN_BRIDGE_PEER_TYPE_DMR = 0,
     ADN_BRIDGE_PEER_TYPE_YSF,
     ADN_BRIDGE_PEER_TYPE_ECHOLINK,
+    ADN_BRIDGE_PEER_TYPE_ALSA,
 } adn_bridge_peer_type_t;
 
 typedef struct {
@@ -88,6 +89,44 @@ typedef struct {
     int log_level;
 } adn_bridge_peer_el_t;
 
+/* Local ALSA sound-card peer. No period_frames/buffer_periods here -- the
+ * bus always speaks CODEC_PCM_SAMPLES=160-sample frames, a fixed part of
+ * the bus contract, so ALSA's own period/buffer sizing (peer_alsa.c's
+ * snd_pcm_set_params) isn't something a config key should be able to change
+ * without breaking that contract. No callsign or dmrid here either -- ALSA
+ * carries no identity of its own at all; when it transmits to DMR/YSF,
+ * media/core_pcm_bridge.c's identity fallback chain (which already exists
+ * for the "no identity resolved" case) attributes the traffic to the
+ * bridge's own [peer.dmr] callsign/dmrid. A peer this dumb shouldn't need
+ * to be configured with a name just to move audio.
+ *
+ * ptt_type picks how peer_alsa.c decides "should the mic be on air right
+ * now": "vox" (default) gates on the vox_* RMS state machine below; "gpio"
+ * gates purely on a GPIO pin's level via libgpiod (WITH_GPIOD build) --
+ * active means on-air, inactive means off-air, regardless of whether
+ * there's any audio at all (a hardware COR/PTT switch, not software VOX).
+ * The vox_* fields are ignored when ptt_type=gpio. */
+typedef struct {
+    char capture_device[64];
+    char playback_device[64];
+    float gain;
+    char ptt_type[8];    /* "vox" (default) or "gpio" */
+    int vox_threshold;
+    int vox_hang_ms;
+    int vox_attack_ms;
+    int tx_cooldown_ms;
+    char gpio_chip[32];  /* e.g. "/dev/gpiochip0" -- only used if ptt_type=gpio */
+    int cor_gpio;        /* line offset on gpio_chip */
+    int cor_active_low;  /* 0 = active-high (default), 1 = active-low */
+    int cor_debounce_ms;
+    /* Own vocoder connection -- never shared with another PCM-native peer's
+     * (e.g. [peer.el]'s), see media/core_pcm_bridge.c's design notes. */
+    char vocoder_host[128];
+    int vocoder_port;
+    int vocoder_log_level; /* -1 = inherit [log] level= */
+    int log_level; /* -1 = inherit [log] level= */
+} adn_bridge_peer_alsa_t;
+
 typedef struct {
     char name[ADN_BRIDGE_PEER_NAME_LEN];
     adn_bridge_peer_type_t type;
@@ -97,6 +136,7 @@ typedef struct {
         adn_bridge_peer_dmr_t dmr;
         adn_bridge_peer_ysf_t ysf;
         adn_bridge_peer_el_t  el;
+        adn_bridge_peer_alsa_t alsa;
     } u;
 } adn_bridge_peer_t;
 

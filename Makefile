@@ -18,19 +18,43 @@ CFLAGS += -MMD -MP
 CXXFLAGS += -MMD -MP
 LDFLAGS ?= -lcrypto -lm -lpthread -lz -lgsm
 
+# WITH_ALSA=1 (default): build the local ALSA peer against libasound --
+# needs libasound2-dev at build time and libasound2 at runtime. Set
+# WITH_ALSA=0 to opt out (peer_alsa.c/adapters/alsa.c fall back to a stub
+# open() that always fails, no libasound dependency at all). Must come
+# after the LDFLAGS ?= default above, or that default never applies
+# (LDFLAGS would already be non-empty by the time make reaches it).
+WITH_ALSA ?= 1
+ifeq ($(WITH_ALSA),1)
+CFLAGS += -DWITH_ALSA
+LDFLAGS += -lasound
+endif
+
+# WITH_GPIOD=1 (opt-in, default off): build peer_alsa.c's GPIO COR/PTT
+# support (ptt_type=gpio) against libgpiod -- needs libgpiod-dev at build
+# time and libgpiod (v2 API) at runtime. Unlike sound cards, GPIO is
+# RPi/embedded-specific, not universal, so this stays opt-in rather than
+# defaulting on like WITH_ALSA. Without it, ptt_type=gpio fails to open
+# with a clear error at startup; ptt_type=vox (the default) is unaffected.
+WITH_GPIOD ?= 0
+ifeq ($(WITH_GPIOD),1)
+CFLAGS += -DWITH_GPIOD
+LDFLAGS += -lgpiod
+endif
+
 BUILD = build
 
 C_SRCS = adn_bridge.c config.c log.c aliases.c talker_alias.c peer_dmr.c peer_ysf.c \
-         peer_echolink.c el_proxy.c vocoder_remote.c ysf_fich.c \
+         peer_echolink.c peer_alsa.c el_proxy.c vocoder_remote.c ysf_fich.c \
          hbp/dmr_hbp.c vendor/yyjson/yyjson.c \
          media/bridge_util.c media/call_meta.c media/identity.c media/router.c \
          media/peer_bus.c media/codec_plan.c media/log_flow.c media/core.c \
-         media/core_ysf_dmr.c media/core_echolink.c media/core_relay.c \
+         media/core_ysf_dmr.c media/core_pcm_bridge.c media/core_relay.c \
          adapters/peer_plugin.c \
          engine.c \
          session/dmr_wire.c session/dmr_tx.c session/ysf_tx.c \
          codecs/registry.c \
-         adapters/dmr.c adapters/ysf.c adapters/el.c
+         adapters/dmr.c adapters/ysf.c adapters/el.c adapters/alsa.c
 CXX_SRCS = mmdvm/ModeConv.cpp mmdvm/Golay24128.cpp mmdvm/modeconv_wrap.cpp \
            mmdvm/YSFPayload.cpp mmdvm/YSFConvolution.cpp mmdvm/CRC.cpp \
            mmdvm/Utils.cpp mmdvm/ysfpayload_wrap.cpp
@@ -67,9 +91,9 @@ install: adn-bridge
 	install -m 644 examples/adn-bridge-echolink-ysf.example.ini $(DESTDIR)$(CONFDIR)/
 
 clean:
-	rm -rf $(BUILD) adn-bridge tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers tests/test_codec_plan tests/test_media_core tests/test_log tests/test_echolink_inbound
+	rm -rf $(BUILD) adn-bridge tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers tests/test_codec_plan tests/test_media_core tests/test_log tests/test_echolink_inbound tests/test_peer_alsa
 
-test: tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers tests/test_codec_plan tests/test_media_core tests/test_log tests/test_echolink_inbound
+test: tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers tests/test_codec_plan tests/test_media_core tests/test_log tests/test_echolink_inbound tests/test_peer_alsa
 	./tests/test_wire
 	./tests/test_codecs
 	./tests/test_router
@@ -78,6 +102,7 @@ test: tests/test_wire tests/test_codecs tests/test_router tests/test_config_peer
 	./tests/test_media_core
 	./tests/test_log
 	./tests/test_echolink_inbound
+	./tests/test_peer_alsa
 
 $(BUILD)/tests/test_wire.o: tests/test_wire.c
 	@mkdir -p $(dir $@)
@@ -142,16 +167,17 @@ $(BUILD)/tests/test_media_core.o: tests/test_media_core.c
 
 tests/test_media_core: adn-bridge $(BUILD)/tests/test_media_core.o
 	$(CXX) -o $@ $(BUILD)/tests/test_media_core.o \
-		$(BUILD)/media/core.o $(BUILD)/media/core_ysf_dmr.o $(BUILD)/media/core_echolink.o \
+		$(BUILD)/media/core.o $(BUILD)/media/core_ysf_dmr.o $(BUILD)/media/core_pcm_bridge.o \
 		$(BUILD)/media/core_relay.o \
 		$(BUILD)/media/router.o $(BUILD)/media/codec_plan.o \
 		$(BUILD)/media/log_flow.o $(BUILD)/media/peer_bus.o \
 		$(BUILD)/media/bridge_util.o $(BUILD)/media/call_meta.o \
 		$(BUILD)/media/identity.o \
 		$(BUILD)/adapters/peer_plugin.o $(BUILD)/adapters/dmr.o $(BUILD)/adapters/ysf.o \
-		$(BUILD)/adapters/el.o $(BUILD)/codecs/registry.o \
+		$(BUILD)/adapters/el.o $(BUILD)/adapters/alsa.o $(BUILD)/codecs/registry.o \
 		$(BUILD)/session/dmr_wire.o $(BUILD)/session/dmr_tx.o $(BUILD)/session/ysf_tx.o \
-		$(BUILD)/peer_dmr.o $(BUILD)/peer_ysf.o $(BUILD)/peer_echolink.o $(BUILD)/el_proxy.o \
+		$(BUILD)/peer_dmr.o $(BUILD)/peer_ysf.o $(BUILD)/peer_echolink.o $(BUILD)/peer_alsa.o \
+		$(BUILD)/el_proxy.o \
 		$(BUILD)/vocoder_remote.o $(BUILD)/talker_alias.o \
 		$(BUILD)/hbp/dmr_hbp.o $(BUILD)/log.o $(BUILD)/ysf_fich.o $(BUILD)/aliases.o \
 		$(BUILD)/vendor/yyjson/yyjson.o \
@@ -165,6 +191,14 @@ tests/test_echolink_inbound: $(BUILD)/tests/test_echolink_inbound.o $(BUILD)/pee
 	$(CC) -o $@ $(BUILD)/tests/test_echolink_inbound.o \
 		$(BUILD)/peer_echolink.o $(BUILD)/el_proxy.o $(BUILD)/log.o \
 		$(BUILD)/vocoder_remote.o -lcrypto -lm -lpthread -lz -lgsm
+
+$(BUILD)/tests/test_peer_alsa.o: tests/test_peer_alsa.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+tests/test_peer_alsa: $(BUILD)/tests/test_peer_alsa.o $(BUILD)/peer_alsa.o $(BUILD)/log.o
+	$(CC) -o $@ $(BUILD)/tests/test_peer_alsa.o $(BUILD)/peer_alsa.o $(BUILD)/log.o -lm \
+		$(if $(filter 1,$(WITH_ALSA)),-lasound) $(if $(filter 1,$(WITH_GPIOD)),-lgpiod)
 
 -include $(DEPS)
 

@@ -19,12 +19,6 @@
 #include "mmdvm/modeconv_wrap.h"
 #include "vocoder.h"
 
-typedef enum {
-    MEDIA_CALL_IDLE = 0,
-    MEDIA_CALL_TX_TO_PEER,   /* ingress from one peer, fanning out to others */
-    MEDIA_CALL_RX_FROM_PEER, /* single-peer layouts: peer -> bus, symmetric leg */
-} media_call_phase_t;
-
 /* DMRA sidechain (talker alias) assembly — mirrors adn_bridge_t.dmra today. */
 typedef struct {
     int     rf;
@@ -56,69 +50,14 @@ typedef struct {
     struct timespec last_ysf_tx;
 } media_leg_ysf_dmr_t;
 
-/* media/core_echolink.c's own session state, split by direction/destination
- * (Fase 8): EchoLink<->DMR and EchoLink<->YSF used to share ONE struct on the
- * theory that a single EL leg is half-duplex (only one direction/peer at a
- * time) -- true for network->EL (one human listener, one active source,
- * still arbitrated below by leg_el_rx + the router's shared active_ingress),
- * but WRONG for EL->network: in a DMR+YSF+EchoLink bus, EL mic audio must
- * reach both a DMR peer and a YSF peer at once, and sharing one phase/PCM
- * accumulator meant whichever pathway polled first (always DMR) silently
- * starved the other every tick. Never shared with media_leg_ysf_dmr_t above. */
-
-/* EchoLink mic capture -- one vocoder-encode per 160-sample chunk. Shared
- * because it's the same physical audio regardless of which destination(s)
- * consume it; the destinations' own activity/pacing state below is not
- * shared. */
-typedef struct {
-    int16_t pcm_el_acc[160];
-    int     pcm_el_acc_n;
-    struct timespec last_el_speech; /* last time a full 160-sample chunk arrived */
-} media_leg_el_capture_t;
-
-/* Network -> EchoLink: single listener, single active source at a time,
- * arbitrated by the router's shared active_ingress exactly like every other
- * pathway (a DMR peer and a YSF peer can never both hold it concurrently).
- * rx_src_kind records which category actually claimed it, so tick-time hang
- * detection doesn't have to guess from which kinds happen to be paired. */
-typedef struct {
-    media_call_phase_t phase; /* IDLE or RX_FROM_PEER */
-    media_call_meta_t  call;
-    media_peer_kind_t  rx_src_kind;
-    uint32_t dmr_rx_stream_id; /* DMR->EL RX stream (dedupe VHEAD) */
-    int      dmr_voice_frames; /* voice frames in, whichever kind is active */
-    int      ysf_voice_frames;
-    struct timespec last_dmr_rx; /* last peer(DMR or YSF)->EL activity */
-} media_leg_el_rx_t;
-
-/* EchoLink mic -> DMR. Independent of media_leg_el_tx_ysf_t below -- both can
- * be active concurrently. */
-typedef struct {
-    media_call_phase_t phase; /* IDLE or TX_TO_PEER */
-    media_call_meta_t  call;
-    uint8_t  dmr_seq;
-    int      dmr_voice_frames;
-    uint8_t  el_ambe_buf[3][7];
-    int      el_ambe_count;
-    struct timespec last_dmr_tx;
-    struct timespec last_el_tx_end;
-    int      el_speech_run;
-    int      dmr_ending;
-} media_leg_el_tx_dmr_t;
-
-/* EchoLink mic -> YSF. Independent of media_leg_el_tx_dmr_t above. */
-typedef struct {
-    media_call_phase_t phase;
-    media_call_meta_t  call;
-    uint8_t  ysf_cnt;
-    int      ysf_voice_frames;
-    uint8_t  ysf_ambe_buf[5][7];
-    int      ysf_ambe_count;
-    struct timespec last_ysf_tx;
-    struct timespec last_el_tx_end;
-    int      el_speech_run;
-    int      ysf_ending;
-} media_leg_el_tx_ysf_t;
+/* PCM-native peer (EchoLink, ALSA, ...) <-> DMR/YSF session state used to
+ * live here as media_leg_el_*_t, one fixed set of fields for "the" EchoLink
+ * peer. It now lives generically on media_peer_slot_t instead (see
+ * media/pcm_leg.h: media_pcm_capture_t/media_pcm_rx_leg_t/media_pcm_tx_leg_t)
+ * so any number of PCM-native peer kinds/instances can cross to DMR/YSF via
+ * the single generic media/core_pcm_bridge.c, each with its own state, none
+ * of it shared -- exactly the media_leg_ysf_dmr_t rationale above, applied
+ * per-peer-instance instead of per-mode. */
 
 typedef struct {
     /* Infra (bound once at engine start). */
@@ -127,41 +66,35 @@ typedef struct {
     const media_codec_plan_t *plan;
     adn_bridge_aliases_t     *aliases;
 
-    /* Vocoder — opened/used only when plan->needs_vocoder. */
-    vocoder_t voc;
-    int       use_vocoder;
+    /* Each PCM-native peer opens its own vocoder connection on its own slot
+     * (media_peer_slot_t.pcm_voc/pcm_voc_ready) instead of one shared here —
+     * see media/core_pcm_bridge.c's design notes on why two such peers must
+     * never share one vocoder_t. */
 
     /* ModeConv is a stateful ring-buffer transcoder, one instance per
      * concurrent cross-kind pairing — sharing one across pairings would let
      * two calls in the same tick (a 3+-kind bus) corrupt each other's ring
      * buffer. mc_ysf_dmr: media/core_ysf_dmr.c's DMR<->YSF direct pathway.
-     * mc_el_dmr: media/core_echolink.c's EchoLink mic -> DMR pathway (its own
-     * instance since Fase 8 -- it now runs concurrently with mc_el below).
-     * mc_el: the YSF-TX and RX-from-YSF pathways, which remain mutually
-     * exclusive with each other (RX blocks TX, same as before), so they
-     * still safely share one instance. */
+     * Every PCM-native peer's own ModeConv instances (mic->DMR, mic-or-
+     * RX<->YSF) live on ITS OWN media_peer_slot_t instead (see
+     * media/pcm_leg.h / media/core_pcm_bridge.c) — same reasoning, applied
+     * per-peer-instance so 2+ PCM peers never share a ring buffer either. */
     modeconv_t *mc_ysf_dmr;
-    modeconv_t *mc_el_dmr;
-    modeconv_t *mc_el;
 
-    /* Per-pathway session state — see media_leg_ysf_dmr_t and the
-     * media_leg_el_{capture,rx,tx_dmr,tx_ysf}_t split above. */
+    /* Per-pathway session state — see media_leg_ysf_dmr_t above. PCM-native
+     * peers' own session state (formerly media_leg_el_{capture,rx,tx_dmr,
+     * tx_ysf}_t here) now lives on their own media_peer_slot_t instead. */
     media_leg_ysf_dmr_t    leg_ysf_dmr;
-    media_leg_el_capture_t leg_el_capture;
-    media_leg_el_rx_t      leg_el_rx;
-    media_leg_el_tx_dmr_t  leg_el_tx_dmr;
-    media_leg_el_tx_ysf_t  leg_el_tx_ysf;
 
     uint8_t dmr_slot_bit; /* always 0x80 = TS2 */
-    float   el_pcm_gain;  /* [peer.*] echolink gain — EL->DMR/YSF PCM scale */
     int     bridge_dmrid; /* [peer.*] dmr dmrid — fallback RF id / alias miss, valid
-                            * even in EL<->YSF layout where no DMR peer exists */
+                            * even in a layout where no DMR peer exists */
 
     /* Connect-PTT state lives per-slot now (media_peer_slot_t.cp_* /
      * clear_dynamic_tg / dmr_was_connected) — each DMR destination may have
      * its own TG and its own clear_dynamic_tg config, so one shared TG fanned
      * out to every destination was wrong with >1 DMR peer. See
-     * media/core_echolink.c and media/core_ysf_dmr.c. */
+     * media/core_pcm_bridge.c and media/core_ysf_dmr.c. */
 
     /* Same-protocol relay (media/core_relay.c) — no phase/call of its own;
      * DMR/YSF relay track "who's active" via the router's shared
@@ -191,15 +124,15 @@ typedef struct {
 void media_core_init(media_core_t *core);
 void media_core_bind(media_core_t *core, media_router_t *router, media_peer_bus_t *bus,
                      const media_codec_plan_t *plan, adn_bridge_aliases_t *aliases);
-/* Clamp like bridge_el_init: (0, 4] valid, else unity gain. */
-void media_core_set_el_gain(media_core_t *core, float gain);
 void media_core_set_bridge_dmrid(media_core_t *core, int dmrid);
 
 /* Dispatch to the right pathway module by resolving src/dst codec via router +
  * codec_pair_resolve — no ADN_BRIDGE_LAYOUT_* switch (media/core.c). */
 void media_core_ingress(media_core_t *core, int src_router_id, const media_bus_frame_t *frame);
 void media_core_tick(media_core_t *core);
-/* EL PCM is polled directly (not wire-classified) — call after polling the EL peer. */
-void media_core_poll_el_pcm(media_core_t *core);
+/* A PCM-native peer kind (EchoLink, ALSA, ...) is polled directly, not
+ * wire-classified — call once per enabled PCM kind after polling that
+ * peer's own tick/poll (see media/core_pcm_bridge.c). */
+void media_core_poll_pcm(media_core_t *core, media_peer_kind_t pcm_kind);
 
 #endif

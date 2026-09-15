@@ -23,6 +23,8 @@ static media_peer_kind_t plan_peer_kind(adn_bridge_peer_type_t type)
         return MEDIA_PEER_YSF;
     case ADN_BRIDGE_PEER_TYPE_ECHOLINK:
         return MEDIA_PEER_ECHOLINK;
+    case ADN_BRIDGE_PEER_TYPE_ALSA:
+        return MEDIA_PEER_ALSA;
     default:
         return MEDIA_PEER_DMR;
     }
