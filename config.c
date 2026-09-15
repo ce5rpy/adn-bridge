@@ -304,7 +304,9 @@ static void apply_peer_type_defaults(adn_bridge_peer_t *p)
     case ADN_BRIDGE_PEER_TYPE_ALSA:
         p->u.alsa.log_level = -1;
         p->u.alsa.gain = 1.0f;
-        set_str(p->u.alsa.ptt_type, sizeof(p->u.alsa.ptt_type), "vox");
+        /* No ptt_type default -- required, like capture_device/playback_device
+         * below, so a config never silently ends up VOX when the intent was
+         * a hardware COR/PTT switch (or vice versa). */
         p->u.alsa.vox_threshold = 500;
         p->u.alsa.vox_hang_ms = 700;
         p->u.alsa.vox_attack_ms = 80;
@@ -840,6 +842,10 @@ static int validate_peer_alsa(const adn_bridge_peer_t *p, char *err, size_t errl
     if (a->vox_hang_ms <= 0 || a->vox_attack_ms <= 0 || a->tx_cooldown_ms <= 0) {
         snprintf(err, errlen,
                  "[peer.%s] vox_hang_ms/vox_attack_ms/tx_cooldown_ms must be > 0", p->name);
+        return -1;
+    }
+    if (!a->ptt_type[0]) {
+        snprintf(err, errlen, "[peer.%s] missing ptt_type (vox or gpio)", p->name);
         return -1;
     }
     if (strcmp(a->ptt_type, "vox") != 0 && strcmp(a->ptt_type, "gpio") != 0) {
