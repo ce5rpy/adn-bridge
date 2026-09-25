@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <poll.h>
 
+#include "media/bridge_util.h"
 #include "media/core.h"
 #include "media/core_pcm_bridge.h"
 #include "media/core_ysf_dmr.h"
@@ -1074,6 +1075,172 @@ static void test_pcm_bridge_connect_ptt_paces_frames(void)
     close(dmr_slot->u.dmr.sock);
 }
 
+/* EchoLink audio stops for the whole PCM_HANG_MS tail of every call. If the DMR
+ * stream stops with it, MMDVMHost fills the gap itself and reports it as packet
+ * loss (e.g. "1.6 seconds, 23% packet loss" on a clean call). */
+static void test_pcm_dmr_underrun_keeps_stream_going(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    media_peer_slot_t *el_slot, *dmr_slot;
+    int el_id, dmr_id, fake_dmr_fd, n;
+    struct sockaddr_in addr;
+    socklen_t alen = sizeof(addr);
+    uint8_t buf[64];
+
+    fake_dmr_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    assert(fake_dmr_fd >= 0);
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    assert(bind(fake_dmr_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+    assert(getsockname(fake_dmr_fd, (struct sockaddr *)&addr, &alen) == 0);
+
+    media_router_init(&r);
+    el_id = media_router_add_peer(&r, MEDIA_PEER_ECHOLINK);
+    dmr_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+
+    memset(&bus, 0, sizeof(bus));
+    bus.router = &r;
+    bus.n_slots = 2;
+    el_slot = &bus.slots[0];
+    el_slot->router_id = el_id;
+    el_slot->kind = MEDIA_PEER_ECHOLINK;
+    el_slot->open = 1;
+    el_slot->pcm_mc_dmr = modeconv_create();
+
+    dmr_slot = &bus.slots[1];
+    dmr_slot->router_id = dmr_id;
+    dmr_slot->kind = MEDIA_PEER_DMR;
+    dmr_slot->open = 1;
+    dmr_slot->u.dmr.sock = socket(AF_INET, SOCK_DGRAM, 0);
+    assert(dmr_slot->u.dmr.sock >= 0);
+    dmr_slot->u.dmr.dmrid = 7141001;
+    dmr_slot->u.dmr.tg = 7141;
+    dmr_slot->u.dmr.peer.sin_family = AF_INET;
+    dmr_slot->u.dmr.peer.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    dmr_slot->u.dmr.peer.sin_port = addr.sin_port;
+    dmr_slot->u.dmr.status = PEER_DMR_CONNECTED;
+
+    media_core_init(&core);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
+
+    /* Mid-call, still inside the hang window, with nothing left to send. */
+    el_slot->pcm_tx_dmr.phase = MEDIA_CALL_TX_TO_PEER;
+    el_slot->pcm_tx_dmr.call.talker_id = 7300391;
+    el_slot->pcm_tx_dmr.voice_frames = 7;
+    memcpy(el_slot->pcm_tx_dmr.call.netcall.net_src, "TESTCALL  ", 10);
+    modeconv_reset(el_slot->pcm_mc_dmr);
+    clock_gettime(CLOCK_MONOTONIC, &el_slot->pcm_capture.last_speech);
+    media_router_ingress_begin(&r, el_id);
+
+    /* A short underrun is ordinary EchoLink jitter: wait for the audio. */
+    clock_gettime(CLOCK_MONOTONIC, &el_slot->pcm_tx_dmr.last_tx);
+    rewind_ms(&el_slot->pcm_tx_dmr.last_tx, 100);
+    rewind_ms(&el_slot->pcm_capture.last_speech, 100);
+    core_pcm_bridge_tick(&core, MEDIA_PEER_ECHOLINK);
+    assert(recv_nb(fake_dmr_fd, buf, sizeof(buf), 50) < 0);
+
+    /* A long one must not reach the hotspot as a gap. */
+    rewind_ms(&el_slot->pcm_capture.last_speech, 100);
+    core_pcm_bridge_tick(&core, MEDIA_PEER_ECHOLINK);
+    n = recv_nb(fake_dmr_fd, buf, sizeof(buf), 200);
+    assert(n == 55 && memcmp(buf, "DMRD", 4) == 0);
+    assert(buf[15] == (core.dmr_slot_bit | 1)); /* voice burst B: the A-F sequence carries on */
+    assert(el_slot->pcm_tx_dmr.voice_frames == 8);
+
+    /* And keep real-time cadence from then on, not one frame per fill window. */
+    rewind_ms(&el_slot->pcm_tx_dmr.last_tx, 60);
+    core_pcm_bridge_tick(&core, MEDIA_PEER_ECHOLINK);
+    n = recv_nb(fake_dmr_fd, buf, sizeof(buf), 200);
+    assert(n == 55 && buf[15] == (core.dmr_slot_bit | 2));
+
+    close(dmr_slot->u.dmr.sock);
+    close(fake_dmr_fd);
+}
+
+/* EchoLink audio arrives in real time. Frames paced "60 ms after the tick that sent
+ * the last one" came out every ~63 ms, so a 2-minute over lost its last ~7 s. */
+static void test_pcm_dmr_paces_from_the_schedule_not_the_tick(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    media_peer_slot_t *el_slot, *dmr_slot;
+    int el_id, dmr_id, fake_dmr_fd, i;
+    struct sockaddr_in addr;
+    socklen_t alen = sizeof(addr);
+    uint8_t buf[64];
+    uint8_t ambe[7];
+
+    memset(ambe, 0x42, sizeof(ambe));
+    fake_dmr_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    assert(fake_dmr_fd >= 0);
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    assert(bind(fake_dmr_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+    assert(getsockname(fake_dmr_fd, (struct sockaddr *)&addr, &alen) == 0);
+
+    media_router_init(&r);
+    el_id = media_router_add_peer(&r, MEDIA_PEER_ECHOLINK);
+    dmr_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+
+    memset(&bus, 0, sizeof(bus));
+    bus.router = &r;
+    bus.n_slots = 2;
+    el_slot = &bus.slots[0];
+    el_slot->router_id = el_id;
+    el_slot->kind = MEDIA_PEER_ECHOLINK;
+    el_slot->open = 1;
+    el_slot->pcm_mc_dmr = modeconv_create();
+
+    dmr_slot = &bus.slots[1];
+    dmr_slot->router_id = dmr_id;
+    dmr_slot->kind = MEDIA_PEER_DMR;
+    dmr_slot->open = 1;
+    dmr_slot->u.dmr.sock = socket(AF_INET, SOCK_DGRAM, 0);
+    assert(dmr_slot->u.dmr.sock >= 0);
+    dmr_slot->u.dmr.dmrid = 7141001;
+    dmr_slot->u.dmr.tg = 7141;
+    dmr_slot->u.dmr.peer.sin_family = AF_INET;
+    dmr_slot->u.dmr.peer.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    dmr_slot->u.dmr.peer.sin_port = addr.sin_port;
+    dmr_slot->u.dmr.status = PEER_DMR_CONNECTED;
+
+    media_core_init(&core);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
+
+    el_slot->pcm_tx_dmr.phase = MEDIA_CALL_TX_TO_PEER;
+    el_slot->pcm_tx_dmr.call.talker_id = 7300391;
+    memcpy(el_slot->pcm_tx_dmr.call.netcall.net_src, "TESTCALL  ", 10);
+    modeconv_reset(el_slot->pcm_mc_dmr);
+    for (i = 0; i < 6; i++)
+        modeconv_put_ambe7(el_slot->pcm_mc_dmr, ambe);
+    clock_gettime(CLOCK_MONOTONIC, &el_slot->pcm_capture.last_speech);
+    media_router_ingress_begin(&r, el_id);
+
+    /* The previous frame was due 65 ms ago: this tick is 5 ms late. */
+    clock_gettime(CLOCK_MONOTONIC, &el_slot->pcm_tx_dmr.last_tx);
+    rewind_ms(&el_slot->pcm_tx_dmr.last_tx, 65);
+    core_pcm_bridge_tick(&core, MEDIA_PEER_ECHOLINK);
+    assert(recv_nb(fake_dmr_fd, buf, sizeof(buf), 200) == 55);
+    /* So the next one is due 55 ms from now, not 60. */
+    assert(bridge_ms_since(&el_slot->pcm_tx_dmr.last_tx) >= 4);
+
+    /* Far behind (an underrun): restart from now, no burst to catch up. */
+    rewind_ms(&el_slot->pcm_tx_dmr.last_tx, 300);
+    core_pcm_bridge_tick(&core, MEDIA_PEER_ECHOLINK);
+    assert(recv_nb(fake_dmr_fd, buf, sizeof(buf), 200) == 55);
+    assert(bridge_ms_since(&el_slot->pcm_tx_dmr.last_tx) <= 1);
+    core_pcm_bridge_tick(&core, MEDIA_PEER_ECHOLINK);
+    assert(recv_nb(fake_dmr_fd, buf, sizeof(buf), 50) < 0);
+
+    close(dmr_slot->u.dmr.sock);
+    close(fake_dmr_fd);
+}
+
 /* A same-kind relay call (YSF<->YSF or DMR<->DMR) has no PCM/silence signal
  * to poll -- if the source's CALL_END/EOT is lost (common on a lossy RF/
  * hotspot link), the router's active_ingress lock must not stay stuck
@@ -1244,6 +1411,8 @@ int main(void)
     test_three_kind_bus_relay_direct_pcm_concurrent();
     test_connect_ptt_sequence_timing_and_privacy();
     test_pcm_bridge_connect_ptt_paces_frames();
+    test_pcm_dmr_underrun_keeps_stream_going();
+    test_pcm_dmr_paces_from_the_schedule_not_the_tick();
     test_ysf_relay_stale_call_releases_router();
     test_ysf_relay_voice_frame_is_transparent();
     test_dmr_tx_embedded_lc_independent_per_destination();

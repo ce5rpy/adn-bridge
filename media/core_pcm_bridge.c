@@ -41,6 +41,10 @@
 /* End PCM peer -> DMR/YSF after this much without inbound PCM (key-down
  * silence must still hold / activate the TG; hang follows PCM presence). */
 #define PCM_HANG_MS 700
+/* Keep the DMR stream going through a PCM underrun (the whole hang tail).
+ * MMDVMHost fills a network gap past its Jitter (360 ms default) with silence
+ * itself, but reports it as packet loss. */
+#define DMR_UNDERRUN_FILL_MS 180
 /* After PCM peer -> DMR/YSF end, ignore residual PCM (no phantom reopen). */
 #define PCM_TX_COOLDOWN_MS 800
 /* DMR/YSF -> PCM peer without VTERM/EOT used to leave the leg open forever. */
@@ -407,6 +411,7 @@ static void pcm_dmr_emit_voice(media_core_t *core, media_peer_kind_t kind, media
     uint8_t slot_bit = core->dmr_slot_bit;
     uint8_t n = (uint8_t)(slot->pcm_tx_dmr.voice_frames % 6);
     uint8_t b15;
+    struct timespec due = slot->pcm_tx_dmr.last_tx;
 
     if (slot->pcm_tx_dmr.phase == MEDIA_CALL_IDLE) {
         if (!core_router_take_kind_slot(core, slot))
@@ -433,6 +438,18 @@ static void pcm_dmr_emit_voice(media_core_t *core, media_peer_kind_t kind, media
     b15 = (uint8_t)(n == 0 ? (slot_bit | (DMRD_FT_VOICE_SYNC << 4)) : (slot_bit | n));
     pcm_send_dmrd(core, kind, slot, b15, voice33);
     slot->pcm_tx_dmr.voice_frames++;
+
+    /* Pace from when the frame was due, not when a tick sent it: tick lateness adds
+     * up (~63 ms a frame) and the EchoLink audio left behind is dropped at call end.
+     * Over a frame late (call start, underrun), restart from now rather than burst. */
+    if (due.tv_sec && bridge_ms_since(&due) < 2 * DMR_FRAME_MS) {
+        due.tv_nsec += DMR_FRAME_MS * 1000000L;
+        if (due.tv_nsec >= 1000000000L) {
+            due.tv_nsec -= 1000000000L;
+            due.tv_sec++;
+        }
+        slot->pcm_tx_dmr.last_tx = due;
+    }
 }
 
 /* Begin paced teardown: pad to superframe then VTERM at DMR_FRAME_MS. */
@@ -869,6 +886,9 @@ static void pcm_dmr_pace_tx(media_core_t *core, media_peer_kind_t kind, media_pe
         return;
     if (modeconv_get_dmr(slot->pcm_mc_dmr, voice33) == MODECONV_TAG_DATA)
         pcm_dmr_emit_voice(core, kind, slot, voice33);
+    else if (slot->pcm_tx_dmr.phase == MEDIA_CALL_TX_TO_PEER
+             && bridge_ms_elapsed(&slot->pcm_capture.last_speech, DMR_UNDERRUN_FILL_MS))
+        pcm_dmr_emit_voice(core, kind, slot, DMR_SILENCE_DATA);
 }
 
 /* =====================================================================
