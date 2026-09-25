@@ -33,6 +33,7 @@ typedef enum {
     LOG_CH_DMR = 2,      /* [dmr] log_level= */
     LOG_CH_YSF = 3,      /* [ysf] log_level= */
     LOG_CH_VOCODER = 4,  /* [peer.*] vocoder_log_level= */
+    LOG_CH_ALSA = 5,     /* [peer.*] type=alsa log_level= */
     LOG_CH_COUNT
 } log_channel_t;
 
@@ -104,5 +105,10 @@ void log_msg_ch(log_channel_t ch, log_level_t level, const char *fmt, ...);
 #define LOG_VOC_INFO(...)    LOG_CH_INFO(LOG_CH_VOCODER, __VA_ARGS__)
 #define LOG_VOC_WARNING(...) LOG_CH_WARNING(LOG_CH_VOCODER, __VA_ARGS__)
 #define LOG_VOC_ERROR(...)   LOG_CH_ERROR(LOG_CH_VOCODER, __VA_ARGS__)
+
+#define LOG_ALSA_DEBUG(...)   LOG_CH_DEBUG(LOG_CH_ALSA, __VA_ARGS__)
+#define LOG_ALSA_INFO(...)    LOG_CH_INFO(LOG_CH_ALSA, __VA_ARGS__)
+#define LOG_ALSA_WARNING(...) LOG_CH_WARNING(LOG_CH_ALSA, __VA_ARGS__)
+#define LOG_ALSA_ERROR(...)   LOG_CH_ERROR(LOG_CH_ALSA, __VA_ARGS__)
 
 #endif

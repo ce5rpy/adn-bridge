@@ -68,8 +68,8 @@ const adn_bridge_peer_t *adn_bridge_config_find_peer(const adn_bridge_config_t *
 
 const char *adn_bridge_layout_name(const adn_bridge_config_t *cfg)
 {
-    static char buf[64];
-    int n_dmr, n_ysf, n_el;
+    static char buf[80];
+    int n_dmr, n_ysf, n_el, n_alsa;
     size_t off = 0;
 
     if (!cfg)
@@ -77,6 +77,7 @@ const char *adn_bridge_layout_name(const adn_bridge_config_t *cfg)
     n_dmr = adn_bridge_config_count_peers(cfg, ADN_BRIDGE_PEER_TYPE_DMR, 1);
     n_ysf = adn_bridge_config_count_peers(cfg, ADN_BRIDGE_PEER_TYPE_YSF, 1);
     n_el = adn_bridge_config_count_peers(cfg, ADN_BRIDGE_PEER_TYPE_ECHOLINK, 1);
+    n_alsa = adn_bridge_config_count_peers(cfg, ADN_BRIDGE_PEER_TYPE_ALSA, 1);
     buf[0] = '\0';
     if (n_dmr)
         off += snprintf(buf + off, sizeof(buf) - off, "%dx dmr", n_dmr);
@@ -86,6 +87,9 @@ const char *adn_bridge_layout_name(const adn_bridge_config_t *cfg)
     if (n_el)
         off += snprintf(buf + off, sizeof(buf) - off, "%s%dx echolink",
                          off ? " + " : "", n_el);
+    if (n_alsa)
+        off += snprintf(buf + off, sizeof(buf) - off, "%s%dx alsa",
+                         off ? " + " : "", n_alsa);
     if (!off)
         return "no peers";
     return buf;
@@ -266,7 +270,54 @@ static int parse_peer_type(const char *val)
         return ADN_BRIDGE_PEER_TYPE_YSF;
     if (strcmp(val, "echolink") == 0 || strcmp(val, "el") == 0)
         return ADN_BRIDGE_PEER_TYPE_ECHOLINK;
+    if (strcmp(val, "alsa") == 0)
+        return ADN_BRIDGE_PEER_TYPE_ALSA;
     return -1;
+}
+
+/* dmr/ysf/el/alsa share one union, so defaulting more than one of them here
+ * would alias: a later block's writes silently clobber an earlier block's
+ * fields at any overlapping byte offset (bit us for real once alsa's small
+ * struct landed low enough to overlap dmr.freq/el.bind_addr/el.host). Only
+ * ever default the union member matching p->type, once type is actually
+ * known -- see apply_peer_type_defaults(), called right after type=. */
+static void apply_peer_type_defaults(adn_bridge_peer_t *p)
+{
+    switch (p->type) {
+    case ADN_BRIDGE_PEER_TYPE_DMR:
+        p->u.dmr.log_level = -1;
+        p->u.dmr.block_private = 1;
+        set_str(p->u.dmr.freq, sizeof(p->u.dmr.freq), "000000000");
+        break;
+    case ADN_BRIDGE_PEER_TYPE_YSF:
+        p->u.ysf.log_level = -1;
+        break;
+    case ADN_BRIDGE_PEER_TYPE_ECHOLINK:
+        p->u.el.log_level = -1;
+        p->u.el.vocoder_log_level = -1;
+        p->u.el.vocoder_port = 2460;
+        p->u.el.login_interval = 360;
+        p->u.el.station_list_interval = 600;
+        p->u.el.gain = 1.0f;
+        p->u.el.max_inbound = 1;
+        break;
+    case ADN_BRIDGE_PEER_TYPE_ALSA:
+        p->u.alsa.log_level = -1;
+        p->u.alsa.gain = 1.0f;
+        /* No ptt_type default -- required, like capture_device/playback_device
+         * below, so a config never silently ends up VOX when the intent was
+         * a hardware COR/PTT switch (or vice versa). */
+        p->u.alsa.vox_threshold = 500;
+        p->u.alsa.vox_hang_ms = 700;
+        p->u.alsa.vox_attack_ms = 80;
+        p->u.alsa.tx_cooldown_ms = 800;
+        set_str(p->u.alsa.gpio_chip, sizeof(p->u.alsa.gpio_chip), "/dev/gpiochip0");
+        p->u.alsa.cor_gpio = -1;
+        p->u.alsa.cor_debounce_ms = 30;
+        p->u.alsa.vocoder_log_level = -1;
+        p->u.alsa.vocoder_port = 2461; /* distinct from EL's 2460 default -- separate instance */
+        break;
+    }
 }
 
 static adn_bridge_peer_t *find_or_add_peer(adn_bridge_config_t *cfg, const char *peer_name)
@@ -283,17 +334,6 @@ static adn_bridge_peer_t *find_or_add_peer(adn_bridge_config_t *cfg, const char 
     memset(&cfg->peers[i], 0, sizeof(cfg->peers[i]));
     set_str(cfg->peers[i].name, sizeof(cfg->peers[i].name), peer_name);
     cfg->peers[i].enabled = 1;
-    cfg->peers[i].u.dmr.log_level = -1;
-    cfg->peers[i].u.dmr.block_private = 1;
-    set_str(cfg->peers[i].u.dmr.freq, sizeof(cfg->peers[i].u.dmr.freq), "000000000");
-    cfg->peers[i].u.ysf.log_level = -1;
-    cfg->peers[i].u.el.log_level = -1;
-    cfg->peers[i].u.el.vocoder_log_level = -1;
-    cfg->peers[i].u.el.vocoder_port = 2460;
-    cfg->peers[i].u.el.login_interval = 360;
-    cfg->peers[i].u.el.station_list_interval = 600;
-    cfg->peers[i].u.el.gain = 1.0f;
-    cfg->peers[i].u.el.max_inbound = 1;
     return &cfg->peers[i];
 }
 
@@ -395,6 +435,42 @@ static void apply_peer_el_key(adn_bridge_peer_el_t *el, const char *key, const c
         el->log_level = (int)log_level_from_string(val);
 }
 
+static void apply_peer_alsa_key(adn_bridge_peer_alsa_t *a, const char *key, const char *val)
+{
+    if (strcmp(key, "capture_device") == 0)
+        set_str(a->capture_device, sizeof(a->capture_device), val);
+    else if (strcmp(key, "playback_device") == 0)
+        set_str(a->playback_device, sizeof(a->playback_device), val);
+    else if (strcmp(key, "gain") == 0)
+        set_float(&a->gain, val);
+    else if (strcmp(key, "vox_threshold") == 0)
+        set_int(&a->vox_threshold, val);
+    else if (strcmp(key, "vox_hang_ms") == 0)
+        set_int(&a->vox_hang_ms, val);
+    else if (strcmp(key, "vox_attack_ms") == 0)
+        set_int(&a->vox_attack_ms, val);
+    else if (strcmp(key, "tx_cooldown_ms") == 0)
+        set_int(&a->tx_cooldown_ms, val);
+    else if (strcmp(key, "ptt_type") == 0)
+        set_str(a->ptt_type, sizeof(a->ptt_type), val);
+    else if (strcmp(key, "gpio_chip") == 0)
+        set_str(a->gpio_chip, sizeof(a->gpio_chip), val);
+    else if (strcmp(key, "cor_gpio") == 0)
+        set_int(&a->cor_gpio, val);
+    else if (strcmp(key, "cor_active") == 0)
+        a->cor_active_low = (val && strcmp(val, "low") == 0) ? 1 : 0;
+    else if (strcmp(key, "cor_debounce_ms") == 0)
+        set_int(&a->cor_debounce_ms, val);
+    else if (strcmp(key, "vocoder_host") == 0)
+        set_str(a->vocoder_host, sizeof(a->vocoder_host), val);
+    else if (strcmp(key, "vocoder_port") == 0)
+        set_int(&a->vocoder_port, val);
+    else if (strcmp(key, "vocoder_log_level") == 0 || strcmp(key, "vocoder_log") == 0)
+        a->vocoder_log_level = (int)log_level_from_string(val);
+    else if (strcmp(key, "log_level") == 0 || strcmp(key, "log") == 0)
+        a->log_level = (int)log_level_from_string(val);
+}
+
 static int apply_peer_key(adn_bridge_config_t *cfg, const char *peer_name,
                           const char *key, const char *val, const char *path,
                           int lineno, char *err, size_t errlen)
@@ -409,6 +485,7 @@ static int apply_peer_key(adn_bridge_config_t *cfg, const char *peer_name,
         if (t >= 0) {
             p->type = (adn_bridge_peer_type_t)t;
             p->type_set = 1;
+            apply_peer_type_defaults(p);
         }
         return 0;
     }
@@ -422,9 +499,9 @@ static int apply_peer_key(adn_bridge_config_t *cfg, const char *peer_name,
                      path, lineno, peer_name, key);
             return -1;
         }
-        if (p->type != ADN_BRIDGE_PEER_TYPE_ECHOLINK) {
+        if (p->type != ADN_BRIDGE_PEER_TYPE_ECHOLINK && p->type != ADN_BRIDGE_PEER_TYPE_ALSA) {
             snprintf(err, errlen,
-                     "%s:%d: [peer.%s] %s only allowed on echolink peers",
+                     "%s:%d: [peer.%s] %s only allowed on echolink/alsa peers",
                      path, lineno, peer_name, key);
             return -1;
         }
@@ -434,7 +511,10 @@ static int apply_peer_key(adn_bridge_config_t *cfg, const char *peer_name,
                      path, lineno, peer_name);
             return -1;
         }
-        apply_peer_el_key(&p->u.el, key, val);
+        if (p->type == ADN_BRIDGE_PEER_TYPE_ECHOLINK)
+            apply_peer_el_key(&p->u.el, key, val);
+        else
+            apply_peer_alsa_key(&p->u.alsa, key, val);
         return 0;
     }
     if (!p->type_set)
@@ -445,6 +525,8 @@ static int apply_peer_key(adn_bridge_config_t *cfg, const char *peer_name,
         apply_peer_ysf_key(&p->u.ysf, key, val);
     else if (p->type == ADN_BRIDGE_PEER_TYPE_ECHOLINK)
         apply_peer_el_key(&p->u.el, key, val);
+    else if (p->type == ADN_BRIDGE_PEER_TYPE_ALSA)
+        apply_peer_alsa_key(&p->u.alsa, key, val);
     return 0;
 }
 
@@ -546,6 +628,7 @@ void adn_bridge_config_apply_log_levels(const adn_bridge_config_t *cfg)
     log_set_channel_level(LOG_CH_DMR, def);
     log_set_channel_level(LOG_CH_YSF, def);
     log_set_channel_level(LOG_CH_ECHOLINK, def);
+    log_set_channel_level(LOG_CH_ALSA, def);
 
     for (i = 0; i < cfg->peer_count; i++) {
         const adn_bridge_peer_t *p = &cfg->peers[i];
@@ -556,12 +639,17 @@ void adn_bridge_config_apply_log_levels(const adn_bridge_config_t *cfg)
         if (p->type == ADN_BRIDGE_PEER_TYPE_ECHOLINK && p->u.el.vocoder_log_level >= 0)
             log_set_channel_level(LOG_CH_VOCODER,
                                   (log_level_t)p->u.el.vocoder_log_level);
+        if (p->type == ADN_BRIDGE_PEER_TYPE_ALSA && p->u.alsa.vocoder_log_level >= 0)
+            log_set_channel_level(LOG_CH_VOCODER,
+                                  (log_level_t)p->u.alsa.vocoder_log_level);
         if (p->type == ADN_BRIDGE_PEER_TYPE_DMR && p->u.dmr.log_level >= 0)
             lv = (log_level_t)p->u.dmr.log_level;
         else if (p->type == ADN_BRIDGE_PEER_TYPE_YSF && p->u.ysf.log_level >= 0)
             lv = (log_level_t)p->u.ysf.log_level;
         else if (p->type == ADN_BRIDGE_PEER_TYPE_ECHOLINK && p->u.el.log_level >= 0)
             lv = (log_level_t)p->u.el.log_level;
+        else if (p->type == ADN_BRIDGE_PEER_TYPE_ALSA && p->u.alsa.log_level >= 0)
+            lv = (log_level_t)p->u.alsa.log_level;
 
         if (p->type == ADN_BRIDGE_PEER_TYPE_DMR)
             log_set_channel_level(LOG_CH_DMR, lv);
@@ -569,6 +657,8 @@ void adn_bridge_config_apply_log_levels(const adn_bridge_config_t *cfg)
             log_set_channel_level(LOG_CH_YSF, lv);
         else if (p->type == ADN_BRIDGE_PEER_TYPE_ECHOLINK)
             log_set_channel_level(LOG_CH_ECHOLINK, lv);
+        else if (p->type == ADN_BRIDGE_PEER_TYPE_ALSA)
+            log_set_channel_level(LOG_CH_ALSA, lv);
     }
 }
 
@@ -729,7 +819,60 @@ static int validate_peer_el(const adn_bridge_peer_t *p, char *err, size_t errlen
     return 0;
 }
 
-static int validate_el_vocoder_when_needed(const adn_bridge_config_t *cfg,
+static int validate_peer_alsa(const adn_bridge_peer_t *p, char *err, size_t errlen)
+{
+    const adn_bridge_peer_alsa_t *a = &p->u.alsa;
+
+    if (!a->capture_device[0]) {
+        snprintf(err, errlen, "[peer.%s] missing capture_device", p->name);
+        return -1;
+    }
+    if (!a->playback_device[0]) {
+        snprintf(err, errlen, "[peer.%s] missing playback_device", p->name);
+        return -1;
+    }
+    if (a->gain <= 0.0f || a->gain > 4.0f) {
+        snprintf(err, errlen, "[peer.%s] invalid gain (0 < gain <= 4)", p->name);
+        return -1;
+    }
+    if (a->vox_threshold < 0) {
+        snprintf(err, errlen, "[peer.%s] invalid vox_threshold (must be >= 0)", p->name);
+        return -1;
+    }
+    if (a->vox_hang_ms <= 0 || a->vox_attack_ms <= 0 || a->tx_cooldown_ms <= 0) {
+        snprintf(err, errlen,
+                 "[peer.%s] vox_hang_ms/vox_attack_ms/tx_cooldown_ms must be > 0", p->name);
+        return -1;
+    }
+    if (!a->ptt_type[0]) {
+        snprintf(err, errlen, "[peer.%s] missing ptt_type (vox or gpio)", p->name);
+        return -1;
+    }
+    if (strcmp(a->ptt_type, "vox") != 0 && strcmp(a->ptt_type, "gpio") != 0) {
+        snprintf(err, errlen, "[peer.%s] ptt_type must be vox or gpio", p->name);
+        return -1;
+    }
+    if (strcmp(a->ptt_type, "gpio") == 0) {
+        if (a->cor_gpio < 0) {
+            snprintf(err, errlen, "[peer.%s] ptt_type=gpio needs cor_gpio", p->name);
+            return -1;
+        }
+        if (!a->gpio_chip[0]) {
+            snprintf(err, errlen, "[peer.%s] ptt_type=gpio needs gpio_chip", p->name);
+            return -1;
+        }
+        if (a->cor_debounce_ms < 0) {
+            snprintf(err, errlen, "[peer.%s] invalid cor_debounce_ms (must be >= 0)", p->name);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* Any PCM-native peer (EchoLink, ALSA, ...) needs its OWN vocoder connection
+ * when the layout needs one -- see media/core_pcm_bridge.c's design notes on
+ * why two such peers must never share one vocoder_t. */
+static int validate_pcm_vocoder_when_needed(const adn_bridge_config_t *cfg,
                                             char *err, size_t errlen)
 {
     media_codec_plan_t plan;
@@ -740,18 +883,27 @@ static int validate_el_vocoder_when_needed(const adn_bridge_config_t *cfg,
 
     for (i = 0; i < cfg->peer_count; i++) {
         const adn_bridge_peer_t *p = &cfg->peers[i];
-        const adn_bridge_peer_el_t *el;
+        const char *host = NULL;
+        int port = 0;
 
-        if (!p->enabled || p->type != ADN_BRIDGE_PEER_TYPE_ECHOLINK)
+        if (!p->enabled)
             continue;
-        el = &p->u.el;
-        if (!el->vocoder_host[0]) {
+        if (p->type == ADN_BRIDGE_PEER_TYPE_ECHOLINK) {
+            host = p->u.el.vocoder_host;
+            port = p->u.el.vocoder_port;
+        } else if (p->type == ADN_BRIDGE_PEER_TYPE_ALSA) {
+            host = p->u.alsa.vocoder_host;
+            port = p->u.alsa.vocoder_port;
+        } else {
+            continue;
+        }
+        if (!host[0]) {
             snprintf(err, errlen,
                      "[peer.%s] missing vocoder_host (PCM bridge required for this layout)",
                      p->name);
             return -1;
         }
-        if (el->vocoder_port <= 0) {
+        if (port <= 0) {
             snprintf(err, errlen, "[peer.%s] missing vocoder_port", p->name);
             return -1;
         }
@@ -787,9 +939,11 @@ int adn_bridge_config_valid(const adn_bridge_config_t *cfg, char *err, size_t er
             return -1;
         if (p->type == ADN_BRIDGE_PEER_TYPE_ECHOLINK && validate_peer_el(p, err, errlen) != 0)
             return -1;
+        if (p->type == ADN_BRIDGE_PEER_TYPE_ALSA && validate_peer_alsa(p, err, errlen) != 0)
+            return -1;
     }
 
-    if (validate_el_vocoder_when_needed(cfg, err, errlen) != 0)
+    if (validate_pcm_vocoder_when_needed(cfg, err, errlen) != 0)
         return -1;
 
     return 0;

@@ -17,6 +17,7 @@ typedef enum {
     MEDIA_PEER_ECHOLINK = 0,
     MEDIA_PEER_DMR,
     MEDIA_PEER_YSF,
+    MEDIA_PEER_ALSA,
 } media_peer_kind_t;
 
 typedef struct {

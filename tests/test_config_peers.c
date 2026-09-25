@@ -369,6 +369,109 @@ static int test_dmr_block_private_default_and_override(void)
     return 0;
 }
 
+static int test_alsa_peer(void)
+{
+    const char *ini =
+        "[peer.local]\n"
+        "type = alsa\n"
+        "enabled = true\n"
+        "capture_device = plughw:1,0\n"
+        "playback_device = plughw:1,0\n"
+        "ptt_type = vox\n"
+        "vox_threshold = 600\n"
+        "vocoder_host = 127.0.0.1\n"
+        "vocoder_port = 2461\n"
+        "[peer.master]\n"
+        "type = dmr\n"
+        "enabled = true\n"
+        "callsign = N0CALL\n"
+        "dmrid = 1234567\n"
+        "host = m.example\n"
+        "port = 62031\n"
+        "tg = 9\n"
+        "password = secret\n";
+    adn_bridge_config_t cfg;
+    char err[128];
+    const adn_bridge_peer_t *alsa;
+
+    if (write_ini("/tmp/adn-test-alsa.ini", ini) != 0)
+        return 110;
+    if (adn_bridge_config_load("/tmp/adn-test-alsa.ini", &cfg, err, sizeof(err)) != 0)
+        return 111;
+    if (adn_bridge_config_valid(&cfg, err, sizeof(err)) != 0)
+        return 112;
+    if (strcmp(adn_bridge_layout_name(&cfg), "1x dmr + 1x alsa") != 0)
+        return 113;
+    alsa = adn_bridge_config_find_peer(&cfg, ADN_BRIDGE_PEER_TYPE_ALSA);
+    if (!alsa || strcmp(alsa->u.alsa.capture_device, "plughw:1,0") != 0
+        || alsa->u.alsa.vox_threshold != 600)
+        return 114;
+    /* Defaults applied when not set in the INI. */
+    if (alsa->u.alsa.gain != 1.0f || alsa->u.alsa.vox_hang_ms != 700)
+        return 115;
+    return 0;
+}
+
+static int test_reject_alsa_without_devices(void)
+{
+    const char *ini =
+        "[peer.local]\n"
+        "type = alsa\n"
+        "enabled = true\n"
+        "[peer.master]\n"
+        "type = dmr\n"
+        "enabled = true\n"
+        "callsign = N0CALL\n"
+        "dmrid = 1\n"
+        "host = m.example\n"
+        "port = 62031\n"
+        "tg = 1\n"
+        "password = x\n";
+    adn_bridge_config_t cfg;
+    char err[128];
+
+    if (write_ini("/tmp/adn-test-alsa-no-dev.ini", ini) != 0)
+        return 120;
+    if (adn_bridge_config_load("/tmp/adn-test-alsa-no-dev.ini", &cfg, err, sizeof(err)) != 0)
+        return 121;
+    if (adn_bridge_config_valid(&cfg, err, sizeof(err)) == 0)
+        return 122;
+    return 0;
+}
+
+/* Fase 2: an enabled ALSA peer now needs its own vocoder_host/vocoder_port
+ * whenever the layout needs a vocoder at all (ALSA<->DMR/YSF always does) --
+ * mirrors test_reject_el_without_vocoder for EchoLink. */
+static int test_reject_alsa_without_vocoder(void)
+{
+    const char *ini =
+        "[peer.local]\n"
+        "type = alsa\n"
+        "enabled = true\n"
+        "capture_device = plughw:1,0\n"
+        "playback_device = plughw:1,0\n"
+        "ptt_type = vox\n"
+        "[peer.master]\n"
+        "type = dmr\n"
+        "enabled = true\n"
+        "callsign = N0CALL\n"
+        "dmrid = 1\n"
+        "host = m.example\n"
+        "port = 62031\n"
+        "tg = 1\n"
+        "password = x\n";
+    adn_bridge_config_t cfg;
+    char err[256];
+
+    if (write_ini("/tmp/adn-test-alsa-no-voc.ini", ini) != 0)
+        return 130;
+    if (adn_bridge_config_load("/tmp/adn-test-alsa-no-voc.ini", &cfg, err, sizeof(err)) != 0)
+        return 131;
+    if (adn_bridge_config_valid(&cfg, err, sizeof(err)) == 0)
+        return 132;
+    return 0;
+}
+
 int main(void)
 {
     int rc;
@@ -422,6 +525,21 @@ int main(void)
     if (rc != 0) {
         fprintf(stderr, "test_config_peers: dmr block_private failed (%d)\n", rc);
         return 10;
+    }
+    rc = test_alsa_peer();
+    if (rc != 0) {
+        fprintf(stderr, "test_config_peers: alsa peer failed (%d)\n", rc);
+        return 11;
+    }
+    rc = test_reject_alsa_without_devices();
+    if (rc != 0) {
+        fprintf(stderr, "test_config_peers: alsa without devices reject failed (%d)\n", rc);
+        return 12;
+    }
+    rc = test_reject_alsa_without_vocoder();
+    if (rc != 0) {
+        fprintf(stderr, "test_config_peers: alsa without vocoder reject failed (%d)\n", rc);
+        return 13;
     }
 
     printf("test_config_peers: ok\n");

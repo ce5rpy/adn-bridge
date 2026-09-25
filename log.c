@@ -28,6 +28,7 @@
 
 static log_level_t g_log_level[LOG_CH_COUNT] = {
     LOG_LEVEL_INFO, LOG_LEVEL_INFO, LOG_LEVEL_INFO, LOG_LEVEL_INFO, LOG_LEVEL_INFO,
+    LOG_LEVEL_INFO,
 };
 
 /* Defaults match pre-log_init behavior: console on, timed — so log calls
@@ -134,6 +135,7 @@ static const char *log_channel_name(log_channel_t ch)
     case LOG_CH_DMR:      return "dmr";
     case LOG_CH_YSF:      return "ysf";
     case LOG_CH_VOCODER:  return "voc";
+    case LOG_CH_ALSA:     return "alsa";
     default:              return "?";
     }
 }

@@ -110,6 +110,42 @@ peer_echolink_t *media_peer_bus_primary_el(media_peer_bus_t *bus)
     return media_peer_bus_el(bus, -1);
 }
 
+static peer_alsa_t *media_peer_bus_alsa(media_peer_bus_t *bus, int router_id)
+{
+    media_peer_slot_t *s;
+
+    if (!bus)
+        return NULL;
+    if (router_id < 0)
+        s = bus_first_slot_kind(bus, MEDIA_PEER_ALSA);
+    else
+        s = bus_find_slot(bus, router_id);
+    if (!s || s->kind != MEDIA_PEER_ALSA || !s->open)
+        return NULL;
+    return &s->u.alsa;
+}
+
+peer_alsa_t *media_peer_bus_primary_alsa(media_peer_bus_t *bus)
+{
+    return media_peer_bus_alsa(bus, -1);
+}
+
+/* Common setup for any PCM-native peer slot (EchoLink, ALSA, ...): its own
+ * ModeConv instances and, if configured, its own vocoder connection. Never
+ * shared across slots -- see media/pcm_leg.h. */
+static void pcm_slot_open_bridge(media_peer_slot_t *slot, const char *vocoder_host,
+                                 int vocoder_port, float gain)
+{
+    slot->pcm_mc_dmr = modeconv_create();
+    slot->pcm_mc_ysf = modeconv_create();
+    slot->pcm_gain = gain;
+    slot->pcm_voc_ready = 0;
+    if (vocoder_host && vocoder_host[0] && vocoder_port > 0) {
+        if (vocoder_open(&slot->pcm_voc, vocoder_host, vocoder_port) == 0)
+            slot->pcm_voc_ready = 1;
+    }
+}
+
 static int bus_open_slot(media_peer_slot_t *slot, const adn_bridge_config_t *cfg)
 {
     const adn_bridge_peer_t *p;
@@ -146,6 +182,15 @@ static int bus_open_slot(media_peer_slot_t *slot, const adn_bridge_config_t *cfg
     case MEDIA_PEER_ECHOLINK: {
         if (peer_el_open(&slot->u.el, &p->u.el) < 0)
             return -1;
+        pcm_slot_open_bridge(slot, p->u.el.vocoder_host, p->u.el.vocoder_port, p->u.el.gain);
+        break;
+    }
+    case MEDIA_PEER_ALSA: {
+        if (peer_alsa_open(&slot->u.alsa, &p->u.alsa) < 0)
+            return -1;
+        /* ALSA applies its own [peer.*] gain earlier (peer_alsa.c, before
+         * VOX) -- 1.0 here so the bridge's shared gain step is a no-op. */
+        pcm_slot_open_bridge(slot, p->u.alsa.vocoder_host, p->u.alsa.vocoder_port, 1.0f);
         break;
     }
     default:
@@ -207,8 +252,15 @@ void media_peer_bus_close_all(media_peer_bus_t *bus)
         case MEDIA_PEER_ECHOLINK:
             peer_el_close(&slot->u.el);
             break;
+        case MEDIA_PEER_ALSA:
+            peer_alsa_close(&slot->u.alsa);
+            break;
         default:
             break;
+        }
+        if (slot->pcm_voc_ready) {
+            vocoder_close(&slot->pcm_voc);
+            slot->pcm_voc_ready = 0;
         }
         slot->open = 0;
     }
@@ -234,6 +286,9 @@ void media_peer_bus_sigint_all(media_peer_bus_t *bus)
             break;
         case MEDIA_PEER_ECHOLINK:
             peer_el_on_sigint(&slot->u.el);
+            break;
+        case MEDIA_PEER_ALSA:
+            peer_alsa_on_sigint(&slot->u.alsa);
             break;
         default:
             break;

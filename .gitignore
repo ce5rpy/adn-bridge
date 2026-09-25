@@ -8,6 +8,7 @@ tests/test_codec_plan
 tests/test_media_core
 tests/test_log
 tests/test_echolink_inbound
+tests/test_peer_alsa
 tests/*.d
 data/
 debug/

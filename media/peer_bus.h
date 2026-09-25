@@ -13,10 +13,14 @@
 #include <time.h>
 
 #include "config.h"
+#include "media/pcm_leg.h"
 #include "media/router.h"
+#include "mmdvm/modeconv_wrap.h"
+#include "peer_alsa.h"
 #include "peer_dmr.h"
 #include "peer_echolink.h"
 #include "peer_ysf.h"
+#include "vocoder.h"
 
 typedef struct {
     int               router_id;
@@ -27,6 +31,7 @@ typedef struct {
         peer_dmr_t        dmr;
         peer_ysf_t        ysf;
         peer_echolink_t   el;
+        peer_alsa_t       alsa;
     } u;
     /* Per-destination DMR TX framing (DMR-kind slots only) — wire-correct
      * multi-DMR fan-out needs a distinct seq/stream per destination
@@ -49,12 +54,37 @@ typedef struct {
     int               cp_voice_frames;
     int               cp_tg;
     int               cp_clearing; /* 1 = current stage is the TG 4000 clear burst */
-    struct timespec   cp_start;
+    struct timespec   cp_start;    /* when the CURRENT phase began (duration timeouts) */
+    /* Per-frame pacing clock for connect-PTT sends (DMR_FRAME_MS apart) --
+     * restamped by dmr_tx_send() on every actual send (session/dmr_tx.c),
+     * distinct from cp_start (which marks phase start, not each frame).
+     * Conflating the two meant every tick after the first ~55ms sent a
+     * frame with no throttle at all, once cp_start had "elapsed" for good. */
+    struct timespec   cp_last_tx;
     /* Per-source YSF relay framing (YSF-kind slots only, media/core_relay.c):
      * FICH fn/net_cnt cycling for a same-protocol YSF<->YSF relay call, kept
      * separate from media_core_t.ysf_cnt (the cross-kind ModeConv paths'
      * counter) so a relay call can run without disturbing those. */
     uint8_t           ysf_relay_cnt;
+    /* PCM-kind slots only (EchoLink, ALSA, or a future PCM-native peer):
+     * session state for crossing to DMR/YSF via media/core_pcm_bridge.c.
+     * Never shared across slots -- 2+ PCM peers active at once must each
+     * get their own (Fase 7 lesson: sharing this between two concurrently-
+     * active crossings corrupted both). Opened/created in bus_open_slot(). */
+    media_pcm_capture_t pcm_capture;
+    media_pcm_rx_leg_t  pcm_rx;
+    media_pcm_tx_leg_t  pcm_tx_dmr;
+    media_pcm_tx_leg_t  pcm_tx_ysf;
+    modeconv_t         *pcm_mc_dmr; /* this peer's own mic -> DMR ModeConv instance */
+    modeconv_t         *pcm_mc_ysf; /* this peer's own mic-or-RX <-> YSF ModeConv instance */
+    vocoder_t           pcm_voc;
+    int                 pcm_voc_ready;
+    /* [peer.*] gain applied to the captured PCM before vocoder_encode, at the
+     * bridge level. ALSA applies its own gain earlier (peer_alsa.c, before
+     * VOX) so its slot's pcm_gain is always left at 1.0 (no-op) to avoid
+     * double-applying it; EchoLink has no such self-gain, so its slot's
+     * pcm_gain carries [peer.el] gain= as before. */
+    float               pcm_gain;
 } media_peer_slot_t;
 
 typedef struct {
@@ -78,5 +108,6 @@ peer_ysf_t *media_peer_bus_ysf(media_peer_bus_t *bus, int router_id);
 peer_dmr_t *media_peer_bus_primary_dmr(media_peer_bus_t *bus);
 peer_ysf_t *media_peer_bus_primary_ysf(media_peer_bus_t *bus);
 peer_echolink_t *media_peer_bus_primary_el(media_peer_bus_t *bus);
+peer_alsa_t *media_peer_bus_primary_alsa(media_peer_bus_t *bus);
 
 #endif

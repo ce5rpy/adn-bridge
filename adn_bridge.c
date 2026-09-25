@@ -144,6 +144,8 @@ static const char *peer_type_label(adn_bridge_peer_type_t type)
         return "ysf";
     case ADN_BRIDGE_PEER_TYPE_ECHOLINK:
         return "echolink";
+    case ADN_BRIDGE_PEER_TYPE_ALSA:
+        return "alsa";
     default:
         return "?";
     }
@@ -182,6 +184,10 @@ static void print_peer_banner(const adn_bridge_peer_t *p)
         if (el->gain != 1.0f)
             printf(" gain %.3f", (double)el->gain);
         printf("\n");
+    } else if (p->type == ADN_BRIDGE_PEER_TYPE_ALSA) {
+        const adn_bridge_peer_alsa_t *a = &p->u.alsa;
+        printf("    ALSA capture=%s playback=%s vox_threshold=%d\n",
+               a->capture_device, a->playback_device, a->vox_threshold);
     }
 }
 

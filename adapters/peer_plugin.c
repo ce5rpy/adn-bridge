@@ -25,6 +25,11 @@ static const peer_kind_plugin_t peer_plugins[] = {
         MEDIA_PEER_ECHOLINK,
         CODEC_PCM,
     },
+    {
+        ADN_BRIDGE_PEER_TYPE_ALSA,
+        MEDIA_PEER_ALSA,
+        CODEC_PCM,
+    },
 };
 
 static const peer_kind_plugin_t *peer_plugin_find_config(adn_bridge_peer_type_t type)
@@ -70,6 +75,8 @@ const char *peer_plugin_label(media_peer_kind_t kind)
         return "ysf";
     case MEDIA_PEER_ECHOLINK:
         return "echolink";
+    case MEDIA_PEER_ALSA:
+        return "alsa";
     default:
         return "?";
     }

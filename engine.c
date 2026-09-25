@@ -8,6 +8,7 @@
 #include "engine.h"
 
 #include "adapters/dmr.h"
+#include "adapters/peer_plugin.h"
 #include "adapters/ysf.h"
 #include "config.h"
 #include "log.h"
@@ -15,11 +16,11 @@
 #include "media/core.h"
 #include "media/peer_bus.h"
 #include "media/router.h"
+#include "peer_alsa.h"
 #include "peer_dmr.h"
 #include "peer_echolink.h"
 #include "peer_ysf.h"
 #include "talker_alias.h"
-#include "vocoder.h"
 
 #include <string.h>
 #include <time.h>
@@ -29,7 +30,6 @@ typedef struct {
     media_peer_bus_t    bus;
     media_codec_plan_t  plan;
     media_core_t       *core;
-    int                 vocoder_open;
 } engine_ctx_t;
 
 static engine_ctx_t *g_alarm_ctx;
@@ -43,6 +43,8 @@ static media_peer_kind_t engine_peer_kind(adn_bridge_peer_type_t type)
         return MEDIA_PEER_YSF;
     case ADN_BRIDGE_PEER_TYPE_ECHOLINK:
         return MEDIA_PEER_ECHOLINK;
+    case ADN_BRIDGE_PEER_TYPE_ALSA:
+        return MEDIA_PEER_ALSA;
     default:
         return MEDIA_PEER_DMR;
     }
@@ -89,49 +91,64 @@ static void engine_poll_aliases(adn_bridge_config_t *cfg, engine_host_t *host,
         *core_aliases = *host->aliases;
 }
 
+/* Every enabled PCM-native peer slot (EchoLink, ALSA, ...) opens its own
+ * vocoder connection at media_peer_bus_open_all() time (media/peer_bus.c) —
+ * here we just verify it actually came up when the layout needs one, with a
+ * message naming the specific peer that's missing it (not a hardcoded
+ * "EchoLink" message that misleads when the real gap is on a different
+ * PCM-native peer, e.g. [peer.alsa]). */
+static int engine_check_pcm_vocoders(engine_ctx_t *ctx, const adn_bridge_config_t *cfg)
+{
+    int i;
+
+    if (!ctx->plan.needs_vocoder)
+        return 0;
+    for (i = 0; i < ctx->bus.n_slots; i++) {
+        media_peer_slot_t *slot = &ctx->bus.slots[i];
+        const char *name = (slot->cfg_index >= 0 && slot->cfg_index < cfg->peer_count)
+                           ? cfg->peers[slot->cfg_index].name : "?";
+
+        if (!slot->open || (slot->kind != MEDIA_PEER_ECHOLINK && slot->kind != MEDIA_PEER_ALSA))
+            continue;
+        if (!slot->pcm_voc_ready) {
+            LOG_ERROR("engine: startup aborted — [peer.%s] (%s) layout needs its own "
+                      "vocoder_host/vocoder_port (AMBE vocoder not ready; see vocoder log above)\n",
+                      name, peer_plugin_label(slot->kind));
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static int engine_start(engine_host_t *host, adn_bridge_config_t *cfg, engine_ctx_t *ctx)
 {
-    const adn_bridge_peer_t *dmr_p, *el_p;
+    const adn_bridge_peer_t *dmr_p;
     media_core_t *core = ctx->core;
 
     if (engine_load_router_bus(ctx, cfg) != 0)
         return -1;
 
     dmr_p = adn_bridge_config_find_peer(cfg, ADN_BRIDGE_PEER_TYPE_DMR);
-    el_p = adn_bridge_config_find_peer(cfg, ADN_BRIDGE_PEER_TYPE_ECHOLINK);
 
     media_core_init(core);
     media_core_bind(core, &ctx->router, &ctx->bus, &ctx->plan, *host->aliases);
     media_core_set_bridge_dmrid(core, dmr_p ? dmr_p->u.dmr.dmrid : 0);
-    if (el_p)
-        media_core_set_el_gain(core, el_p->u.el.gain);
 
     /*
-     * Open wire peers before the vocoder probe so startup logs show EchoLink
-     * directory / conference resolution (e.g. *REDCHILE* offline) before AMBE
-     * errors — otherwise a wedged md380-emu masks the real operator context.
+     * Open wire peers (and, for PCM-native ones, their own vocoder) before
+     * checking readiness, so startup logs show EchoLink directory /
+     * conference resolution (e.g. *REDCHILE* offline) before AMBE errors —
+     * otherwise a wedged md380-emu masks the real operator context.
      */
     if (media_peer_bus_open_all(&ctx->bus, cfg) != 0) {
         LOG_ERROR("engine: startup aborted — peer open failed "
-                  "(see dmr/echolink/ysf log above)\n");
+                  "(see dmr/echolink/ysf/alsa log above)\n");
         return -1;
     }
 
-    if (ctx->plan.needs_vocoder) {
-        if (!el_p || !el_p->u.el.vocoder_host[0] || el_p->u.el.vocoder_port <= 0) {
-            LOG_ERROR("engine: startup aborted — EchoLink layout needs "
-                      "[peer.el] vocoder_host and vocoder_port\n");
-            media_peer_bus_close_all(&ctx->bus);
-            return -1;
-        }
-        if (vocoder_open(&core->voc, el_p->u.el.vocoder_host, el_p->u.el.vocoder_port) < 0) {
-            LOG_ERROR("engine: startup aborted — AMBE vocoder not ready at %s:%d "
-                      "(EchoLink voice bridge cannot start; see vocoder log above)\n",
-                      el_p->u.el.vocoder_host, el_p->u.el.vocoder_port);
-            media_peer_bus_close_all(&ctx->bus);
-            return -1;
-        }
-        ctx->vocoder_open = 1;
+    if (engine_check_pcm_vocoders(ctx, cfg) != 0) {
+        media_peer_bus_close_all(&ctx->bus);
+        return -1;
     }
 
     LOG_INFO("engine: %s (%d enabled / %d, ModeConv=%s, vocoder=%s)\n",
@@ -147,8 +164,6 @@ static void engine_stop(engine_ctx_t *ctx)
 {
     media_peer_bus_sigint_all(&ctx->bus);
     media_peer_bus_close_all(&ctx->bus);
-    if (ctx->vocoder_open)
-        vocoder_close(&ctx->core->voc);
     ctx->core->router = NULL;
     ctx->core->bus = NULL;
 }
@@ -185,6 +200,14 @@ static void engine_poll_el_slot(media_peer_slot_t *slot)
     peer_el_poll(el, 5);
 }
 
+static void engine_poll_alsa_slot(media_peer_slot_t *slot)
+{
+    peer_alsa_t *alsa = &slot->u.alsa;
+
+    peer_alsa_tick(alsa);
+    peer_alsa_poll(alsa, 5);
+}
+
 static void engine_poll_bus(engine_ctx_t *ctx)
 {
     int i;
@@ -204,6 +227,9 @@ static void engine_poll_bus(engine_ctx_t *ctx)
         case MEDIA_PEER_ECHOLINK:
             engine_poll_el_slot(slot);
             break;
+        case MEDIA_PEER_ALSA:
+            engine_poll_alsa_slot(slot);
+            break;
         default:
             break;
         }
@@ -215,7 +241,8 @@ static void engine_step(engine_host_t *host, adn_bridge_config_t *cfg,
 {
     engine_poll_bus(ctx);
     engine_poll_aliases(cfg, host, last_alias_poll, &ctx->core->aliases);
-    media_core_poll_el_pcm(ctx->core);
+    media_core_poll_pcm(ctx->core, MEDIA_PEER_ECHOLINK);
+    media_core_poll_pcm(ctx->core, MEDIA_PEER_ALSA);
     media_core_tick(ctx->core);
 }
 
