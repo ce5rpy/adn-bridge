@@ -138,7 +138,7 @@ int ysf_tx_send(ysf_tx_args_t *args, uint8_t fi, uint8_t ft, uint8_t cm,
     if (fi == YSF_FI_HEADER || fi == YSF_FI_TERMINATOR) {
         memset(frame + YSF_FICH_OFFSET_NET, 0, 120);
         memcpy(frame + YSF_FICH_OFFSET_NET, YSF_SYNC_BYTES, 5);
-        ysf_fich_encode_outbound(frame + YSF_FICH_OFFSET_RX, fich_fn, fi, ft, cm);
+        ysf_fich_encode_outbound(frame + YSF_FICH_OFFSET_RX, fich_fn, fi, ft, cm, YSF_FICH_DT_VD_MODE2);
         if (csd1 && csd2)
             ysf_payload_write_header(frame + YSF_FICH_OFFSET_NET, csd1, csd2);
     } else {
@@ -147,7 +147,7 @@ int ysf_tx_send(ysf_tx_args_t *args, uint8_t fi, uint8_t ft, uint8_t cm,
         memcpy(frame + YSF_FICH_OFFSET_NET, YSF_SYNC_BYTES, 5);
         if (!(args->relay_passthrough && payload120)) {
             ysf_tx_apply_dch_slot(frame + YSF_FICH_OFFSET_NET, fich_fn, args->meta);
-            ysf_fich_encode_outbound(frame + YSF_FICH_OFFSET_RX, fich_fn, fi, ft, cm);
+            ysf_fich_encode_outbound(frame + YSF_FICH_OFFSET_RX, fich_fn, fi, ft, cm, YSF_FICH_DT_VD_MODE2);
         }
     }
 

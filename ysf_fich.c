@@ -910,7 +910,7 @@ uint8_t ysf_fich_get_dgid(void)
 }
 
 void ysf_fich_encode_outbound(uint8_t *fich25, uint8_t fn_serial,
-                              uint8_t fi, uint8_t ft, uint8_t cm)
+                              uint8_t fi, uint8_t ft, uint8_t cm, uint8_t dt)
 {
     memset(m_fich, 0x00, sizeof(m_fich));
     fich_set_fi(fi);
@@ -919,7 +919,7 @@ void ysf_fich_encode_outbound(uint8_t *fich25, uint8_t fn_serial,
     fich_set_fn(fn_serial);
     fich_set_ft(ft);
     fich_set_mr(0);
-    fich_set_dt(YSF_FICH_DT_VD_MODE2);
+    fich_set_dt(dt);
     fich_set_voip(false);
     fich_set_sql(false);
     fich_set_sq(0);

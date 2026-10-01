@@ -7,6 +7,7 @@
 #include "adapters/ysf.h"
 
 #include "log.h"
+#include "media/bridge_util.h"
 #include "media/identity.h"
 #include "media/peer_bus.h"
 #include "session/ysf_tx.h"
@@ -31,6 +32,17 @@ void adapter_ysf_on_wire(media_core_t *core, int src_router_id, peer_ysf_t *ysf,
     }
     (void)fn;
     rx_dgid = ysf_fich_get_dgid();
+
+    /* Data FR carries WIRES-X commands, news and pictures, not voice. Relayed, a user's
+     * WIRES-X command acted on the other reflector and linked the two. Voice and the
+     * GPS position (sent inside V/D mode 1 frames) are not Data FR. */
+    if (dt == YSF_FICH_DT_DATA_FR) {
+        static int data_log;
+
+        if (bridge_dbg_periodic(&data_log))
+            LOG_YSF_DEBUG("YSF RX Data FR (WIRES-X/data) dropped, fi=%u\n", (unsigned)fi);
+        return;
+    }
 
     /* DG-ID 0 is untagged/open traffic: accept it; skip only other rooms
      * (>=1). This is a wire rule (which DGID we listen to), not a session

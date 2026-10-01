@@ -24,6 +24,8 @@
 #include "session/dmr_tx.h"
 #include "session/dmr_wire.h"
 #include "ysf_fich.h"
+#include "session/ysf_tx.h"
+#include "adapters/ysf.h"
 
 static void test_init_defaults(void)
 {
@@ -1391,6 +1393,54 @@ static void test_ysf_relay_stale_call_releases_router(void)
  * fabricates that region (no real YSF frame to preserve there). Captures the
  * actual wire bytes over a real loopback socket, mirroring the connect-PTT
  * test's approach, rather than trusting internal state. */
+static void ysf_comm_frame(uint8_t pkt[155], uint8_t dt)
+{
+    static const uint8_t sync[5] = {0xD4U, 0x71U, 0xC9U, 0x63U, 0x4DU};
+
+    memset(pkt, 0, 155);
+    memcpy(pkt, "YSFD", 4);
+    memcpy(pkt + 4, "CE5RPY    ", 10);
+    memcpy(pkt + 14, "CE5RPY    ", 10);
+    memcpy(pkt + 24, "ALL       ", 10);
+    memcpy(pkt + YSF_FICH_OFFSET_NET, sync, 5);
+    ysf_fich_encode_outbound(pkt + YSF_FICH_OFFSET_RX, 1, YSF_FI_COMMUNICATIONS, 6, 0, dt);
+}
+
+/* A user's WIRES-X command (Data FR) relayed to the other reflector acted there and
+ * linked the two. Only voice-bearing frames may cross; GPS rides inside V/D mode 1. */
+static void test_ysf_data_fr_does_not_cross_to_another_reflector(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    uint8_t pkt[155];
+    int ysf1_id, ysf2_id, i;
+
+    media_router_init(&r);
+    ysf1_id = media_router_add_peer(&r, MEDIA_PEER_YSF);
+    ysf2_id = media_router_add_peer(&r, MEDIA_PEER_YSF);
+    memset(&bus, 0, sizeof(bus));
+    bus.router = &r;
+    bus.n_slots = 2;
+    for (i = 0; i < 2; i++) {
+        bus.slots[i].router_id = i ? ysf2_id : ysf1_id;
+        bus.slots[i].kind = MEDIA_PEER_YSF;
+        bus.slots[i].open = 1;
+        bus.slots[i].u.ysf.sock = -1;
+        memset(bus.slots[i].u.ysf.callsign, ' ', sizeof(bus.slots[i].u.ysf.callsign));
+    }
+    media_core_init(&core);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
+
+    ysf_comm_frame(pkt, YSF_FICH_DT_DATA_FR);
+    adapter_ysf_on_wire(&core, ysf1_id, &bus.slots[0].u.ysf, pkt, 155);
+    assert(media_router_active_ingress(&r) == -1);
+
+    ysf_comm_frame(pkt, YSF_FICH_DT_VD_MODE2);
+    adapter_ysf_on_wire(&core, ysf1_id, &bus.slots[0].u.ysf, pkt, 155);
+    assert(media_router_active_ingress(&r) == ysf1_id);
+}
+
 static void test_ysf_relay_voice_frame_is_transparent(void)
 {
     media_core_t core;
@@ -1502,6 +1552,7 @@ int main(void)
     test_relay_stale_check_leaves_a_pcm_call_alone();
     test_dmr_relay_repeated_header_keeps_the_stream();
     test_ysf_relay_voice_frame_is_transparent();
+    test_ysf_data_fr_does_not_cross_to_another_reflector();
     test_dmr_tx_embedded_lc_independent_per_destination();
     printf("test_media_core: ok\n");
     return 0;

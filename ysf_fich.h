@@ -26,6 +26,7 @@
 #include <stdint.h>
 #include <netinet/in.h>
 
+#define YSF_FICH_DT_DATA_FR  1U
 #define YSF_FICH_DT_VD_MODE2 2U
 /* Network YSFD: 120-byte RF chunk at frame+35 (sync+FICH+VCH), same as YSF2DMR. */
 #define YSF_FICH_OFFSET_NET 35U
@@ -44,8 +45,8 @@ int ysf_fich_decode_fields(const uint8_t *frame155, uint8_t *fi, uint8_t *fn,
 /* DGID from last ysf_fich_decode_fields / fich_decode (m_fich[3]). */
 uint8_t ysf_fich_get_dgid(void);
 
-/* Base voice FICH (SQL/SQ cleared); peer_ysf_send_ysfd applies config DGID. */
+/* Base FICH (SQL/SQ cleared); peer_ysf_send_ysfd applies config DGID. */
 void ysf_fich_encode_outbound(uint8_t *fich25, uint8_t fn_serial,
-                              uint8_t fi, uint8_t ft, uint8_t cm);
+                              uint8_t fi, uint8_t ft, uint8_t cm, uint8_t dt);
 
 #endif
