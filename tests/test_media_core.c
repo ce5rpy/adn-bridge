@@ -17,6 +17,7 @@
 #include "media/bridge_util.h"
 #include "media/core.h"
 #include "media/core_pcm_bridge.h"
+#include "media/core_relay.h"
 #include "media/core_ysf_dmr.h"
 #include "media/peer_bus.h"
 #include "media/router.h"
@@ -1241,6 +1242,41 @@ static void test_pcm_dmr_paces_from_the_schedule_not_the_tick(void)
     close(fake_dmr_fd);
 }
 
+/* The relay's stale-call check force-released any active ingress held by a DMR
+ * peer, so a DMR->EchoLink call lost the bus lock (and the other DMR peers got a
+ * stray VTERM) 1.5 s into every over, although no relay call was running. */
+static void test_relay_stale_check_leaves_a_pcm_call_alone(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    int dmr_id, el_id;
+
+    media_router_init(&r);
+    dmr_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+    el_id = media_router_add_peer(&r, MEDIA_PEER_ECHOLINK);
+    memset(&bus, 0, sizeof(bus));
+    bus.router = &r;
+    bus.n_slots = 2;
+    bus.slots[0].router_id = dmr_id;
+    bus.slots[0].kind = MEDIA_PEER_DMR;
+    bus.slots[0].open = 1;
+    bus.slots[0].u.dmr.sock = -1;
+    bus.slots[1].router_id = el_id;
+    bus.slots[1].kind = MEDIA_PEER_ECHOLINK;
+    bus.slots[1].open = 1;
+
+    media_core_init(&core);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
+
+    /* What the DMR->EchoLink pathway does on call start; no relay is involved. */
+    media_router_ingress_begin(&r, dmr_id);
+    rewind_ms(&core.last_dmr_relay_rx, 5000);
+    core_relay_check_stale(&core);
+
+    assert(media_router_active_ingress(&r) == dmr_id);
+}
+
 /* A same-kind relay call (YSF<->YSF or DMR<->DMR) has no PCM/silence signal
  * to poll -- if the source's CALL_END/EOT is lost (common on a lossy RF/
  * hotspot link), the router's active_ingress lock must not stay stuck
@@ -1414,6 +1450,7 @@ int main(void)
     test_pcm_dmr_underrun_keeps_stream_going();
     test_pcm_dmr_paces_from_the_schedule_not_the_tick();
     test_ysf_relay_stale_call_releases_router();
+    test_relay_stale_check_leaves_a_pcm_call_alone();
     test_ysf_relay_voice_frame_is_transparent();
     test_dmr_tx_embedded_lc_independent_per_destination();
     printf("test_media_core: ok\n");

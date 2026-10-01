@@ -52,6 +52,7 @@ static int core_relay_router_take(media_core_t *core, int peer_id)
     if (!media_router_ingress_allowed(core->router, peer_id))
         return 0;
     media_router_ingress_begin(core->router, peer_id);
+    core->relay_ingress = peer_id;
     return 1;
 }
 
@@ -59,6 +60,7 @@ static void core_relay_router_release(media_core_t *core, int peer_id)
 {
     if (core->router && media_router_active_ingress(core->router) == peer_id)
         media_router_ingress_end(core->router, peer_id);
+    core->relay_ingress = -1;
 }
 
 static int core_relay_is_active(const media_core_t *core, int peer_id)
@@ -320,6 +322,11 @@ void core_relay_check_stale(media_core_t *core)
     if (!core->router)
         return;
     src_id = media_router_active_ingress(core->router);
+    if (src_id != core->relay_ingress) {
+        if (src_id < 0)
+            core->relay_ingress = -1; /* released by another pathway */
+        return;
+    }
     if (src_id < 0 || src_id >= core->router->n_peers)
         return;
     kind = core->router->peers[src_id].kind;

@@ -21,6 +21,7 @@ void media_core_init(media_core_t *core)
         return;
     memset(core, 0, sizeof(*core));
     core->dmr_slot_bit = 0x80; /* TX always TS2 */
+    core->relay_ingress = -1;
     core->mc_ysf_dmr = modeconv_create();
 }
 

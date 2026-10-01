@@ -112,6 +112,9 @@ typedef struct {
      * force-release the lock instead of blocking every other peer forever. */
     struct timespec last_dmr_relay_rx;
     struct timespec last_ysf_relay_rx;
+    /* Router id whose active_ingress the relay took, -1 when the relay holds none:
+     * the stale check must not release a lock another pathway (DMR->PCM) holds. */
+    int relay_ingress;
     /* Talker identity captured at relay CALL_BEGIN, needed to address the
      * synthetic VTERM/TERMINATOR sent when core_relay_check_stale fires. */
     media_call_meta_t relay_dmr_meta;
