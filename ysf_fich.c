@@ -757,97 +757,37 @@ static void generate_voice_payload(unsigned char *payload, int frame_num)
     payload[1] = frame_num & 0xFF;
 }
 
-void ysf_send_activation_burst(int udp_sock, const struct sockaddr_in *host,
-                               const char callsign[10], uint8_t forced_dgid)
+int ysf_activation_frame(uint8_t frame[155], const char callsign[10], uint8_t forced_dgid, int i)
 {
-    LOG_YSF_INFO("activation burst (DGID %02u)...\n", forced_dgid);
-    uint8_t frame[155];
-    uint8_t fn = 0;
-    struct timespec ts;
+    uint8_t fn;
 
-    for (int i = 0; i < 5; i++) {
-        memset(frame, 0x00, 155);
-        memcpy(frame, "YSFD", 4);
-        memcpy(frame + 4, callsign, 10);
-        memcpy(frame + 14, callsign, 10);
-        memcpy(frame + 24, "ALL       ", 10);
-        memcpy(frame + 34, "          ", 10);
-        frame[48] = fn;
+    if (i < 0 || i >= YSF_ACTIVATION_FRAMES)
+        return -1;
+    /* dgidcon's sequence: 5 headers, 20 terminators carrying a fill pattern, 3 terminators. */
+    memset(frame, 0x00, 155);
+    memcpy(frame, "YSFD", 4);
+    memcpy(frame + 4, callsign, 10);
+    memcpy(frame + 14, callsign, 10);
+    memcpy(frame + 24, "ALL       ", 10);
+    memcpy(frame + 34, "          ", 10);
+    /* The three closing terminators repeat the frame number of the first one. */
+    fn = (uint8_t)(i < 25 ? i : 25);
+    frame[48] = (uint8_t)(2 * fn);
 
-        memset(m_fich, 0x00, 6);
-        fich_set_fi(0);
-        fich_set_cs(2);
-        fich_set_cm(0);
-        fich_set_fn(fn >> 1);
-        fich_set_ft(1);
-        fich_set_mr(0);
-        fich_set_dt(YSF_FICH_DT_VD_MODE2);
-        fich_set_voip(false);
-        m_fich[3] = forced_dgid;
-        fich_encode(frame + YSF_FICH_OFFSET_RX); /* dgidcon writes FICH at +40 */
-        sendto(udp_sock, frame, 155, 0, (const struct sockaddr *)host, sizeof(*host));
-        fn += 2;
-        ts.tv_sec = 0;
-        ts.tv_nsec = 90000000L;
-        nanosleep(&ts, NULL);
-    }
-
-    for (int i = 0; i < 20; i++) {
-        memset(frame, 0x00, 155);
-        memcpy(frame, "YSFD", 4);
-        memcpy(frame + 4, callsign, 10);
-        memcpy(frame + 14, callsign, 10);
-        memcpy(frame + 24, "ALL       ", 10);
-        memcpy(frame + 34, "          ", 10);
-        frame[48] = fn;
-
-        memset(m_fich, 0x00, 6);
-        fich_set_fi(2);
-        fich_set_cs(2);
-        fich_set_cm(1);
-        fich_set_fn(fn >> 1);
-        fich_set_ft(0);
-        fich_set_mr(0);
-        fich_set_dt(YSF_FICH_DT_VD_MODE2);
-        fich_set_voip(false);
-        m_fich[3] = forced_dgid;
-        fich_encode(frame + YSF_FICH_OFFSET_RX); /* dgidcon writes FICH at +40 */
-        generate_voice_payload(frame + 55, i);
-        sendto(udp_sock, frame, 155, 0, (const struct sockaddr *)host, sizeof(*host));
-        fn += 2;
-        ts.tv_sec = 0;
-        ts.tv_nsec = 90000000L;
-        nanosleep(&ts, NULL);
-    }
-
-    for (int i = 0; i < 3; i++) {
-        memset(frame, 0x00, 155);
-        memcpy(frame, "YSFD", 4);
-        memcpy(frame + 4, callsign, 10);
-        memcpy(frame + 14, callsign, 10);
-        memcpy(frame + 24, "ALL       ", 10);
-        memcpy(frame + 34, "          ", 10);
-        frame[48] = fn;
-
-        memset(m_fich, 0x00, 6);
-        fich_set_fi(2);
-        fich_set_cs(2);
-        fich_set_cm(1);
-        fich_set_fn(fn >> 1);
-        fich_set_ft(1);
-        fich_set_mr(0);
-        fich_set_dt(YSF_FICH_DT_VD_MODE2);
-        fich_set_voip(false);
-        m_fich[3] = forced_dgid;
-        fich_encode(frame + YSF_FICH_OFFSET_RX); /* dgidcon writes FICH at +40 */
-        sendto(udp_sock, frame, 155, 0, (const struct sockaddr *)host, sizeof(*host));
-        if (i < 2) {
-            ts.tv_sec = 0;
-            ts.tv_nsec = 100000000L;
-            nanosleep(&ts, NULL);
-        }
-    }
-    LOG_YSF_INFO("activation complete (DGID %02u)\n", forced_dgid);
+    memset(m_fich, 0x00, 6);
+    fich_set_fi(i < 5 ? 0 : 2);
+    fich_set_cs(2);
+    fich_set_cm(i < 5 ? 0 : 1);
+    fich_set_fn(fn);
+    fich_set_ft(i < 5 || i >= 25 ? 1 : 0);
+    fich_set_mr(0);
+    fich_set_dt(YSF_FICH_DT_VD_MODE2);
+    fich_set_voip(false);
+    m_fich[3] = forced_dgid;
+    fich_encode(frame + YSF_FICH_OFFSET_RX); /* dgidcon writes FICH at +40 */
+    if (i >= 5 && i < 25)
+        generate_voice_payload(frame + 55, i - 5);
+    return i < 25 ? 90 : (i < YSF_ACTIVATION_FRAMES - 1 ? 100 : 0);
 }
 
 void ysf_fich_rewrite_dgid(uint8_t *frame155, uint8_t dgid)

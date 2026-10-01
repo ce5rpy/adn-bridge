@@ -33,8 +33,10 @@
 /* FICH position on the wire: after the 5-byte sync. */
 #define YSF_FICH_OFFSET_RX  40U
 
-void ysf_send_activation_burst(int udp_sock, const struct sockaddr_in *host,
-                               const char callsign[10], uint8_t forced_dgid);
+#define YSF_ACTIVATION_FRAMES 28
+/* Frame `i` of the DG-ID activation burst; returns the ms to wait before the next
+ * frame, or -1 when `i` is past the end. */
+int ysf_activation_frame(uint8_t frame[155], const char callsign[10], uint8_t forced_dgid, int i);
 
 /* Rewrite FICH DGID only; voice/GPS payload (bytes 55+) unchanged. */
 void ysf_fich_rewrite_dgid(uint8_t *frame155, uint8_t dgid);

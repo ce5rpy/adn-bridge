@@ -76,7 +76,9 @@ void peer_ysf_close(peer_ysf_t *p)
 
 int peer_ysf_linked(const peer_ysf_t *p)
 {
-    return p->linked;
+    /* The reflector's YSFP answer arrives during the activation burst; the link is
+     * usable (relay, connect PTT) once the burst is out. */
+    return p->linked && p->rc_step == 0;
 }
 
 static void peer_ysf_send_poll(peer_ysf_t *p)
@@ -87,16 +89,65 @@ static void peer_ysf_send_poll(peer_ysf_t *p)
     sendto(p->sock, pkt, 14, 0, (struct sockaddr *)&p->peer, sizeof(p->peer));
 }
 
+static void peer_ysf_due_in(peer_ysf_t *p, int ms)
+{
+    clock_gettime(CLOCK_MONOTONIC, &p->rc_due);
+    p->rc_due.tv_nsec += ms * 1000000L;
+    while (p->rc_due.tv_nsec >= 1000000000L) {
+        p->rc_due.tv_nsec -= 1000000000L;
+        p->rc_due.tv_sec++;
+    }
+}
+
+static int peer_ysf_is_due(const peer_ysf_t *p)
+{
+    struct timespec now;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return now.tv_sec > p->rc_due.tv_sec
+        || (now.tv_sec == p->rc_due.tv_sec && now.tv_nsec >= p->rc_due.tv_nsec);
+}
+
+/* The reconnect used to sleep ~3.5 s in the engine loop (YSFP wait + activation
+ * burst), stalling every other peer; now each step runs on its tick. */
 static void peer_ysf_reconnect(peer_ysf_t *p)
 {
     LOG_YSF_INFO("reconnecting (YSFP + DGID activation)...\n");
     p->linked = 0;
-    peer_ysf_send_poll(p);
-    sleep(1);
-    if (p->dgid >= 1U)
-        ysf_send_activation_burst(p->sock, &p->peer, p->callsign, p->dgid);
     p->last_rx = time(NULL);
-    LOG_YSF_INFO("link setup sent (waiting for reflector)\n");
+    peer_ysf_send_poll(p);
+    p->rc_step = 1;
+    peer_ysf_due_in(p, 1000);
+}
+
+static void peer_ysf_reconnect_step(peer_ysf_t *p)
+{
+    uint8_t frame[155];
+    int wait_ms;
+
+    if (!peer_ysf_is_due(p))
+        return;
+    if (p->rc_step == 1) {
+        if (p->dgid < 1U) {
+            p->rc_step = 0;
+            p->last_rx = time(NULL);
+            LOG_YSF_INFO("link setup sent (waiting for reflector)\n");
+            return;
+        }
+        LOG_YSF_INFO("activation burst (DGID %02u)...\n", (unsigned)p->dgid);
+        p->rc_step = 2;
+    }
+    wait_ms = ysf_activation_frame(frame, p->callsign, p->dgid, p->rc_step - 2);
+    sendto(p->sock, frame, 155, 0, (const struct sockaddr *)&p->peer, sizeof(p->peer));
+    if (p->rc_step - 2 == YSF_ACTIVATION_FRAMES - 1) {
+        p->rc_step = 0;
+        p->last_rx = time(NULL);
+        LOG_YSF_INFO("activation complete (DGID %02u)\n", (unsigned)p->dgid);
+        LOG_YSF_INFO("link setup sent (waiting for reflector)\n");
+        return;
+    }
+    p->rc_step++;
+    peer_ysf_due_in(p, wait_ms);
 }
 
 void peer_ysf_tick(peer_ysf_t *p)
@@ -106,6 +157,10 @@ void peer_ysf_tick(peer_ysf_t *p)
     if (p->reconnect_pending) {
         p->reconnect_pending = 0;
         peer_ysf_reconnect(p);
+        return;
+    }
+    if (p->rc_step) {
+        peer_ysf_reconnect_step(p);
         return;
     }
 

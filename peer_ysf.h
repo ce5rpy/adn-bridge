@@ -30,6 +30,8 @@ typedef struct {
     uint8_t dgid;
     int linked;
     int reconnect_pending;
+    int rc_step;            /* 0 idle, 1 YSFP sent, 2+ activation frame rc_step-2 */
+    struct timespec rc_due; /* when the next reconnect step may run */
     time_t last_rx;
     uint8_t buf[2048];
 } peer_ysf_t;

@@ -24,6 +24,7 @@
 #include "session/dmr_tx.h"
 #include "session/dmr_wire.h"
 #include "ysf_fich.h"
+#include "peer_ysf.h"
 #include "session/ysf_tx.h"
 #include "adapters/ysf.h"
 
@@ -1526,6 +1527,47 @@ static void test_ysf_connect_ptt_after_link(void)
     close(fd);
 }
 
+/* The YSF reconnect slept ~3.5 s inside the engine loop (YSFP wait + DG-ID burst),
+ * stalling every other peer. Each step now runs on its own tick. */
+static void test_ysf_reconnect_does_not_block_the_loop(void)
+{
+    peer_ysf_t p;
+    struct sockaddr_in addr;
+    socklen_t alen = sizeof(addr);
+    struct timespec t0;
+    uint8_t buf[160];
+    int fd, frames = 0, i;
+
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    assert(bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+    assert(getsockname(fd, (struct sockaddr *)&addr, &alen) == 0);
+    assert(peer_ysf_open(&p, "127.0.0.1", ntohs(addr.sin_port), "CE5RPY", 5) == 0);
+
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    peer_ysf_tick(&p);
+    assert(bridge_ms_since(&t0) < 50);
+    assert(recv_nb(fd, buf, sizeof(buf), 50) == 14 && memcmp(buf, "YSFP", 4) == 0);
+
+    p.linked = 1; /* the reflector answers while the burst is still going out */
+    for (i = 0; i < 200 && p.rc_step; i++) {
+        assert(!peer_ysf_linked(&p));
+        clock_gettime(CLOCK_MONOTONIC, &p.rc_due);
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        peer_ysf_tick(&p);
+        assert(bridge_ms_since(&t0) < 50);
+        if (recv_nb(fd, buf, sizeof(buf), 20) == 155)
+            frames++;
+    }
+    assert(frames == YSF_ACTIVATION_FRAMES);
+    assert(peer_ysf_linked(&p));
+
+    peer_ysf_close(&p);
+    close(fd);
+}
+
 static void test_ysf_relay_voice_frame_is_transparent(void)
 {
     media_core_t core;
@@ -1639,6 +1681,7 @@ int main(void)
     test_ysf_relay_voice_frame_is_transparent();
     test_ysf_data_fr_does_not_cross_to_another_reflector();
     test_ysf_connect_ptt_after_link();
+    test_ysf_reconnect_does_not_block_the_loop();
     test_dmr_tx_embedded_lc_independent_per_destination();
     printf("test_media_core: ok\n");
     return 0;
