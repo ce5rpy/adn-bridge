@@ -49,6 +49,7 @@ typedef struct {
      * open time; the rest is session state advanced once per tick. */
     int               clear_dynamic_tg;
     int               dmr_was_connected;
+    int               ysf_was_linked; /* YSF slots reuse cp_* for their connect-PTT */
     int               cp_active;
     int               cp_phase; /* 0=need VHEAD, 1=voice */
     int               cp_voice_frames;

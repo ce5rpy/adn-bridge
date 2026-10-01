@@ -55,6 +55,18 @@ const uint8_t *ysf_tx_modeconv_chunk(const uint8_t *pkt155, uint8_t scratch[120]
     return scratch;
 }
 
+void ysf_tx_silence_payload(uint8_t out120[120])
+{
+    /* ModeConv's YSF_SILENCE, in each of the five VCH that follow a 5-byte DCH. */
+    static const uint8_t vch_silence[13] = {0x7BU, 0xB2U, 0x8EU, 0x43U, 0x36U, 0xE4U, 0xA2U,
+                                            0x39U, 0x78U, 0x49U, 0x33U, 0x68U, 0x33U};
+    int i;
+
+    memset(out120, 0, 120);
+    for (i = 0; i < 5; i++)
+        memcpy(out120 + 35 + 18 * i, vch_silence, 13);
+}
+
 void ysf_tx_fill_csd(const bridge_call_meta_t *meta, uint8_t csd1[20], uint8_t csd2[20])
 {
     uint8_t rid[5];

@@ -1441,6 +1441,91 @@ static void test_ysf_data_fr_does_not_cross_to_another_reflector(void)
     assert(media_router_active_ingress(&r) == ysf1_id);
 }
 
+static int ysf_cp_next_fi(media_core_t *core, int fd, media_peer_slot_t *slot, uint8_t *dgid)
+{
+    uint8_t buf[160];
+    uint8_t fi, fn, ft, cm, dt;
+
+    rewind_ms(&slot->cp_last_tx, 100);
+    media_core_tick(core);
+    if (recv_nb(fd, buf, sizeof(buf), 50) != 155)
+        return -1;
+    assert(ysf_fich_decode_fields(buf, &fi, &fn, &ft, &cm, &dt) == 0);
+    *dgid = ysf_fich_get_dgid();
+    if (fi == YSF_FI_COMMUNICATIONS) {
+        static const uint8_t silence[13] = {0x7B, 0xB2, 0x8E, 0x43, 0x36, 0xE4, 0xA2,
+                                            0x39, 0x78, 0x49, 0x33, 0x68, 0x33};
+        assert(memcmp(buf + YSF_FICH_OFFSET_NET + 35, silence, 13) == 0);
+    }
+    return fi;
+}
+
+/* After the DG-ID activation burst, a real transmission so the room registers the
+ * bridge: header, 0.5 s of silence, terminator -- on connect/reconnect only. */
+static void test_ysf_connect_ptt_after_link(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    media_peer_slot_t *slot;
+    struct sockaddr_in addr;
+    socklen_t alen = sizeof(addr);
+    int fd, i, ysf_id, other_id;
+    uint8_t dgid = 0;
+
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    assert(bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+    assert(getsockname(fd, (struct sockaddr *)&addr, &alen) == 0);
+
+    media_router_init(&r);
+    ysf_id = media_router_add_peer(&r, MEDIA_PEER_YSF);
+    other_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+    memset(&bus, 0, sizeof(bus));
+    bus.router = &r;
+    bus.n_slots = 1;
+    slot = &bus.slots[0];
+    slot->router_id = ysf_id;
+    slot->kind = MEDIA_PEER_YSF;
+    slot->open = 1;
+    slot->u.ysf.sock = socket(AF_INET, SOCK_DGRAM, 0);
+    slot->u.ysf.peer = addr;
+    slot->u.ysf.dgid = 5;
+    memcpy(slot->u.ysf.callsign, "CE5RPY    ", 10);
+    media_core_init(&core);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
+
+    slot->u.ysf.linked = 1;
+    media_core_tick(&core);
+    assert(recv_nb(fd, (uint8_t[160]){0}, 160, 50) < 0); /* waits CONNECT_PTT_START_DELAY_MS */
+
+    /* A call holding the bus postpones it. */
+    media_router_ingress_begin(&r, other_id);
+    rewind_ms(&slot->cp_start, 2100);
+    media_core_tick(&core);
+    assert(recv_nb(fd, (uint8_t[160]){0}, 160, 50) < 0);
+    media_router_ingress_end(&r, other_id);
+
+    assert(ysf_cp_next_fi(&core, fd, slot, &dgid) == YSF_FI_HEADER && dgid == 5);
+    for (i = 0; i < 5; i++)
+        assert(ysf_cp_next_fi(&core, fd, slot, &dgid) == YSF_FI_COMMUNICATIONS && dgid == 5);
+    assert(ysf_cp_next_fi(&core, fd, slot, &dgid) == YSF_FI_TERMINATOR);
+    assert(ysf_cp_next_fi(&core, fd, slot, &dgid) == -1); /* once per link */
+
+    /* Reconnect: link lost and regained. */
+    slot->u.ysf.linked = 0;
+    media_core_tick(&core);
+    slot->u.ysf.linked = 1;
+    media_core_tick(&core);
+    rewind_ms(&slot->cp_start, 2100);
+    assert(ysf_cp_next_fi(&core, fd, slot, &dgid) == YSF_FI_HEADER);
+
+    close(slot->u.ysf.sock);
+    close(fd);
+}
+
 static void test_ysf_relay_voice_frame_is_transparent(void)
 {
     media_core_t core;
@@ -1553,6 +1638,7 @@ int main(void)
     test_dmr_relay_repeated_header_keeps_the_stream();
     test_ysf_relay_voice_frame_is_transparent();
     test_ysf_data_fr_does_not_cross_to_another_reflector();
+    test_ysf_connect_ptt_after_link();
     test_dmr_tx_embedded_lc_independent_per_destination();
     printf("test_media_core: ok\n");
     return 0;

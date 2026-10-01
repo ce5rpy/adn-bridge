@@ -139,6 +139,8 @@ void media_core_tick(media_core_t *core)
      * already updated by whichever ran first). */
     if (has_dmr)
         core_ysf_dmr_poll_connect_ptt(core);
+    if (has_ysf)
+        core_ysf_poll_connect_ptt(core);
     if (has_dmr && has_ysf)
         core_ysf_dmr_tick(core);
     if (has_el)

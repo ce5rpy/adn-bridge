@@ -15,5 +15,6 @@ void core_ysf_dmr_ingress_dmr(media_core_t *core, int src_router_id, const media
 void core_ysf_dmr_ingress_ysf(media_core_t *core, int src_router_id, const media_bus_frame_t *frame);
 void core_ysf_dmr_tick(media_core_t *core);
 void core_ysf_dmr_poll_connect_ptt(media_core_t *core);
+void core_ysf_poll_connect_ptt(media_core_t *core);
 
 #endif

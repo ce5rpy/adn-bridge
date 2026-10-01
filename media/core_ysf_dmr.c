@@ -654,3 +654,88 @@ void core_ysf_dmr_tick(media_core_t *core)
     if (bridge_ms_elapsed(&core->leg_ysf_dmr.last_ysf_tx, YSF_FRAME_MS))
         (void)core_emit_ysf_from_conv(core);
 }
+
+/* =====================================================================
+ * YSF connect-PTT: once the reflector answers a connect/reconnect (after the
+ * DG-ID activation burst), a short real transmission -- header, 0.5 s of
+ * silence, terminator -- so the room registers the bridge. Paced per tick,
+ * never blocking the loop; waits while any call holds the bus.
+ * ===================================================================== */
+
+#define YSF_CONNECT_PTT_FRAMES (CONNECT_PTT_MS / 100) /* V/D mode 2: 100 ms each */
+
+static void core_ysf_cp_send(media_peer_slot_t *slot, uint8_t fi, uint8_t fn, uint8_t net_cnt)
+{
+    peer_ysf_t *ysf = &slot->u.ysf;
+    bridge_call_meta_t meta;
+    uint8_t csd1[20], csd2[20], silence[120];
+    ysf_tx_args_t args;
+
+    memset(&meta, ' ', sizeof(meta));
+    memcpy(meta.net_src, ysf->callsign, BRIDGE_CALLSIGN_LEN);
+    memcpy(meta.net_dst, "ALL", 3);
+    args = (ysf_tx_args_t){
+        .peer = ysf,
+        .repeater_callsign = ysf->callsign,
+        .meta = &meta,
+        .last_tx = &slot->cp_last_tx,
+        .dgid_cfg = ysf->dgid,
+    };
+    if (fi == YSF_FI_COMMUNICATIONS) {
+        ysf_tx_silence_payload(silence);
+        adapter_ysf_egress_ysfd(&args, fi, YSF_FICH_FT, YSF_FICH_CM, fn, net_cnt, silence, NULL, NULL);
+        return;
+    }
+    ysf_tx_fill_csd(&meta, csd1, csd2);
+    adapter_ysf_egress_ysfd(&args, fi, YSF_FICH_FT, YSF_FICH_CM, fn, net_cnt, NULL, csd1, csd2);
+}
+
+void core_ysf_poll_connect_ptt(media_core_t *core)
+{
+    int i;
+
+    if (!core->bus)
+        return;
+    for (i = 0; i < core->bus->n_slots; i++) {
+        media_peer_slot_t *slot = &core->bus->slots[i];
+        int linked, n;
+
+        if (slot->kind != MEDIA_PEER_YSF || !slot->open)
+            continue;
+        linked = peer_ysf_linked(&slot->u.ysf);
+        if (linked && !slot->ysf_was_linked) {
+            slot->cp_active = 1;
+            slot->cp_phase = 0;
+            slot->cp_voice_frames = 0;
+            bridge_stamp_now(&slot->cp_start);
+        }
+        if (!linked)
+            slot->cp_active = 0;
+        slot->ysf_was_linked = linked;
+        if (!slot->cp_active)
+            continue;
+
+        if (slot->cp_phase == 0) {
+            if (bridge_ms_since(&slot->cp_start) < CONNECT_PTT_START_DELAY_MS
+                || (core->router && media_router_active_ingress(core->router) >= 0))
+                continue;
+            LOG_YSF_INFO("YSF connect PTT start (DGID %u, %d ms) [%.10s]\n",
+                         (unsigned)slot->u.ysf.dgid, CONNECT_PTT_MS, slot->u.ysf.callsign);
+            core_ysf_cp_send(slot, YSF_FI_HEADER, 0, 0);
+            slot->cp_phase = 1;
+            continue;
+        }
+        if (!bridge_ms_elapsed(&slot->cp_last_tx, YSF_FRAME_MS))
+            continue;
+        n = slot->cp_voice_frames;
+        if (n < YSF_CONNECT_PTT_FRAMES) {
+            core_ysf_cp_send(slot, YSF_FI_COMMUNICATIONS, (uint8_t)(n % (YSF_FICH_FT + 1U)),
+                             (uint8_t)(((n + 1) & 0x7F) << 1));
+            slot->cp_voice_frames++;
+            continue;
+        }
+        core_ysf_cp_send(slot, YSF_FI_TERMINATOR, 0, (uint8_t)(((n + 1) & 0x7F) << 1));
+        slot->cp_active = 0;
+        LOG_YSF_INFO("YSF connect PTT end [%.10s]\n", slot->u.ysf.callsign);
+    }
+}

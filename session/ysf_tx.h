@@ -39,6 +39,8 @@ typedef struct {
 
 const uint8_t *ysf_tx_modeconv_chunk(const uint8_t *pkt155, uint8_t scratch[120]);
 void ysf_tx_fill_csd(const bridge_call_meta_t *meta, uint8_t csd1[20], uint8_t csd2[20]);
+/* A V/D mode 2 payload (frame+35) carrying 100 ms of AMBE silence. */
+void ysf_tx_silence_payload(uint8_t out120[120]);
 int ysf_tx_send(ysf_tx_args_t *args, uint8_t fi, uint8_t ft, uint8_t cm,
                 uint8_t fich_fn, uint8_t net_cnt, const uint8_t *payload120,
                 const uint8_t csd1[20], const uint8_t csd2[20]);
