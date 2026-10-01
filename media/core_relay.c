@@ -149,6 +149,16 @@ void core_relay_dmr_to_dmr(media_core_t *core, int src_router_id, const media_bu
 
     switch (frame->kind) {
     case MEDIA_FRAME_CALL_BEGIN:
+        /* Hotspots and masters repeat the voice header: a new outgoing stream for each
+         * copy leaves an orphan one-frame stream ahead of the call, and a strict master
+         * holds the slot for it and drops the voice that follows. */
+        if (core_relay_is_active(core, src_router_id)
+            && frame->meta.stream_id == core->relay_dmr_meta.stream_id) {
+            bridge_stamp_now(&core->last_dmr_relay_rx);
+            core_relay_send_dmrd(core, src_router_id, frame->meta.talker_id,
+                                 (uint8_t)(slot_bit | (DMRD_FT_DATA_SYNC << 4) | DMRD_DTYPE_VHEAD), NULL);
+            return;
+        }
         if (!core_relay_router_take(core, src_router_id))
             return;
         core_relay_reset_dmr_tx_slots(core);

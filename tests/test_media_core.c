@@ -1242,6 +1242,55 @@ static void test_pcm_dmr_paces_from_the_schedule_not_the_tick(void)
     close(fake_dmr_fd);
 }
 
+/* A repeated voice header must stay in the call's outgoing stream; a new stream per
+ * copy left an orphan stream that strict masters hold the slot for. */
+static void test_dmr_relay_repeated_header_keeps_the_stream(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    media_bus_frame_t frame;
+    int dmr1_id, dmr2_id, i;
+    uint32_t first_stream;
+
+    media_router_init(&r);
+    dmr1_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+    dmr2_id = media_router_add_peer(&r, MEDIA_PEER_DMR);
+    memset(&bus, 0, sizeof(bus));
+    bus.router = &r;
+    bus.n_slots = 2;
+    for (i = 0; i < 2; i++) {
+        bus.slots[i].router_id = i ? dmr2_id : dmr1_id;
+        bus.slots[i].kind = MEDIA_PEER_DMR;
+        bus.slots[i].open = 1;
+        bus.slots[i].u.dmr.sock = -1;
+        bus.slots[i].u.dmr.dmrid = 7141001 + i;
+        bus.slots[i].u.dmr.tg = 7141 + i;
+    }
+    media_core_init(&core);
+    media_core_bind(&core, &r, &bus, NULL, NULL);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.kind = MEDIA_FRAME_CALL_BEGIN;
+    frame.codec = CODEC_DMR_AMBE;
+    frame.meta.talker_id = 7141001;
+    frame.meta.stream_id = 0x11223344;
+    media_core_ingress(&core, dmr1_id, &frame);
+    first_stream = bus.slots[1].dmr_tx_stream_id;
+
+    media_core_ingress(&core, dmr1_id, &frame);
+    media_core_ingress(&core, dmr1_id, &frame);
+    assert(bus.slots[1].dmr_tx_stream_id == first_stream);
+
+    /* A different incoming stream is a new call: it gets its own outgoing stream. */
+    frame.kind = MEDIA_FRAME_CALL_END;
+    media_core_ingress(&core, dmr1_id, &frame);
+    frame.kind = MEDIA_FRAME_CALL_BEGIN;
+    frame.meta.stream_id = 0x55667788;
+    media_core_ingress(&core, dmr1_id, &frame);
+    assert(bus.slots[1].dmr_tx_stream_id != first_stream);
+}
+
 /* The relay's stale-call check force-released any active ingress held by a DMR
  * peer, so a DMR->EchoLink call lost the bus lock (and the other DMR peers got a
  * stray VTERM) 1.5 s into every over, although no relay call was running. */
@@ -1451,6 +1500,7 @@ int main(void)
     test_pcm_dmr_paces_from_the_schedule_not_the_tick();
     test_ysf_relay_stale_call_releases_router();
     test_relay_stale_check_leaves_a_pcm_call_alone();
+    test_dmr_relay_repeated_header_keeps_the_stream();
     test_ysf_relay_voice_frame_is_transparent();
     test_dmr_tx_embedded_lc_independent_per_destination();
     printf("test_media_core: ok\n");
