@@ -21,9 +21,11 @@
 #include "log.h"
 
 #include <arpa/inet.h>
+#include <ctype.h>
 #include <errno.h>
 #include <netdb.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -70,8 +72,8 @@ static void send_rptc(peer_dmr_t *p)
     pad_copy(body + 17, 9, p->freq[0] ? p->freq : "000000000");
     pad_copy(body + 26, 2, "99");
     pad_copy(body + 28, 2, "01");
-    pad_copy(body + 30, 8, "00000000");
-    pad_copy(body + 38, 9, "000000000");
+    pad_copy(body + 30, 8, "0.000000");  /* MMDVMHost "%08f" */
+    pad_copy(body + 38, 9, "00.000000"); /* MMDVMHost "%09f" */
     pad_copy(body + 47, 3, "000");
     pad_copy(body + 50, 20, loc);
     pad_copy(body + 70, 19, desc);
@@ -146,7 +148,13 @@ int peer_dmr_open(peer_dmr_t *p, const char *host, int port, const char *cs,
         strncpy(p->description, description, sizeof(p->description) - 1);
     if (location && location[0])
         strncpy(p->location, location, sizeof(p->location) - 1);
-    snprintf(p->freq, sizeof(p->freq), "%s", (freq && freq[0]) ? freq : "000000000");
+    {
+        /* MMDVMHost "%09u": a shorter value is zero-padded, not space-padded. Above
+         * 999999999 it would not fit the field, so it is sent as unknown. */
+        unsigned long hz = freq ? strtoul(freq, NULL, 10) : 0UL;
+
+        snprintf(p->freq, sizeof(p->freq), "%09lu", hz <= 999999999UL ? hz : 0UL);
+    }
     strncpy(p->package_id, "adn-bridge", sizeof(p->package_id) - 1);
     strncpy(p->software_id, "MMDVMHost", sizeof(p->software_id) - 1);
     memset(p->callsign, ' ', 10);
@@ -155,7 +163,9 @@ int peer_dmr_open(peer_dmr_t *p, const char *host, int port, const char *cs,
 
         if (cs_len > 10)
             cs_len = 10;
-        memcpy(p->callsign, cs, cs_len);
+        /* Masters that compare the RPTC callsign byte for byte NAK a lower-case one. */
+        for (size_t i = 0; i < cs_len; i++)
+            p->callsign[i] = (char)toupper((unsigned char)cs[i]);
     }
 
     if ((p->sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {

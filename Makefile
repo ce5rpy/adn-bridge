@@ -91,9 +91,9 @@ install: adn-bridge
 	install -m 644 examples/adn-bridge-echolink-ysf.example.ini $(DESTDIR)$(CONFDIR)/
 
 clean:
-	rm -rf $(BUILD) adn-bridge tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers tests/test_codec_plan tests/test_media_core tests/test_log tests/test_echolink_inbound tests/test_peer_alsa
+	rm -rf $(BUILD) adn-bridge tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers tests/test_codec_plan tests/test_media_core tests/test_log tests/test_echolink_inbound tests/test_peer_alsa tests/test_peer_dmr
 
-test: tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers tests/test_codec_plan tests/test_media_core tests/test_log tests/test_echolink_inbound tests/test_peer_alsa
+test: tests/test_wire tests/test_codecs tests/test_router tests/test_config_peers tests/test_codec_plan tests/test_media_core tests/test_log tests/test_echolink_inbound tests/test_peer_alsa tests/test_peer_dmr
 	./tests/test_wire
 	./tests/test_codecs
 	./tests/test_router
@@ -103,6 +103,7 @@ test: tests/test_wire tests/test_codecs tests/test_router tests/test_config_peer
 	./tests/test_log
 	./tests/test_echolink_inbound
 	./tests/test_peer_alsa
+	./tests/test_peer_dmr
 
 $(BUILD)/tests/test_wire.o: tests/test_wire.c
 	@mkdir -p $(dir $@)
@@ -199,6 +200,13 @@ $(BUILD)/tests/test_peer_alsa.o: tests/test_peer_alsa.c
 tests/test_peer_alsa: $(BUILD)/tests/test_peer_alsa.o $(BUILD)/peer_alsa.o $(BUILD)/log.o
 	$(CC) -o $@ $(BUILD)/tests/test_peer_alsa.o $(BUILD)/peer_alsa.o $(BUILD)/log.o -lm \
 		$(if $(filter 1,$(WITH_ALSA)),-lasound) $(if $(filter 1,$(WITH_GPIOD)),-lgpiod)
+
+$(BUILD)/tests/test_peer_dmr.o: tests/test_peer_dmr.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+tests/test_peer_dmr: $(BUILD)/tests/test_peer_dmr.o $(BUILD)/peer_dmr.o $(BUILD)/hbp/dmr_hbp.o $(BUILD)/log.o
+	$(CC) -o $@ $^
 
 -include $(DEPS)
 
