@@ -9,6 +9,7 @@ tests/test_media_core
 tests/test_log
 tests/test_echolink_inbound
 tests/test_peer_alsa
+tests/test_peer_dmr
 tests/*.d
 data/
 debug/
