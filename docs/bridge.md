@@ -303,8 +303,10 @@ Filter while running:
 - Recommended on ADN masters with dynamic TGs; omit on XLX and masters without
   OPTIONS/RPTO.
 
-RX/TX frequencies are zero in RPTC → monitor shows N/A (normal for software
-bridges).
+RX/TX frequencies are zero in RPTC unless `freq` is set → the ADN monitor
+lists the peer under Bridges. BrandMeister requires `freq` (it answers an RPTC
+with frequency 0 with MSTCL) and an empty `options`: it never answers RPTO,
+so a login with options never completes (DMRGateway behaves the same).
 
 ### `type = echolink`
 
