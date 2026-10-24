@@ -250,6 +250,40 @@ static int test_reject_vocoder_on_dmr_peer(void)
     return 0;
 }
 
+/* A key before type= used to be dropped silently (a freq written first ended up
+ * 000000000); it must fail the load instead. */
+static int test_reject_key_before_type(void)
+{
+    const char *ini =
+        "[peer.el]\n"
+        "type = echolink\n"
+        "enabled = true\n"
+        "callsign = N0CALL-L\n"
+        "password = secret\n"
+        "bind_addr = 127.0.0.1\n"
+        "vocoder_host = 127.0.0.1\n"
+        "[peer.master]\n"
+        "freq = 445000000\n"
+        "type = dmr\n"
+        "enabled = true\n"
+        "callsign = N0CALL\n"
+        "dmrid = 1\n"
+        "host = m.example\n"
+        "port = 62031\n"
+        "tg = 1\n"
+        "password = x\n";
+    adn_bridge_config_t cfg;
+    char err[256];
+
+    if (write_ini("/tmp/adn-test-key-before-type.ini", ini) != 0)
+        return 140;
+    if (adn_bridge_config_load("/tmp/adn-test-key-before-type.ini", &cfg, err, sizeof(err)) == 0)
+        return 141;
+    if (!strstr(err, "set type before freq"))
+        return 142;
+    return 0;
+}
+
 static int test_log_handlers_parsing(void)
 {
     const char *ini =
@@ -540,6 +574,11 @@ int main(void)
     if (rc != 0) {
         fprintf(stderr, "test_config_peers: alsa without vocoder reject failed (%d)\n", rc);
         return 13;
+    }
+    rc = test_reject_key_before_type();
+    if (rc != 0) {
+        fprintf(stderr, "test_config_peers: key before type reject failed (%d)\n", rc);
+        return 14;
     }
 
     printf("test_config_peers: ok\n");

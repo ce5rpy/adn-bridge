@@ -517,8 +517,11 @@ static int apply_peer_key(adn_bridge_config_t *cfg, const char *peer_name,
             apply_peer_alsa_key(&p->u.alsa, key, val);
         return 0;
     }
-    if (!p->type_set)
-        return 0;
+    if (!p->type_set) {
+        snprintf(err, errlen, "%s:%d: [peer.%s] set type before %s",
+                 path, lineno, peer_name, key);
+        return -1;
+    }
     if (p->type == ADN_BRIDGE_PEER_TYPE_DMR)
         apply_peer_dmr_key(&p->u.dmr, key, val);
     else if (p->type == ADN_BRIDGE_PEER_TYPE_YSF)
