@@ -79,6 +79,9 @@ int main(void)
         check_field("latitude", rptc + 38, "0.000000");
         check_field("longitude", rptc + 46, "00.000000");
         check_field("height", rptc + 55, "000");
+        check_field("slots", rptc + 97, "4");
+        check_field("software_id", rptc + 222, "adn-bridge");
+        check_field("package_id", rptc + 262, "MMDVM ");
     }
     if (login_until_rptc("CE5ABC", NULL, rptc))
         check_field("freq when unset", rptc + 16, "000000000");

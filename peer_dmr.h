@@ -38,9 +38,6 @@ typedef struct {
     char description[20];
     char location[21];
     char freq[10]; /* RPTC announcement only, cosmetic; 9-digit Hz, used for both RX and TX */
-    char software_id[41];
-    char package_id[41];
-    char slots; /* RPTC SLOTS: '0' = IP bridge (monitor RX/TX N/A) */
     int status;
     int login_phase; /* 0=RPTL..4=CONNECTED */
     int block_private; /* set by media_peer_bus_open_all() from config, not peer_dmr_open() --
