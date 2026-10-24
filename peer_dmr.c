@@ -77,10 +77,10 @@ static void send_rptc(peer_dmr_t *p)
     pad_copy(body + 47, 3, "000");
     pad_copy(body + 50, 20, loc);
     pad_copy(body + 70, 19, desc);
-    body[89] = p->slots ? (uint8_t)p->slots : (uint8_t)'0';
+    body[89] = '4';                      /* DMRGateway: simplex hotspot */
     pad_copy(body + 90, 124, "");
-    pad_copy(body + 214, 40, p->software_id[0] ? p->software_id : "MMDVMHost");
-    pad_copy(body + 254, 40, p->package_id[0] ? p->package_id : "adn-bridge");
+    pad_copy(body + 214, 40, "adn-bridge");
+    pad_copy(body + 254, 40, "MMDVM");   /* DMRGateway's package id; BrandMeister NAKs others */
 
     memcpy(out, "RPTC", 4);
     out[4] = (id >> 24) & 0xff;
@@ -142,7 +142,6 @@ int peer_dmr_open(peer_dmr_t *p, const char *host, int port, const char *cs,
         strncpy(p->options, options, sizeof(p->options) - 1);
         p->options[sizeof(p->options) - 1] = '\0';
     }
-    p->slots = '0';
     strncpy(p->password, password ? password : "", sizeof(p->password) - 1);
     if (description && description[0])
         strncpy(p->description, description, sizeof(p->description) - 1);
@@ -155,8 +154,6 @@ int peer_dmr_open(peer_dmr_t *p, const char *host, int port, const char *cs,
 
         snprintf(p->freq, sizeof(p->freq), "%09lu", hz <= 999999999UL ? hz : 0UL);
     }
-    strncpy(p->package_id, "adn-bridge", sizeof(p->package_id) - 1);
-    strncpy(p->software_id, "MMDVMHost", sizeof(p->software_id) - 1);
     memset(p->callsign, ' ', 10);
     {
         size_t cs_len = base_callsign_len(cs);
