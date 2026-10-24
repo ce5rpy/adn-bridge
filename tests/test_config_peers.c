@@ -250,37 +250,55 @@ static int test_reject_vocoder_on_dmr_peer(void)
     return 0;
 }
 
-/* A key before type= used to be dropped silently (a freq written first ended up
- * 000000000); it must fail the load instead. */
-static int test_reject_key_before_type(void)
+/* Key order inside a section is free: keys before type= used to be dropped
+ * silently (a freq written first ended up 000000000). */
+static int test_keys_before_type(void)
 {
     const char *ini =
         "[peer.el]\n"
+        "vocoder_host = 127.0.0.1\n"
+        "callsign = N0CALL-L\n"
         "type = echolink\n"
         "enabled = true\n"
-        "callsign = N0CALL-L\n"
         "password = secret\n"
         "bind_addr = 127.0.0.1\n"
-        "vocoder_host = 127.0.0.1\n"
         "[peer.master]\n"
         "freq = 445000000\n"
+        "host = m.example\n"
         "type = dmr\n"
         "enabled = true\n"
         "callsign = N0CALL\n"
         "dmrid = 1\n"
-        "host = m.example\n"
         "port = 62031\n"
         "tg = 1\n"
         "password = x\n";
     adn_bridge_config_t cfg;
     char err[256];
 
-    if (write_ini("/tmp/adn-test-key-before-type.ini", ini) != 0)
+    if (write_ini("/tmp/adn-test-key-order.ini", ini) != 0)
         return 140;
-    if (adn_bridge_config_load("/tmp/adn-test-key-before-type.ini", &cfg, err, sizeof(err)) == 0)
+    if (adn_bridge_config_load("/tmp/adn-test-key-order.ini", &cfg, err, sizeof(err)) != 0)
         return 141;
-    if (!strstr(err, "set type before freq"))
+    if (strcmp(cfg.peers[1].u.dmr.freq, "445000000") != 0 || strcmp(cfg.peers[1].u.dmr.host, "m.example") != 0)
         return 142;
+    if (strcmp(cfg.peers[0].u.el.vocoder_host, "127.0.0.1") != 0)
+        return 143;
+    return 0;
+}
+
+static int test_reject_conflicting_types(void)
+{
+    const char *ini =
+        "[peer.a]\n"
+        "type = dmr\n"
+        "type = ysf\n";
+    adn_bridge_config_t cfg;
+    char err[256];
+
+    if (write_ini("/tmp/adn-test-two-types.ini", ini) != 0)
+        return 150;
+    if (adn_bridge_config_load("/tmp/adn-test-two-types.ini", &cfg, err, sizeof(err)) == 0)
+        return 151;
     return 0;
 }
 
@@ -575,10 +593,15 @@ int main(void)
         fprintf(stderr, "test_config_peers: alsa without vocoder reject failed (%d)\n", rc);
         return 13;
     }
-    rc = test_reject_key_before_type();
+    rc = test_keys_before_type();
     if (rc != 0) {
-        fprintf(stderr, "test_config_peers: key before type reject failed (%d)\n", rc);
+        fprintf(stderr, "test_config_peers: keys before type failed (%d)\n", rc);
         return 14;
+    }
+    rc = test_reject_conflicting_types();
+    if (rc != 0) {
+        fprintf(stderr, "test_config_peers: conflicting types reject failed (%d)\n", rc);
+        return 15;
     }
 
     printf("test_config_peers: ok\n");
