@@ -482,11 +482,17 @@ static int apply_peer_key(adn_bridge_config_t *cfg, const char *peer_name,
         return 0;
     if (strcmp(key, "type") == 0) {
         t = parse_peer_type(val);
-        if (t >= 0) {
-            p->type = (adn_bridge_peer_type_t)t;
-            p->type_set = 1;
-            apply_peer_type_defaults(p);
+        if (t < 0)
+            return 0;
+        if (p->type_set) {
+            if ((int)p->type == t)
+                return 0;
+            snprintf(err, errlen, "%s:%d: [peer.%s] type set twice", path, lineno, peer_name);
+            return -1;
         }
+        p->type = (adn_bridge_peer_type_t)t;
+        p->type_set = 1;
+        apply_peer_type_defaults(p);
         return 0;
     }
     if (strcmp(key, "enabled") == 0) {
@@ -495,7 +501,7 @@ static int apply_peer_key(adn_bridge_config_t *cfg, const char *peer_name,
     }
     if (is_vocoder_peer_key(key)) {
         if (!p->type_set) {
-            snprintf(err, errlen, "%s:%d: [peer.%s] set type before %s",
+            snprintf(err, errlen, "%s:%d: [peer.%s] %s needs a type = line in the section",
                      path, lineno, peer_name, key);
             return -1;
         }
@@ -518,7 +524,7 @@ static int apply_peer_key(adn_bridge_config_t *cfg, const char *peer_name,
         return 0;
     }
     if (!p->type_set) {
-        snprintf(err, errlen, "%s:%d: [peer.%s] set type before %s",
+        snprintf(err, errlen, "%s:%d: [peer.%s] %s needs a type = line in the section",
                  path, lineno, peer_name, key);
         return -1;
     }
@@ -689,20 +695,15 @@ void adn_bridge_config_apply_log_output(const adn_bridge_config_t *cfg)
     log_init(&out);
 }
 
-int adn_bridge_config_load(const char *path, adn_bridge_config_t *cfg, char *err, size_t errlen)
+/* types_only: apply just the [peer.*] type= lines. Type defaults the union
+ * member (apply_peer_type_defaults), so every type must be known before any
+ * other key of its section is applied; a first pass makes key order free. */
+static int parse_config_file(FILE *fp, const char *path, adn_bridge_config_t *cfg,
+                             int types_only, char *err, size_t errlen)
 {
-    FILE *fp;
     char line[512];
     char section[64] = "";
     int lineno = 0;
-
-    adn_bridge_config_init(cfg);
-
-    fp = fopen(path, "r");
-    if (!fp) {
-        snprintf(err, errlen, "cannot open config: %s", path);
-        return -1;
-    }
 
     while (fgets(line, sizeof(line), fp)) {
         char *p = line;
@@ -716,7 +717,6 @@ int adn_bridge_config_load(const char *path, adn_bridge_config_t *cfg, char *err
             char *end = strchr(p, ']');
             if (!end) {
                 snprintf(err, errlen, "%s:%d: malformed section", path, lineno);
-                fclose(fp);
                 return -1;
             }
             *end = '\0';
@@ -727,21 +727,40 @@ int adn_bridge_config_load(const char *path, adn_bridge_config_t *cfg, char *err
         eq = strchr(p, '=');
         if (!eq) {
             snprintf(err, errlen, "%s:%d: expected key=value", path, lineno);
-            fclose(fp);
             return -1;
         }
         *eq = '\0';
         key = trim(p);
         val = trim(eq + 1);
-        if (apply_key(cfg, section, key, val, path, lineno, err, errlen) != 0) {
-            fclose(fp);
+        if (types_only && !(strncmp(section, "peer.", 5) == 0 && strcmp(key, "type") == 0))
+            continue;
+        if (apply_key(cfg, section, key, val, path, lineno, err, errlen) != 0)
             return -1;
-        }
     }
-
-    fclose(fp);
-    finalize_peers(cfg);
     return 0;
+}
+
+int adn_bridge_config_load(const char *path, adn_bridge_config_t *cfg, char *err, size_t errlen)
+{
+    FILE *fp;
+    int rc;
+
+    adn_bridge_config_init(cfg);
+
+    fp = fopen(path, "r");
+    if (!fp) {
+        snprintf(err, errlen, "cannot open config: %s", path);
+        return -1;
+    }
+    rc = parse_config_file(fp, path, cfg, 1, err, errlen);
+    if (rc == 0) {
+        rewind(fp);
+        rc = parse_config_file(fp, path, cfg, 0, err, errlen);
+    }
+    fclose(fp);
+    if (rc == 0)
+        finalize_peers(cfg);
+    return rc;
 }
 
 static int validate_peer_dmr(const adn_bridge_peer_t *p, char *err, size_t errlen)
