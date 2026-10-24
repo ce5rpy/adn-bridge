@@ -80,7 +80,14 @@ int main(void)
         check_field("longitude", rptc + 46, "00.000000");
         check_field("height", rptc + 55, "000");
         check_field("slots", rptc + 97, "4");
-        check_field("software_id", rptc + 222, "adn-bridge");
+        checks++;
+        for (int i = 0; i < 8; i++)
+            if (rptc[222 + i] < '0' || rptc[222 + i] > '9') {
+                fprintf(stderr, "FAIL: software_id '%.20s' does not start with YYYYMMDD\n", (const char *)rptc + 222);
+                fails++;
+                break;
+            }
+        check_field("software_id suffix", rptc + 230, "_adn-bridge ");
         check_field("package_id", rptc + 262, "MMDVM ");
     }
     if (login_until_rptc("CE5ABC", NULL, rptc))

@@ -56,10 +56,24 @@ static size_t base_callsign_len(const char *cs)
     return i;
 }
 
+/* BrandMeister NAKs an RPTC whose software id does not start with a YYYYMMDD
+ * date (DMRGateway sends its release date); use the build date. */
+static void build_software_id(char out[41])
+{
+    static const char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    const char *d = __DATE__; /* "Mmm dd yyyy" */
+    char mon[4] = {d[0], d[1], d[2], '\0'};
+    int month = (int)(strstr(months, mon) - months) / 3 + 1;
+    int day = (d[4] == ' ' ? 0 : d[4] - '0') * 10 + (d[5] - '0');
+
+    snprintf(out, 41, "%.4s%02d%02d_adn-bridge", d + 7, month, day);
+}
+
 static void send_rptc(peer_dmr_t *p)
 {
     uint8_t out[302];
     char body[294];
+    char software_id[41];
     int id = get_dmrid(p->dmrid);
     const char *desc = p->description[0] ? p->description : "adn-bridge";
     /* Monitor Linked Systems shows LOCATION only (not DESCRIPTION). */
@@ -79,7 +93,8 @@ static void send_rptc(peer_dmr_t *p)
     pad_copy(body + 70, 19, desc);
     body[89] = '4';                      /* DMRGateway: simplex hotspot */
     pad_copy(body + 90, 124, "");
-    pad_copy(body + 214, 40, "adn-bridge");
+    build_software_id(software_id);
+    pad_copy(body + 214, 40, software_id);
     pad_copy(body + 254, 40, "MMDVM");   /* DMRGateway's package id; BrandMeister NAKs others */
 
     memcpy(out, "RPTC", 4);
@@ -228,7 +243,8 @@ void peer_dmr_tick(peer_dmr_t *p)
         }
     } else if (p->status == CONNECTING) {
         if (now - p->pong_time > TIMEOUT * 2) {
-            LOG_DMR_WARNING("DMR: login timeout, retrying...\n");
+            LOG_DMR_WARNING("DMR: login timeout at phase %d, retrying...%s\n", p->login_phase,
+                            p->login_phase == 3 ? " (no ACK to RPTO; BrandMeister needs options empty)" : "");
             p->status = DISCONNECTED;
         }
     }
@@ -289,9 +305,11 @@ static void handle_rx(peer_dmr_t *p)
             default:
                 break;
             }
-        } else if (memcmp(buf, "MSTNAK", 6) == 0) {
-            LOG_DMR_WARNING("DMR: login rejected (MSTNAK) at phase %d — check ID/callsign/password\n",
-                            p->login_phase);
+        } else if (memcmp(buf, "MSTNAK", 6) == 0 || memcmp(buf, "MSTCL", 5) == 0) {
+            /* BrandMeister answers an RPTC with frequency 0 with MSTCL, not MSTNAK. */
+            LOG_DMR_WARNING("DMR: login rejected (%.6s) at phase %d — check ID/callsign/password%s\n",
+                            memcmp(buf, "MSTNAK", 6) == 0 ? "MSTNAK" : "MSTCL", p->login_phase,
+                            p->login_phase == 2 ? "; BrandMeister also needs freq set" : "");
             p->status = DISCONNECTED;
             p->login_fail_until = time(NULL) + 3;
         }
