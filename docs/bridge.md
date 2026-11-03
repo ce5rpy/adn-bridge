@@ -365,6 +365,7 @@ Optional; recommended for correct talker callsign / DMR ID display.
 
 - **DMR → YSF:** lookup radio ID in `subscriber_ids.json`; if missing, send the number.
 - **YSF → DMR:** strip suffix after `-` or `/`, lookup; if unknown, bridge `callsign` + `dmrid`.
+- **YSF → YSF:** the callsign is relayed as it came, never checked against the subscriber database: a callsign it does not know still reaches the other YSF peers. Toward DMR, EchoLink and ALSA nothing changes (with no DMR id and no bridge `dmrid` to fall back on, they do not take the call).
 - **EchoLink → DMR/YSF:** inbound RTCP SDES talker name; DMR ID via alias lookup.
 
 ---

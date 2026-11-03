@@ -1442,6 +1442,63 @@ static void test_ysf_data_fr_does_not_cross_to_another_reflector(void)
     assert(media_router_active_ingress(&r) == ysf1_id);
 }
 
+/* A header from a callsign the subscriber database does not know (the test has no aliases): the
+ * YSF peers relay the callsign and take it as it came; every other leg stays as it was -- with no
+ * DMR id to fall back on, DMR and EchoLink never see the call; with the bridge's own DMR id, DMR
+ * takes it under that id. other: 0 none, 1 EchoLink, 2 DMR without dmrid, 3 DMR with dmrid. */
+static void test_ysf_unknown_callsign_goes_on_to_ysf_peers_only(void)
+{
+    media_core_t core;
+    media_router_t r;
+    media_peer_bus_t bus;
+    uint8_t pkt[155];
+    int i, other;
+
+    for (other = 0; other < 4; other++) {
+        media_router_init(&r);
+        memset(&bus, 0, sizeof(bus));
+        bus.router = &r;
+        for (i = 0; i < 2; i++) {
+            bus.slots[i].router_id = media_router_add_peer(&r, MEDIA_PEER_YSF);
+            bus.slots[i].kind = MEDIA_PEER_YSF;
+            bus.slots[i].open = 1;
+            bus.slots[i].u.ysf.sock = -1;
+            memset(bus.slots[i].u.ysf.callsign, ' ', sizeof(bus.slots[i].u.ysf.callsign));
+        }
+        bus.n_slots = 2;
+        if (other) {
+            media_peer_slot_t *o = &bus.slots[bus.n_slots++];
+
+            o->kind = other == 1 ? MEDIA_PEER_ECHOLINK : MEDIA_PEER_DMR;
+            o->router_id = media_router_add_peer(&r, o->kind);
+            o->open = 1;
+            if (other >= 2) {
+                o->u.dmr.sock = -1;
+                o->u.dmr.tg = 7141;
+                o->u.dmr.dmrid = other == 3 ? 7141001 : 0;
+                memcpy(o->u.dmr.callsign, "CE5BRG    ", 10);
+            }
+        }
+        media_core_init(&core);
+        media_core_bind(&core, &r, &bus, NULL, NULL);
+
+        ysf_comm_frame(pkt, YSF_FICH_DT_VD_MODE2);
+        memcpy(pkt + 14, "NOT1D-7   ", 10);
+        ysf_fich_encode_outbound(pkt + YSF_FICH_OFFSET_RX, 1, YSF_FI_HEADER, 6, 0, YSF_FICH_DT_VD_MODE2);
+        adapter_ysf_on_wire(&core, bus.slots[0].router_id, &bus.slots[0].u.ysf, pkt, 155);
+
+        assert(media_router_active_ingress(&r) == bus.slots[0].router_id);
+        if (other != 3)
+            assert(memcmp(core.relay_ysf_meta.netcall.net_src, "NOT1D-7   ", 10) == 0);
+        if (other == 1)
+            assert(bus.slots[2].pcm_rx.phase != MEDIA_CALL_RX_FROM_PEER);
+        if (other == 2)
+            assert(core.leg_ysf_dmr.phase == MEDIA_CALL_IDLE);
+        if (other == 3)
+            assert(core.leg_ysf_dmr.phase == MEDIA_CALL_TX_TO_PEER && core.leg_ysf_dmr.call.talker_id == 7141001);
+    }
+}
+
 static int ysf_cp_next_fi(media_core_t *core, int fd, media_peer_slot_t *slot, uint8_t *dgid)
 {
     uint8_t buf[160];
@@ -1680,6 +1737,7 @@ int main(void)
     test_dmr_relay_repeated_header_keeps_the_stream();
     test_ysf_relay_voice_frame_is_transparent();
     test_ysf_data_fr_does_not_cross_to_another_reflector();
+    test_ysf_unknown_callsign_goes_on_to_ysf_peers_only();
     test_ysf_connect_ptt_after_link();
     test_ysf_reconnect_does_not_block_the_loop();
     test_dmr_tx_embedded_lc_independent_per_destination();

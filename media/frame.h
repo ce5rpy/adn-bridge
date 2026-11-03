@@ -28,6 +28,7 @@ typedef struct {
     bridge_call_meta_t netcall;   /* net_src / net_dst, 10-char wire callsigns */
     int                talker_id; /* raw DMR radio ID from wire (rf) */
     uint32_t           stream_id;
+    uint8_t            talker_unknown; /* YSF: no DMR id for this callsign; only YSF peers take it */
 } media_call_meta_t;
 
 typedef struct {

@@ -94,6 +94,10 @@ void media_core_ingress(media_core_t *core, int src_router_id, const media_bus_f
 
         if (!reachable)
             continue;
+        /* A YSF peer relays the callsign itself and needs no DMR id; every other kind keeps
+         * refusing a callsign the subscriber database does not know. */
+        if (frame->meta.talker_unknown && dst_kind != MEDIA_PEER_YSF)
+            continue;
         path = codec_pair_resolve(peer_plugin_wire_codec(src_kind), peer_plugin_wire_codec(dst_kind));
         switch (path) {
         case CODEC_PAIR_RELAY: /* same protocol both ends: wire-only fan-out */
