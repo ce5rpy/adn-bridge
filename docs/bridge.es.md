@@ -236,6 +236,7 @@ Opcional; recomendable para indicativo / ID DMR correctos.
 
 - **DMR → YSF:** busca ID en `subscriber_ids.json`; si falta, envía el número.
 - **YSF → DMR:** quita sufijo tras `-` o `/`, busca; si no está, `callsign` + `dmrid` del puente.
+- **YSF → YSF:** el indicativo pasa tal cual llega, sin validarlo contra la base de suscriptores: uno desconocido igual llega a los otros peers YSF. Hacia DMR, EchoLink y ALSA no cambia nada (sin ID DMR y sin `dmrid` del puente como respaldo, no toman la llamada).
 - **EchoLink → DMR/YSF:** nombre del locutor vía RTCP SDES; ID DMR vía alias.
 
 ---

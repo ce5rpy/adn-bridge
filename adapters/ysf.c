@@ -69,8 +69,8 @@ void adapter_ysf_on_wire(media_core_t *core, int src_router_id, peer_ysf_t *ysf,
             ctx.bridge_callsign = dmr->callsign;
         }
         if (!identity_resolve_ysf_header(&frame.meta.netcall, &rf_id, &ctx, pkt)) {
-            LOG_YSF_WARNING("YSF ignored HEADER: no talker DMR id\n");
-            return;
+            LOG_YSF_INFO("YSF HEADER %.10s: no talker DMR id, to YSF peers only\n", frame.meta.netcall.net_src);
+            frame.meta.talker_unknown = 1;
         }
         frame.meta.talker_id = rf_id;
         frame.kind = MEDIA_FRAME_CALL_BEGIN;
